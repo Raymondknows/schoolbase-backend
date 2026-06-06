@@ -1033,4 +1033,68 @@ router.get('/subscribe/data', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/admin/school/:schoolId/setup-status - Get school setup completion status
+router.get('/school/:schoolId/setup-status', async (req: Request, res: Response) => {
+  try {
+    const { schoolId } = req.params;
+
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+    });
+
+    if (!school) {
+      return res.status(404).json({ error: 'School not found' });
+    }
+
+    // Check setup completion items
+    const [
+      enabledPhases,
+      academicYears,
+      classes,
+      subjects,
+      teacherClasses,
+      feeSchedules,
+    ] = await Promise.all([
+      prisma.schoolOnPhase.count({ where: { schoolId } }),
+      prisma.academicYear.count({ where: { schoolId } }),
+      prisma.class.count({ where: { schoolId } }),
+      prisma.subject.count({ where: { schoolId } }),
+      prisma.teacherClass.count({ where: { schoolId } }),
+      prisma.feeSchedule.count({ where: { schoolId } }),
+    ]);
+
+    const setupItems = {
+      hasEnabledPhases: enabledPhases > 0,
+      hasAcademicYears: academicYears > 0,
+      hasClasses: classes > 0,
+      hasSubjects: subjects > 0,
+      hasStaff: teacherClasses > 0,
+      hasFees: feeSchedules > 0,
+    };
+
+    // School is considered complete if it has all setup items
+    const isComplete = Object.values(setupItems).every((item) => item === true);
+
+    const incompleteItems = Object.entries(setupItems)
+      .filter(([, value]) => !value)
+      .map(([key]) => key);
+
+    res.json({
+      isComplete,
+      setupItems,
+      incompleteItems,
+      completionPercentage: Math.round(
+        (Object.values(setupItems).filter((v) => v).length / Object.values(setupItems).length) * 100
+      ),
+    });
+  } catch (error) {
+    console.error('Error fetching setup status:', error);
+    res.status(500).json({ error: 'Failed to fetch setup status' });
+  }
+});
+
 export default router;
