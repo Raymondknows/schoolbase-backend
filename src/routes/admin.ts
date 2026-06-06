@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
-import { jwtVerify } from 'jose';
+import { jwtVerify, SignJWT } from 'jose';
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -125,6 +126,54 @@ router.post('/verify', async (req: Request, res: Response) => {
     });
   } catch (error) {
     res.status(401).json({ authenticated: false });
+  }
+});
+
+// POST /api/admin/login - Authenticate staff / platform admin and return a session token
+router.post('/login', async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body ?? {};
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: String(email).trim().toLowerCase() },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        passwordHash: true,
+        schoolId: true,
+      },
+    });
+
+    if (!user || !user.passwordHash) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    const valid = await bcrypt.compare(String(password), user.passwordHash);
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    const token = await new SignJWT({
+      userId: user.id,
+      schoolId: user.schoolId,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime('7d')
+      .sign(secret());
+
+    res.json({ success: true, token });
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json({ error: 'Login failed' });
   }
 });
 
