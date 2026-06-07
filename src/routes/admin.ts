@@ -182,6 +182,8 @@ router.get('/school/:schoolId', async (req: Request, res: Response) => {
   try {
     const { schoolId } = req.params;
     
+    console.log('[GET /api/admin/school/:schoolId] schoolId:', schoolId);
+
     if (!schoolId) {
       return res.status(400).json({ error: 'School ID required' });
     }
@@ -194,14 +196,16 @@ router.get('/school/:schoolId', async (req: Request, res: Response) => {
       },
     });
 
+    console.log('[GET /api/admin/school/:schoolId] school:', school ? 'found' : 'not found');
+
     if (!school) {
       return res.status(404).json({ error: 'School not found' });
     }
 
     res.json(school);
   } catch (error) {
-    console.error('Error fetching school:', error);
-    res.status(500).json({ error: 'Failed to fetch school' });
+    console.error('[GET /api/admin/school/:schoolId] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch school', details: String(error) });
   }
 });
 
@@ -725,7 +729,7 @@ router.get('/students/data', async (req: Request, res: Response) => {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
-    const [pupils, classes] = await Promise.all([
+    const [pupils, classes, school] = await Promise.all([
       prisma.pupil.findMany({
         where: { schoolId, isActive: true },
         include: {
@@ -738,12 +742,179 @@ router.get('/students/data', async (req: Request, res: Response) => {
         where: { schoolId },
         orderBy: { name: 'asc' },
       }),
+      prisma.school.findUnique({
+        where: { id: schoolId },
+        select: { name: true, initials: true },
+      }),
     ]);
 
-    res.json({ pupils, classes });
+    // Calculate next admission number
+    let prefix = "SCH";
+    if (school?.initials && typeof school.initials === "string" && school.initials.trim()) {
+      prefix = school.initials.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    } else if (school?.name) {
+      const words = school.name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+      let letters = words.slice(0, 3).map((w: string) => w[0]).join("").toUpperCase();
+      if (letters.length < 3 && words[0]) {
+        const remaining = words[0].slice(1).replace(/[^A-Za-z0-9]/g, "");
+        for (const ch of remaining) {
+          letters += ch.toUpperCase();
+          if (letters.length >= 3) break;
+        }
+      }
+      prefix = (letters || "SCH").replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    }
+
+    const year = new Date().getFullYear();
+    const existingCount = await prisma.pupil.count({
+      where: { schoolId, admissionNo: { startsWith: `${prefix}-${year}-` } },
+    });
+    const nextSeq = String(existingCount + 1).padStart(4, "0");
+    const nextAdmissionNo = `${prefix}-${year}-${nextSeq}`;
+
+    res.json({ pupils, classes, nextAdmissionNo });
   } catch (error) {
     console.error('Error fetching students data:', error);
     res.status(500).json({ error: 'Failed to fetch students data' });
+  }
+});
+
+// GET /api/admin/students/:id - Get single student data
+router.get('/students/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { id } = req.params;
+
+    const pupil = await prisma.pupil.findFirst({
+      where: { id, schoolId },
+      include: {
+        class: true,
+        guardians: { include: { guardian: true } },
+      },
+    });
+
+    if (!pupil) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    // Fetch invoices and calculate fees balance
+    const invoices = await prisma.invoice.findMany({
+      where: { pupilId: id, schoolId },
+    });
+
+    const totalDue = invoices.reduce((sum, inv) => sum + inv.amountDue, 0);
+    const totalPaid = invoices.reduce((sum, inv) => sum + inv.amountPaid, 0);
+    const feesBalance = totalDue - totalPaid;
+
+    res.json({
+      ...pupil,
+      feesBalance,
+      invoiceCount: invoices.length,
+    });
+  } catch (error) {
+    console.error('Error fetching student:', error);
+    res.status(500).json({ error: 'Failed to fetch student' });
+  }
+});
+
+// PATCH /api/admin/students/:id - Update student data
+router.patch('/students/:id', upload.single('photo'), async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { id } = req.params;
+
+    // Verify student exists and belongs to school
+    const existingPupil = await prisma.pupil.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!existingPupil) {
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const {
+      firstName,
+      middleName,
+      lastName,
+      classId,
+      status,
+      admissionDate,
+      gender,
+      dateOfBirth,
+      studentEmail,
+      studentPhone,
+      address,
+      bloodGroup,
+      genotype,
+      medicalNotes,
+      previousSchool,
+      previousClass,
+      guardianFirst,
+      guardianLast,
+      guardianRelationship,
+      guardianEmail,
+      guardianPhone,
+      guardianAltPhone,
+      guardianOccupation,
+    } = req.body;
+
+    // Prepare photo URL if file was uploaded
+    let photoUrl = existingPupil.photoUrl;
+    if (req.file) {
+      // Delete old photo if exists
+      if (existingPupil.photoUrl) {
+        const oldPath = path.join(process.cwd(), 'uploads', existingPupil.photoUrl.replace('/uploads/', ''));
+        if (fs.existsSync(oldPath)) {
+          fs.unlinkSync(oldPath);
+        }
+      }
+      photoUrl = `/uploads/photos/${req.file.filename}`;
+    }
+
+    // Update pupil
+    const updatedPupil = await prisma.pupil.update({
+      where: { id },
+      data: {
+        firstName: firstName || undefined,
+        middleName: middleName || undefined,
+        lastName: lastName || undefined,
+        classId: classId || undefined,
+        status: status || undefined,
+        admissionDate: admissionDate ? new Date(admissionDate) : undefined,
+        gender: gender || undefined,
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+        studentEmail: studentEmail || undefined,
+        studentPhone: studentPhone || undefined,
+        address: address || undefined,
+        bloodGroup: bloodGroup || undefined,
+        genotype: genotype || undefined,
+        medicalNotes: medicalNotes || undefined,
+        previousSchool: previousSchool || undefined,
+        previousClass: previousClass || undefined,
+        photoUrl,
+      },
+      include: {
+        class: true,
+        guardians: { include: { guardian: true } },
+      },
+    });
+
+    res.json(updatedPupil);
+  } catch (error) {
+    if (req.file) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (e) {
+        // ignore
+      }
+    }
+    console.error('Error updating student:', error);
+    res.status(500).json({ error: 'Failed to update student' });
   }
 });
 
@@ -1143,6 +1314,295 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
   } catch (error) {
     console.error('Error fetching setup status:', error);
     res.status(500).json({ error: 'Failed to fetch setup status' });
+  }
+});
+
+// ============== RESULTS/ASSESSMENTS MANAGEMENT ==============
+
+// GET /api/admin/terms - Fetch available terms for current academic year
+router.get('/terms', async (req: Request, res: Response) => {
+  try {
+    const schoolId = req.headers['x-school-id'] as string;
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    const terms = await prisma.term.findMany({
+      where: {
+        academicYear: {
+          schoolId,
+          isCurrent: true,
+        },
+      },
+      orderBy: { sortOrder: 'asc' },
+      select: { id: true, name: true, sortOrder: true },
+    });
+
+    res.json({ terms });
+  } catch (error) {
+    console.error('Error fetching terms:', error);
+    res.status(500).json({ error: 'Failed to fetch terms' });
+  }
+});
+
+// GET /api/admin/results/{id} - Fetch single assessment with results
+router.get('/results/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const schoolId = req.headers['x-school-id'] as string;
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    const assessment = await prisma.assessment.findFirst({
+      where: { id, schoolId },
+      include: {
+        term: true,
+        results: {
+          include: {
+            pupil: { select: { id: true, firstName: true, lastName: true } },
+            subjectRef: true,
+          },
+        },
+        _count: { select: { results: true } },
+      },
+    });
+
+    if (!assessment) {
+      return res.status(404).json({ error: 'Assessment not found' });
+    }
+
+    // Transform results to include full name
+    const transformedResults = assessment.results.map((r) => ({
+      ...r,
+      pupil: {
+        ...r.pupil,
+        name: `${r.pupil.firstName} ${r.pupil.lastName}`.trim(),
+      },
+    }));
+
+    res.json({
+      ...assessment,
+      results: transformedResults,
+    });
+  } catch (error) {
+    console.error('Error fetching assessment:', error);
+    res.status(500).json({ error: 'Failed to fetch assessment' });
+  }
+});
+
+// POST /api/admin/assessments - Create new assessment
+router.post('/assessments', async (req: Request, res: Response) => {
+  try {
+    const { name, termId, phase } = req.body;
+    const schoolId = req.headers['x-school-id'] as string;
+
+    if (!schoolId || !name || !termId || !phase) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Verify term belongs to school
+    const term = await prisma.term.findFirst({
+      where: { id: termId, academicYear: { schoolId } },
+    });
+
+    if (!term) {
+      return res.status(404).json({ error: 'Term not found' });
+    }
+
+    const assessment = await prisma.assessment.create({
+      data: {
+        name,
+        termId,
+        phase,
+        schoolId,
+        status: 'DRAFT',
+      },
+      include: { term: true, _count: { select: { results: true } } },
+    });
+
+    res.status(201).json(assessment);
+  } catch (error) {
+    console.error('Error creating assessment:', error);
+    res.status(500).json({ error: 'Failed to create assessment' });
+  }
+});
+
+// POST /api/admin/results - Enter/update scores for students
+router.post('/results', async (req: Request, res: Response) => {
+  try {
+    const { assessmentId, entries } = req.body;
+    const schoolId = req.headers['x-school-id'] as string;
+
+    if (!schoolId || !assessmentId || !Array.isArray(entries)) {
+      return res.status(400).json({ error: 'Invalid request' });
+    }
+
+    // Verify assessment belongs to school
+    const assessment = await prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
+    });
+
+    if (!assessment) {
+      return res.status(404).json({ error: 'Assessment not found' });
+    }
+
+    if (assessment.status !== 'DRAFT') {
+      return res.status(400).json({ error: 'Cannot edit non-draft assessments' });
+    }
+
+    // Upsert results
+    const results = await Promise.all(
+      entries.map((entry: any) =>
+        prisma.result.upsert({
+          where: {
+            assessmentId_pupilId_subject: {
+              assessmentId,
+              pupilId: entry.pupilId,
+              subject: entry.subject || null,
+            },
+          },
+          update: {
+            caScore: entry.caScore,
+            testScore: entry.testScore,
+            examScore: entry.examScore,
+            totalScore: entry.totalScore,
+            grade: entry.grade,
+            comment: entry.comment,
+          },
+          create: {
+            assessmentId,
+            pupilId: entry.pupilId,
+            subject: entry.subject,
+            caScore: entry.caScore,
+            testScore: entry.testScore,
+            examScore: entry.examScore,
+            totalScore: entry.totalScore,
+            grade: entry.grade,
+            comment: entry.comment,
+          },
+        })
+      )
+    );
+
+    res.json({ success: true, count: results.length });
+  } catch (error) {
+    console.error('Error updating results:', error);
+    res.status(500).json({ error: 'Failed to update results' });
+  }
+});
+
+// POST /api/admin/assessments/{id}/approve - Approve assessment
+router.post('/assessments/:id/approve', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const schoolId = req.headers['x-school-id'] as string;
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    const assessment = await prisma.assessment.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!assessment) {
+      return res.status(404).json({ error: 'Assessment not found' });
+    }
+
+    if (assessment.status !== 'DRAFT') {
+      return res.status(400).json({ error: 'Only draft assessments can be approved' });
+    }
+
+    const updated = await prisma.assessment.update({
+      where: { id },
+      data: { status: 'APPROVED' },
+      include: { _count: { select: { results: true } } },
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Error approving assessment:', error);
+    res.status(500).json({ error: 'Failed to approve assessment' });
+  }
+});
+
+// POST /api/admin/assessments/{id}/publish - Publish results
+router.post('/assessments/:id/publish', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const schoolId = req.headers['x-school-id'] as string;
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    const assessment = await prisma.assessment.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!assessment) {
+      return res.status(404).json({ error: 'Assessment not found' });
+    }
+
+    if (assessment.status !== 'APPROVED') {
+      return res.status(400).json({ error: 'Only approved assessments can be published' });
+    }
+
+    // Update assessment status to PUBLISHED
+    const updated = await prisma.assessment.update({
+      where: { id },
+      data: { status: 'PUBLISHED' },
+      include: { _count: { select: { results: true } } },
+    });
+
+    // Update all results with publishedAt timestamp
+    await prisma.result.updateMany({
+      where: { assessmentId: id },
+      data: { publishedAt: new Date() },
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Error publishing assessment:', error);
+    res.status(500).json({ error: 'Failed to publish assessment' });
+  }
+});
+
+// POST /api/admin/assessments/{id}/return-draft - Return to draft
+router.post('/assessments/:id/return-draft', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const schoolId = req.headers['x-school-id'] as string;
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    const assessment = await prisma.assessment.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!assessment) {
+      return res.status(404).json({ error: 'Assessment not found' });
+    }
+
+    if (assessment.status !== 'APPROVED') {
+      return res.status(400).json({ error: 'Only approved assessments can be returned to draft' });
+    }
+
+    const updated = await prisma.assessment.update({
+      where: { id },
+      data: { status: 'DRAFT' },
+      include: { _count: { select: { results: true } } },
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Error returning to draft:', error);
+    res.status(500).json({ error: 'Failed to return to draft' });
   }
 });
 

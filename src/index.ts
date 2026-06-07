@@ -85,6 +85,8 @@ async function loadRoutes() {
     // @ts-ignore: Runtime loader resolves the .js path for TS sources in this environment
     const { default: parentRoutes } = await import('./routes/parent.js');
     console.log('✓ Loaded parent routes');
+    const { default: dashboardRoutes } = await import('./routes/dashboard.js');
+    console.log('✓ Loaded dashboard routes');
 
     app.use('/api/admin', adminRoutes);
     app.use('/api/country', countryRoutes);
@@ -92,6 +94,7 @@ async function loadRoutes() {
     app.use('/api/trial', trialRoutes);
     app.use('/api/whatsapp', whatsappRoutes);
     app.use('/api/parent', parentRoutes);
+    app.use('/api/admin', dashboardRoutes);
     app.use('/schoolbase-admin/api', schoolbaseAdminRoutes);
     
     console.log('✓ All routes mounted successfully');
