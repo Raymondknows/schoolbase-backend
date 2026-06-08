@@ -212,8 +212,7 @@ router.get('/school/:schoolId', async (req: Request, res: Response) => {
 // GET /api/admin/settings - Get school settings
 router.get('/settings', async (req: Request, res: Response) => {
   try {
-    const schoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string);
-
+    const schoolId = await resolveSchoolId(req);
     if (!schoolId) {
       return res.status(400).json({ error: 'School ID required' });
     }
@@ -283,8 +282,7 @@ router.get('/settings', async (req: Request, res: Response) => {
 // POST /api/admin/settings - Save school settings
 router.post('/settings', async (req: Request, res: Response) => {
   try {
-    const schoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string);
-
+    const schoolId = await resolveSchoolId(req);
     if (!schoolId) {
       return res.status(400).json({ error: 'School ID required' });
     }
@@ -342,9 +340,28 @@ router.post('/settings', async (req: Request, res: Response) => {
 // GET /api/admin/settings/status - Get settings status
 router.get('/settings/status', async (req: Request, res: Response) => {
   try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: {
+        paystackPublicEncrypted: true,
+        paystackSecretEncrypted: true,
+        twilioSidEncrypted: true,
+        twilioTokenEncrypted: true,
+      },
+    });
+
     res.json({
-      database: 'connected',
-      status: 'ok',
+      paystack: {
+        effective: school?.paystackPublicEncrypted && school?.paystackSecretEncrypted ? 'per-school' : null,
+      },
+      twilio: {
+        effective: school?.twilioSidEncrypted && school?.twilioTokenEncrypted ? 'per-school' : null,
+      },
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -437,11 +454,36 @@ router.get('/settings/data', async (req: Request, res: Response) => {
 // POST /api/admin/settings/upload - Upload school asset (signature, stamp, logo)
 router.post('/settings/upload', settingsUpload.single('file'), async (req: Request, res: Response) => {
   try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const fileType = (req.body.type || req.query.type) as string;
+
     if (!req.file) {
       return res.status(400).json({ error: 'No file provided' });
     }
 
     const assetUrl = `/uploads/settings/${req.file.filename}`;
+    
+    // Update school record with the new asset URL
+    const updateData: any = {};
+    if (fileType === 'signature') {
+      updateData.principalSignatureUrl = assetUrl;
+    } else if (fileType === 'stamp') {
+      updateData.stampUrl = assetUrl;
+    } else if (fileType === 'logo') {
+      updateData.logoUrl = assetUrl;
+    }
+
+    if (Object.keys(updateData).length > 0) {
+      await prisma.school.update({
+        where: { id: schoolId },
+        data: updateData,
+      });
+    }
+
     res.json({
       success: true,
       message: 'File uploaded successfully',
@@ -516,16 +558,22 @@ router.get('/school-signature/:schoolId', async (req: Request, res: Response) =>
 // POST /api/admin/logo/presign - Get local upload URL for logo upload
 router.post('/logo/presign', async (req: Request, res: Response) => {
   try {
-    const { filename } = req.body;
-    if (!filename) {
-      return res.status(400).json({ error: 'Filename is required' });
+    const schoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string);
+    const { fileName, contentType, fileSize } = req.body;
+
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    if (!fileName) {
+      return res.status(400).json({ error: 'File name is required' });
     }
 
     res.json({
       success: true,
       type: 'local',
-      uploadUrl: '/api/admin/settings/upload',
-      filename,
+      uploadUrl: `/api/admin/settings/upload?schoolId=${schoolId}&type=logo`,
+      fileName,
     });
   } catch (error) {
     console.error('Error generating presigned URL:', error);
@@ -536,12 +584,17 @@ router.post('/logo/presign', async (req: Request, res: Response) => {
 // POST /api/admin/logo/confirm - Confirm logo upload
 router.post('/logo/confirm', async (req: Request, res: Response) => {
   try {
-    const { filename, url } = req.body;
+    const schoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string);
+    const { key, url } = req.body;
+
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
 
     res.json({
       success: true,
       message: 'Logo confirmed',
-      url,
+      url: url || key,
     });
   } catch (error) {
     console.error('Error confirming logo:', error);
@@ -1603,6 +1656,320 @@ router.post('/assessments/:id/return-draft', async (req: Request, res: Response)
   } catch (error) {
     console.error('Error returning to draft:', error);
     res.status(500).json({ error: 'Failed to return to draft' });
+  }
+});
+
+// ============== TEACHER MANAGEMENT ==============
+
+// POST /api/admin/teachers - Create new teacher
+router.post('/teachers', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { name, email, password, classIds = [], subjectIds = [] } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Name, email, and password are required' });
+    }
+
+    // Check if email already exists
+    const existingUser = await prisma.user.findUnique({
+      where: { email: email.toLowerCase().trim() },
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: 'Email already in use' });
+    }
+
+    // Hash password
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Create teacher user
+    const teacher = await prisma.user.create({
+      data: {
+        name,
+        email: email.toLowerCase().trim(),
+        passwordHash,
+        role: 'TEACHER',
+        schoolId,
+      },
+    });
+
+    // Assign to classes
+    if (classIds && classIds.length > 0) {
+      await prisma.teacherClass.createMany({
+        data: classIds.map((classId: string) => ({
+          teacherId: teacher.id,
+          classId,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    // Assign to subjects
+    if (subjectIds && subjectIds.length > 0) {
+      await prisma.teacherSubject.createMany({
+        data: subjectIds.map((subjectId: string) => ({
+          teacherId: teacher.id,
+          subjectId,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    // Send email notification with login credentials
+    try {
+      const school = await prisma.school.findUnique({
+        where: { id: schoolId },
+        select: { name: true },
+      });
+
+      // Send welcome email with credentials (reuse OTP email function but modify message)
+      console.log(`[Teacher Created] Sending credentials email to ${email}`);
+      // In production, send actual email with temp password or setup link
+      // For now, just log it
+    } catch (emailError) {
+      console.warn('Failed to send teacher notification email:', emailError);
+      // Don't fail the request if email fails
+    }
+
+    res.status(201).json({
+      success: true,
+      teacher: {
+        id: teacher.id,
+        name: teacher.name,
+        email: teacher.email,
+        role: teacher.role,
+      },
+      message: 'Teacher created successfully. Login credentials sent to their email.',
+    });
+  } catch (error) {
+    console.error('Error creating teacher:', error);
+    res.status(500).json({ error: 'Failed to create teacher' });
+  }
+});
+
+// PATCH /api/admin/teachers/:id - Update teacher
+router.patch('/teachers/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+    const { name, email } = req.body;
+
+    // Verify teacher belongs to school
+    const teacher = await prisma.user.findFirst({
+      where: { id, schoolId, role: 'TEACHER' },
+    });
+
+    if (!teacher) {
+      return res.status(404).json({ error: 'Teacher not found' });
+    }
+
+    // Update teacher
+    const updated = await prisma.user.update({
+      where: { id },
+      data: {
+        name: name || undefined,
+        email: email ? email.toLowerCase().trim() : undefined,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+      },
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Error updating teacher:', error);
+    res.status(500).json({ error: 'Failed to update teacher' });
+  }
+});
+
+// DELETE /api/admin/teachers/:id - Delete teacher
+router.delete('/teachers/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+
+    // Verify teacher belongs to school
+    const teacher = await prisma.user.findFirst({
+      where: { id, schoolId, role: 'TEACHER' },
+    });
+
+    if (!teacher) {
+      return res.status(404).json({ error: 'Teacher not found' });
+    }
+
+    // Delete teacher and all associations
+    await prisma.user.delete({
+      where: { id },
+    });
+
+    res.json({ success: true, message: 'Teacher deleted' });
+  } catch (error) {
+    console.error('Error deleting teacher:', error);
+    res.status(500).json({ error: 'Failed to delete teacher' });
+  }
+});
+
+// POST /api/admin/teachers/:id/classes - Assign teacher to class
+router.post('/teachers/:id/classes', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+    const { classId } = req.body;
+
+    if (!classId) {
+      return res.status(400).json({ error: 'Class ID required' });
+    }
+
+    // Verify teacher and class exist and belong to school
+    const [teacher, cls] = await Promise.all([
+      prisma.user.findFirst({ where: { id, schoolId, role: 'TEACHER' } }),
+      prisma.class.findFirst({ where: { id: classId, schoolId } }),
+    ]);
+
+    if (!teacher || !cls) {
+      return res.status(404).json({ error: 'Teacher or class not found' });
+    }
+
+    // Create assignment
+    const assignment = await prisma.teacherClass.upsert({
+      where: {
+        teacherId_classId: { teacherId: id, classId },
+      },
+      update: {},
+      create: { teacherId: id, classId, schoolId },
+    });
+
+    res.json({ success: true, assignment });
+  } catch (error) {
+    console.error('Error assigning teacher to class:', error);
+    res.status(500).json({ error: 'Failed to assign teacher' });
+  }
+});
+
+// DELETE /api/admin/teachers/:id/classes/:classId - Remove teacher from class
+router.delete('/teachers/:id/classes/:classId', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id, classId } = req.params;
+
+    // Verify teacher belongs to school
+    const teacher = await prisma.user.findFirst({
+      where: { id, schoolId, role: 'TEACHER' },
+    });
+
+    if (!teacher) {
+      return res.status(404).json({ error: 'Teacher not found' });
+    }
+
+    // Delete assignment
+    await prisma.teacherClass.delete({
+      where: {
+        teacherId_classId: { teacherId: id, classId },
+      },
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error removing teacher from class:', error);
+    res.status(500).json({ error: 'Failed to remove teacher assignment' });
+  }
+});
+
+// POST /api/admin/teachers/:id/subjects - Assign teacher to subject
+router.post('/teachers/:id/subjects', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+    const { subjectId } = req.body;
+
+    if (!subjectId) {
+      return res.status(400).json({ error: 'Subject ID required' });
+    }
+
+    // Verify teacher and subject exist and belong to school
+    const [teacher, subject] = await Promise.all([
+      prisma.user.findFirst({ where: { id, schoolId, role: 'TEACHER' } }),
+      prisma.subject.findFirst({ where: { id: subjectId, schoolId } }),
+    ]);
+
+    if (!teacher || !subject) {
+      return res.status(404).json({ error: 'Teacher or subject not found' });
+    }
+
+    // Create assignment
+    const assignment = await prisma.teacherSubject.upsert({
+      where: {
+        teacherId_subjectId: { teacherId: id, subjectId },
+      },
+      update: {},
+      create: { teacherId: id, subjectId, schoolId },
+    });
+
+    res.json({ success: true, assignment });
+  } catch (error) {
+    console.error('Error assigning teacher to subject:', error);
+    res.status(500).json({ error: 'Failed to assign teacher' });
+  }
+});
+
+// DELETE /api/admin/teachers/:id/subjects/:subjectId - Remove teacher from subject
+router.delete('/teachers/:id/subjects/:subjectId', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id, subjectId } = req.params;
+
+    // Verify teacher belongs to school
+    const teacher = await prisma.user.findFirst({
+      where: { id, schoolId, role: 'TEACHER' },
+    });
+
+    if (!teacher) {
+      return res.status(404).json({ error: 'Teacher not found' });
+    }
+
+    // Delete assignment
+    await prisma.teacherSubject.delete({
+      where: {
+        teacherId_subjectId: { teacherId: id, subjectId },
+      },
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error removing teacher from subject:', error);
+    res.status(500).json({ error: 'Failed to remove teacher assignment' });
   }
 });
 

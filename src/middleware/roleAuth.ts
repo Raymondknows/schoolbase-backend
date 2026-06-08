@@ -1,0 +1,79 @@
+import { Request, Response, NextFunction } from 'express';
+import { jwtVerify } from 'jose';
+
+const SECRET = new TextEncoder().encode(
+  process.env.SESSION_SECRET || 'schoolbase-dev-secret-change-me'
+);
+
+export interface AuthenticatedRequest extends Request {
+  user?: {
+    userId: string;
+    schoolId: string;
+    email: string;
+    name: string;
+    role: string;
+    iat: number;
+    exp: number;
+  };
+}
+
+// Verify JWT token and extract user data
+export async function verifyAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const token = req.cookies?.schoolbase_staff;
+    
+    if (!token) {
+      return res.status(401).json({ error: 'No authentication token' });
+    }
+
+    const { payload } = await jwtVerify(token, SECRET);
+    
+    if (!payload || typeof payload !== 'object') {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    req.user = payload as any;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+// Ensure user is a teacher
+export function requireTeacher(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  if (req.user.role !== 'TEACHER') {
+    return res.status(403).json({ error: 'Forbidden: Teacher access required' });
+  }
+
+  next();
+}
+
+// Ensure user is an admin
+export function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  if (req.user.role !== 'SCHOOL_ADMIN') {
+    return res.status(403).json({ error: 'Forbidden: Admin access required' });
+  }
+
+  next();
+}
+
+// Allow both teacher and admin
+export function requireStaff(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  if (req.user.role !== 'TEACHER' && req.user.role !== 'SCHOOL_ADMIN') {
+    return res.status(403).json({ error: 'Forbidden: Staff access required' });
+  }
+
+  next();
+}

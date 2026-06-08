@@ -87,6 +87,8 @@ async function loadRoutes() {
     console.log('✓ Loaded parent routes');
     const { default: dashboardRoutes } = await import('./routes/dashboard.js');
     console.log('✓ Loaded dashboard routes');
+    const { default: teacherRoutes } = await import('./routes/teacher.js');
+    console.log('✓ Loaded teacher routes');
 
     app.use('/api/admin', adminRoutes);
     app.use('/api/country', countryRoutes);
@@ -95,6 +97,7 @@ async function loadRoutes() {
     app.use('/api/whatsapp', whatsappRoutes);
     app.use('/api/parent', parentRoutes);
     app.use('/api/admin', dashboardRoutes);
+    app.use('/api/teacher', teacherRoutes);
     app.use('/schoolbase-admin/api', schoolbaseAdminRoutes);
     
     console.log('✓ All routes mounted successfully');
