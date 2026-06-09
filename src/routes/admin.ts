@@ -71,7 +71,8 @@ async function resolveSchoolId(req: Request) {
     return schoolId;
   }
 
-  const token = req.cookies?.schoolbase_staff;
+  // Check both platform admin token (schoolbase_staff) and school admin token (staff_session)
+  const token = req.cookies?.schoolbase_staff || req.cookies?.staff_session;
   if (token) {
     try {
       const { payload } = await jwtVerify(token, secret());
@@ -186,7 +187,35 @@ router.post('/login', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/admin/school/:schoolId - Get school data
+// GET /api/admin/school - Get logged-in admin's school data (multi-tenant safe)
+router.get('/school', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      include: {
+        partner: true,
+        enabledPhases: true,
+      },
+    });
+
+    if (!school) {
+      return res.status(404).json({ error: 'School not found' });
+    }
+
+    res.json(school);
+  } catch (error) {
+    console.error('[GET /api/admin/school] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch school', details: String(error) });
+  }
+});
+
+// GET /api/admin/school/:schoolId - Get school data by ID
 router.get('/school/:schoolId', async (req: Request, res: Response) => {
   try {
     const { schoolId } = req.params;
@@ -659,6 +688,8 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'School ID required' });
     }
 
+    console.log('[GET /api/admin/dashboard] schoolId:', schoolId);
+
     const [invoices, pupilCount, classCount, readyAssessment, recentPayments, recentPupils, recentTeachers, recentAnnouncements] =
       await Promise.all([
         prisma.invoice.findMany({
@@ -703,8 +734,10 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       ['SENT', 'PART_PAID', 'OVERDUE'].includes(i.status),
     ).length;
 
+    console.log('[GET /api/admin/dashboard] invoices.length:', invoices.length, 'outstanding:', outstanding);
+
     res.json({
-      invoices,
+      invoices: undefined,
       pupilCount,
       classCount,
       readyAssessment,
