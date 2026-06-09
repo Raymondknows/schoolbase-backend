@@ -73,14 +73,17 @@ async function resolveSchoolId(req: Request) {
 
   // Check both platform admin token (schoolbase_staff) and school admin token (staff_session)
   const token = req.cookies?.schoolbase_staff || req.cookies?.staff_session;
+  console.log('[resolveSchoolId] token:', token ? 'present' : 'missing', 'cookies:', Object.keys(req.cookies || {}));
+  
   if (token) {
     try {
       const { payload } = await jwtVerify(token, secret());
+      console.log('[resolveSchoolId] payload:', payload);
       if (payload && typeof payload === 'object' && 'schoolId' in payload) {
         return String((payload as any).schoolId);
       }
-    } catch {
-      // ignore invalid session token
+    } catch (err) {
+      console.log('[resolveSchoolId] JWT verification failed:', (err as Error).message);
     }
   }
 
@@ -737,7 +740,11 @@ router.get('/dashboard', async (req: Request, res: Response) => {
     console.log('[GET /api/admin/dashboard] invoices.length:', invoices.length, 'outstanding:', outstanding);
 
     res.json({
-      invoices: undefined,
+      invoices: invoices.map(inv => ({
+        amountDue: inv.amountDue,
+        amountPaid: inv.amountPaid,
+        status: inv.status,
+      })),
       pupilCount,
       classCount,
       readyAssessment,
