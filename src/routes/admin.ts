@@ -189,6 +189,7 @@ router.post('/login', async (req: Request, res: Response) => {
 
     res.json({ 
       success: true, 
+      token, // Include token so frontend can decode role
       role: user.role,
       userId: user.id,
       schoolId: user.schoolId,
