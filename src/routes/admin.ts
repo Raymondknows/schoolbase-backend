@@ -5,6 +5,8 @@ import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
+import { sendPasswordResetEmail } from '../services/email.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -170,7 +172,14 @@ router.post('/login', async (req: Request, res: Response) => {
       .setExpirationTime('7d')
       .sign(secret());
 
-    res.json({ success: true, token });
+    res.json({ 
+      success: true, 
+      token,
+      role: user.role,
+      userId: user.id,
+      name: user.name,
+      email: user.email
+    });
   } catch (error) {
     console.error('Admin login error:', error);
     res.status(500).json({ error: 'Login failed' });
@@ -1970,6 +1979,201 @@ router.delete('/teachers/:id/subjects/:subjectId', async (req: Request, res: Res
   } catch (error) {
     console.error('Error removing teacher from subject:', error);
     res.status(500).json({ error: 'Failed to remove teacher assignment' });
+  }
+});
+
+// GET /api/admin/academic-years - Get all academic years for school
+router.get('/academic-years', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const academicYears = await prisma.academicYear.findMany({
+      where: { schoolId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json({ academicYears });
+  } catch (error) {
+    console.error('Error fetching academic years:', error);
+    res.status(500).json({ error: 'Failed to fetch academic years' });
+  }
+});
+
+// POST /api/admin/academic-years - Create new academic year
+router.post('/academic-years', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { name, isCurrent } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Academic year name is required' });
+    }
+
+    // If setting as current, unset others
+    if (isCurrent) {
+      await prisma.academicYear.updateMany({
+        where: { schoolId },
+        data: { isCurrent: false },
+      });
+    }
+
+    const academicYear = await prisma.academicYear.create({
+      data: {
+        schoolId,
+        name,
+        isCurrent: isCurrent || false,
+      },
+    });
+
+    res.json({ success: true, academicYear });
+  } catch (error) {
+    console.error('Error creating academic year:', error);
+    res.status(500).json({ error: 'Failed to create academic year' });
+  }
+});
+
+// DELETE /api/admin/academic-years/:id - Delete academic year
+router.delete('/academic-years/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+
+    // Verify ownership
+    const academicYear = await prisma.academicYear.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!academicYear) {
+      return res.status(404).json({ error: 'Academic year not found' });
+    }
+
+    await prisma.academicYear.delete({
+      where: { id },
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting academic year:', error);
+    res.status(500).json({ error: 'Failed to delete academic year' });
+  }
+});
+
+// POST /api/admin/request-password-reset - Request password reset
+router.post('/request-password-reset', async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: String(email).trim().toLowerCase() },
+      select: { id: true, email: true, name: true },
+    });
+
+    if (!user) {
+      // Don't reveal if email exists for security
+      return res.json({ success: true, message: 'If email exists, reset link has been sent' });
+    }
+
+    // Generate reset token
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    // Save to database
+    await prisma.passwordReset.create({
+      data: {
+        userId: user.id,
+        tokenHash,
+        expiresAt,
+      },
+    });
+
+    // Send email
+    const resetLink = `${process.env.FRONTEND_URL || 'https://www.schoolbase.live'}/reset-password?token=${token}&email=${encodeURIComponent(user.email)}`;
+    await sendPasswordResetEmail(user.email, resetLink, user.name || 'User');
+
+    res.json({ success: true, message: 'If email exists, reset link has been sent' });
+  } catch (error) {
+    console.error('Error requesting password reset:', error);
+    res.status(500).json({ error: 'Failed to process password reset request' });
+  }
+});
+
+// POST /api/admin/reset-password - Reset password with token
+router.post('/reset-password', async (req: Request, res: Response) => {
+  try {
+    const { email, token, password } = req.body;
+
+    if (!email || !token || !password) {
+      return res.status(400).json({ error: 'Email, token, and password are required' });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: String(email).trim().toLowerCase() },
+      select: { id: true, email: true },
+    });
+
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or token' });
+    }
+
+    // Find valid reset token
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const resetRecord = await prisma.passwordReset.findFirst({
+      where: {
+        userId: user.id,
+        tokenHash,
+        expiresAt: { gt: new Date() },
+        usedAt: null,
+      },
+    });
+
+    if (!resetRecord) {
+      return res.status(401).json({ error: 'Invalid or expired reset token' });
+    }
+
+    // Check attempts
+    if (resetRecord.attempts > 5) {
+      return res.status(429).json({ error: 'Too many attempts. Please request a new reset link' });
+    }
+
+    // Hash new password
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Update user and mark token as used
+    await Promise.all([
+      prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash },
+      }),
+      prisma.passwordReset.update({
+        where: { id: resetRecord.id },
+        data: { usedAt: new Date() },
+      }),
+    ]);
+
+    res.json({ success: true, message: 'Password reset successful' });
+  } catch (error) {
+    console.error('Error resetting password:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
   }
 });
 

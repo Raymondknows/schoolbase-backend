@@ -121,3 +121,63 @@ export async function sendWelcomeEmail(email: string, schoolName: string, adminN
     throw error;
   }
 }
+
+export async function sendPasswordResetEmail(email: string, resetLink: string, userName: string) {
+  try {
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: 'Reset your SchoolBase password',
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+              .container { max-width: 500px; margin: 0 auto; padding: 20px; }
+              .header { background: #0A66C2; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+              .content { background: #f9fafb; padding: 30px 20px; border-radius: 0 0 8px 8px; }
+              .button { display: inline-block; background: #0A66C2; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; margin: 20px 0; font-weight: 500; }
+              .footer { margin-top: 20px; font-size: 12px; color: #666; }
+              a { color: #0A66C2; text-decoration: none; }
+              .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; margin: 20px 0; font-size: 13px; color: #856404; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1 style="margin: 0;">Password Reset</h1>
+              </div>
+              <div class="content">
+                <p>Hello ${userName},</p>
+                <p>We received a request to reset the password for your SchoolBase account.</p>
+                <p>Click the button below to create a new password:</p>
+                <center>
+                  <a href="${resetLink}" class="button">Reset Password</a>
+                </center>
+                <p style="color: #666; font-size: 13px; margin: 20px 0;">Or copy and paste this link in your browser:</p>
+                <p style="background: #f0f0f0; padding: 10px; border-radius: 4px; word-break: break-all; font-size: 12px; color: #333;">
+                  <a href="${resetLink}">${resetLink}</a>
+                </p>
+                <div class="warning">
+                  <strong>This link expires in 1 hour.</strong> If you didn't request this reset, you can safely ignore this email or reply to let us know.
+                </div>
+                <p style="color: #999; font-size: 12px; margin-top: 30px;">For security reasons, we never share your password. If you have questions, reply to this email.</p>
+              </div>
+              <div class="footer">
+                <p>&copy; 2026 SchoolBase. All rights reserved.</p>
+                <p><a href="https://schoolbase.live">schoolbase.live</a></p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    return true;
+  } catch (error) {
+    console.error('Failed to send password reset email:', error);
+    throw error;
+  }
+}
