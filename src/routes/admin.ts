@@ -2300,4 +2300,24 @@ router.get('/videos', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/admin/videos/:id - Get a specific video tutorial
+router.get('/videos/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const video = await prisma.videoTutorial.findUnique({
+      where: { id }
+    });
+
+    if (!video) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+
+    res.json({ video });
+  } catch (error) {
+    console.error('Error fetching video:', error);
+    res.status(500).json({ error: 'Failed to fetch video' });
+  }
+});
+
 export default router;
