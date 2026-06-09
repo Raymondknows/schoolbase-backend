@@ -136,7 +136,8 @@ router.post('/verify', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/admin/login - Authenticate staff / platform admin and return a session token
+// POST /api/admin/login - DEPRECATED: Use /api/auth/platform-login or /api/auth/school-login
+// This endpoint is kept for backward compatibility only
 router.post('/login', async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body ?? {};
@@ -165,6 +166,10 @@ router.post('/login', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
+    // DEPRECATED: Add validation warnings
+    console.warn(`[DEPRECATED] /api/admin/login called for ${user.role} (${email}). Use /api/auth/platform-login or /api/auth/school-login`);
+
+    // For backward compatibility, still create token
     const token = await new SignJWT({
       userId: user.id,
       schoolId: user.schoolId,
