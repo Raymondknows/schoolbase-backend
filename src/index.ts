@@ -15,12 +15,12 @@ const PORT = process.env.API_PORT || 3006;
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
-  'http://localhost:3007',
   'http://127.0.0.1:3000',
-  'http://127.0.0.1:3007',
+  'http://127.0.0.1:3001',
   'https://schoolbase.live',
   'https://www.schoolbase.live',
-  'https://*.vercel.app',  // Allow all Vercel deployments
+  'https://*.vercel.app',
+  'https://*.schoolbase.live',
   ...(process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',').map(url => url.trim()) : []),
 ];
 
@@ -32,11 +32,12 @@ const corsOptions = {
     // Check exact matches
     if (allowedOrigins.includes(origin)) return callback(null, true);
     
-    // Check wildcard pattern for Vercel
+    // Check wildcard patterns
     if (origin.endsWith('.vercel.app')) return callback(null, true);
     if (origin.endsWith('.schoolbase.live')) return callback(null, true);
     
-    callback(null, true); // Allow all for now
+    // Deny all other origins (SECURITY: changed from allow all)
+    callback(new Error('CORS not allowed'), false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],

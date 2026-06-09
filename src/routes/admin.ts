@@ -71,8 +71,8 @@ async function resolveSchoolId(req: Request) {
     return schoolId;
   }
 
-  // Check both platform admin token (schoolbase_staff) and school admin token (staff_session)
-  const token = req.cookies?.schoolbase_staff || req.cookies?.staff_session;
+  // Check unified session cookie (supports both old and new names for backward compatibility)
+  const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
   console.log('[resolveSchoolId] token:', token ? 'present' : 'missing', 'cookies:', Object.keys(req.cookies || {}));
   
   if (token) {
@@ -118,7 +118,8 @@ async function resolveSchoolId(req: Request) {
 // POST /api/admin/verify - Verify staff session from cookie
 router.post('/verify', async (req: Request, res: Response) => {
   try {
-    const token = req.cookies?.schoolbase_staff;
+    // Check for unified session cookie
+    const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
     
     if (!token) {
       return res.status(401).json({ authenticated: false });
@@ -176,11 +177,21 @@ router.post('/login', async (req: Request, res: Response) => {
       .setExpirationTime('7d')
       .sign(secret());
 
+    // Set unified httpOnly session cookie for all user types
+    res.cookie('schoolbase_session', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      path: '/',
+      domain: process.env.NODE_ENV === 'production' ? '.schoolbase.live' : undefined,
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
     res.json({ 
       success: true, 
-      token,
       role: user.role,
       userId: user.id,
+      schoolId: user.schoolId,
       name: user.name,
       email: user.email
     });
@@ -2214,6 +2225,72 @@ router.post('/reset-password', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error resetting password:', error);
     res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+// GET /api/admin/announcements - Get recent announcements for dashboard
+router.get('/announcements', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const announcements = await prisma.announcement.findMany({
+      where: { schoolId },
+      orderBy: { publishedAt: 'desc' },
+      take: 5,
+    });
+
+    res.json({ announcements });
+  } catch (error) {
+    console.error('Error fetching announcements:', error);
+    res.status(500).json({ error: 'Failed to fetch announcements' });
+  }
+});
+
+// GET /api/admin/payments/recent - Get recent payments for dashboard
+router.get('/payments/recent', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const payments = await prisma.payment.findMany({
+      where: { invoice: { schoolId } },
+      include: {
+        invoice: {
+          include: {
+            pupil: { include: { class: true } },
+          },
+        },
+      },
+      orderBy: { paidAt: 'desc' },
+      take: 5,
+    });
+
+    res.json({ payments });
+  } catch (error) {
+    console.error('Error fetching recent payments:', error);
+    res.status(500).json({ error: 'Failed to fetch recent payments' });
+  }
+});
+
+// GET /api/admin/videos - Get video tutorials from database
+router.get('/videos', async (req: Request, res: Response) => {
+  try {
+    const videos = await prisma.videoTutorial.findMany({
+      orderBy: [
+        { featured: 'desc' },
+        { createdAt: 'desc' }
+      ]
+    });
+
+    res.json({ videos });
+  } catch (error) {
+    console.error('Error fetching videos:', error);
+    res.status(500).json({ error: 'Failed to fetch videos' });
   }
 });
 

@@ -20,7 +20,8 @@ export interface AuthenticatedRequest extends Request {
 // Verify JWT token and extract user data
 export async function verifyAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
-    const token = req.cookies?.schoolbase_staff;
+    // Check unified session cookie, with backward compatibility for legacy cookies
+    const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
     
     if (!token) {
       return res.status(401).json({ error: 'No authentication token' });
