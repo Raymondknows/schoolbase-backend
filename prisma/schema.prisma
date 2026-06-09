@@ -79,6 +79,7 @@ model School {
   teacherSubjects               TeacherSubject[]
   users                         User[]
   supportRequests               SupportRequest[]
+  platformSupportRequests       PlatformSupportRequest[]
   auditLogs                     PlatformAuditLog[]
   emailLogs                     EmailLog[]
 
@@ -298,6 +299,36 @@ model PlatformAuditLog {
 model PlatformSetting {
   key   String @id
   value String @db.LongText
+}
+
+model PlatformSupportRequest {
+  id        String                      @id @default(cuid())
+  schoolId  String?
+  subject   String
+  message   String                      @db.LongText
+  status    SupportStatus               @default(OPEN)
+  priority  SupportPriority             @default(MEDIUM)
+  response  String?                     @db.LongText
+  createdAt DateTime                    @default(now())
+  updatedAt DateTime                    @updatedAt
+  school    School?                     @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  messages  PlatformSupportMessage[]
+
+  @@index([schoolId], map: "PlatformSupportRequest_schoolId_fkey")
+}
+
+model PlatformSupportMessage {
+  id               String                   @id @default(cuid())
+  requestId        String
+  senderRole       SupportMessageSenderRole @default(SCHOOL)
+  senderName       String
+  senderEmail      String?
+  body             String                   @db.LongText
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  supportRequest   PlatformSupportRequest   @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId], map: "PlatformSupportMessage_requestId_fkey")
 }
 
 model Subject {

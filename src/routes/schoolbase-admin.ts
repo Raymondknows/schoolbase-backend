@@ -146,6 +146,48 @@ router.post('/impersonate', async (req: Request, res: Response) => {
   }
 });
 
+// GET /schoolbase-admin/api/support - Get all platform support requests
+router.get('/support', async (req: Request, res: Response) => {
+  try {
+    const supportRequests = await (prisma as any).platformSupportRequest.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { 
+        messages: { orderBy: { createdAt: 'asc' } },
+        school: { select: { id: true, name: true, country: true } }
+      } as any,
+    });
+
+    res.json({ 
+      supportRequests: (supportRequests as any[]).map((request) => ({
+        id: request.id,
+        subject: request.subject,
+        message: request.message,
+        response: request.response,
+        status: request.status,
+        priority: request.priority,
+        createdAt: request.createdAt.toISOString(),
+        updatedAt: request.updatedAt.toISOString(),
+        messages: (request.messages || []).map((message: any) => ({
+          id: message.id,
+          senderRole: message.senderRole,
+          senderName: message.senderName,
+          senderEmail: message.senderEmail,
+          body: message.body,
+          createdAt: message.createdAt.toISOString(),
+        })),
+        school: request.school ? {
+          id: request.school.id,
+          name: request.school.name,
+          country: request.school.country,
+        } : null,
+      })),
+    });
+  } catch (error) {
+    console.error('Error fetching support requests:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to fetch support requests' });
+  }
+});
+
 // PATCH /schoolbase-admin/api/support/reply - Send support replies
 router.patch('/support/reply', async (req: Request, res: Response) => {
   const session = await requirePlatformAdminSession(req, res);
