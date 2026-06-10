@@ -2320,4 +2320,307 @@ router.get('/videos/:id', async (req: Request, res: Response) => {
   }
 });
 
+// ============== CLASSES MANAGEMENT ==============
+
+// POST /api/admin/classes - Create new class
+router.post('/classes', async (req: Request, res: Response) => {
+  try {
+    const { name, phase, arm } = req.body;
+    const schoolId = await resolveSchoolId(req);
+
+    if (!schoolId || !name || !phase) {
+      return res.status(400).json({ error: 'Missing required fields: name, phase' });
+    }
+
+    if (!['EARLY_YEARS', 'PRIMARY', 'SECONDARY'].includes(phase)) {
+      return res.status(400).json({ error: 'Invalid phase. Must be EARLY_YEARS, PRIMARY, or SECONDARY' });
+    }
+
+    const newClass = await prisma.class.create({
+      data: {
+        schoolId,
+        name,
+        phase,
+        arm: arm || null,
+      },
+      include: {
+        _count: {
+          select: { pupils: true, subjectClasses: true }
+        }
+      }
+    });
+
+    res.status(201).json(newClass);
+  } catch (error) {
+    console.error('Error creating class:', error);
+    res.status(500).json({ error: 'Failed to create class' });
+  }
+});
+
+// PATCH /api/admin/classes/:id - Update class
+router.patch('/classes/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name, phase, arm } = req.body;
+    const schoolId = await resolveSchoolId(req);
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    // Verify class belongs to school
+    const classItem = await prisma.class.findFirst({
+      where: { id, schoolId }
+    });
+
+    if (!classItem) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    const updateData: any = {};
+    if (name !== undefined) updateData.name = name;
+    if (phase !== undefined) {
+      if (!['EARLY_YEARS', 'PRIMARY', 'SECONDARY'].includes(phase)) {
+        return res.status(400).json({ error: 'Invalid phase' });
+      }
+      updateData.phase = phase;
+    }
+    if (arm !== undefined) updateData.arm = arm || null;
+
+    const updated = await prisma.class.update({
+      where: { id },
+      data: updateData,
+      include: {
+        _count: {
+          select: { pupils: true, subjectClasses: true }
+        }
+      }
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Error updating class:', error);
+    res.status(500).json({ error: 'Failed to update class' });
+  }
+});
+
+// DELETE /api/admin/classes/:id - Delete class
+router.delete('/classes/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const schoolId = await resolveSchoolId(req);
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    // Verify class belongs to school
+    const classItem = await prisma.class.findFirst({
+      where: { id, schoolId },
+      include: { _count: { select: { pupils: true } } }
+    });
+
+    if (!classItem) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    if ((classItem as any)._count.pupils > 0) {
+      return res.status(400).json({ error: 'Cannot delete class with students. Please remove all students first.' });
+    }
+
+    await prisma.class.delete({ where: { id } });
+
+    res.json({ success: true, message: 'Class deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting class:', error);
+    res.status(500).json({ error: 'Failed to delete class' });
+  }
+});
+
+// ============== SUBJECTS MANAGEMENT ==============
+
+// POST /api/admin/subjects - Create new subject
+router.post('/subjects', async (req: Request, res: Response) => {
+  try {
+    const { name } = req.body;
+    const schoolId = await resolveSchoolId(req);
+
+    if (!schoolId || !name) {
+      return res.status(400).json({ error: 'Missing required fields: name' });
+    }
+
+    // Check if subject with same name already exists for this school
+    const existing = await prisma.subject.findFirst({
+      where: { schoolId, name }
+    });
+
+    if (existing) {
+      return res.status(400).json({ error: 'Subject with this name already exists in your school' });
+    }
+
+    const newSubject = await prisma.subject.create({
+      data: {
+        schoolId,
+        name,
+      }
+    });
+
+    res.status(201).json(newSubject);
+  } catch (error) {
+    console.error('Error creating subject:', error);
+    res.status(500).json({ error: 'Failed to create subject' });
+  }
+});
+
+// PATCH /api/admin/subjects/:id - Update subject
+router.patch('/subjects/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+    const schoolId = await resolveSchoolId(req);
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    // Verify subject belongs to school
+    const subject = await prisma.subject.findFirst({
+      where: { id, schoolId }
+    });
+
+    if (!subject) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    if (name) {
+      // Check if new name conflicts with existing subject
+      const existing = await prisma.subject.findFirst({
+        where: { schoolId, name, NOT: { id } }
+      });
+
+      if (existing) {
+        return res.status(400).json({ error: 'Subject with this name already exists' });
+      }
+    }
+
+    const updated = await prisma.subject.update({
+      where: { id },
+      data: { name: name || undefined }
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Error updating subject:', error);
+    res.status(500).json({ error: 'Failed to update subject' });
+  }
+});
+
+// DELETE /api/admin/subjects/:id - Delete subject
+router.delete('/subjects/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const schoolId = await resolveSchoolId(req);
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    // Verify subject belongs to school
+    const subject = await prisma.subject.findFirst({
+      where: { id, schoolId }
+    });
+
+    if (!subject) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    // Delete all associations before deleting subject
+    await prisma.subjectClass.deleteMany({ where: { subjectId: id } });
+    await prisma.teacherSubject.deleteMany({ where: { subjectId: id } });
+
+    await prisma.subject.delete({ where: { id } });
+
+    res.json({ success: true, message: 'Subject deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting subject:', error);
+    res.status(500).json({ error: 'Failed to delete subject' });
+  }
+});
+
+// POST /api/admin/class-subjects/:classId/:subjectId - Assign subject to class
+router.post('/class-subjects/:classId/:subjectId', async (req: Request, res: Response) => {
+  try {
+    const { classId, subjectId } = req.params;
+    const schoolId = await resolveSchoolId(req);
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    // Verify both class and subject belong to school
+    const [classItem, subject] = await Promise.all([
+      prisma.class.findFirst({ where: { id: classId, schoolId } }),
+      prisma.subject.findFirst({ where: { id: subjectId, schoolId } })
+    ]);
+
+    if (!classItem) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    if (!subject) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    // Check if assignment already exists
+    const existing = await prisma.subjectClass.findFirst({
+      where: { classId, subjectId }
+    });
+
+    if (existing) {
+      return res.status(400).json({ error: 'Subject already assigned to this class' });
+    }
+
+    const assignment = await prisma.subjectClass.create({
+      data: {
+        schoolId,
+        classId,
+        subjectId,
+      },
+      include: { class: true, subject: true }
+    });
+
+    res.status(201).json(assignment);
+  } catch (error) {
+    console.error('Error assigning subject to class:', error);
+    res.status(500).json({ error: 'Failed to assign subject' });
+  }
+});
+
+// DELETE /api/admin/class-subjects/:classId/:subjectId - Remove subject from class
+router.delete('/class-subjects/:classId/:subjectId', async (req: Request, res: Response) => {
+  try {
+    const { classId, subjectId } = req.params;
+    const schoolId = await resolveSchoolId(req);
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    const assignment = await prisma.subjectClass.findFirst({
+      where: { classId, subjectId, schoolId }
+    });
+
+    if (!assignment) {
+      return res.status(404).json({ error: 'Subject assignment not found' });
+    }
+
+    await prisma.subjectClass.delete({ where: { id: assignment.id } });
+
+    res.json({ success: true, message: 'Subject removed from class' });
+  } catch (error) {
+    console.error('Error removing subject from class:', error);
+    res.status(500).json({ error: 'Failed to remove subject' });
+  }
+});
+
 export default router;
