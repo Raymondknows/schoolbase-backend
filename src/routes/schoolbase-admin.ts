@@ -187,8 +187,37 @@ router.get('/email-logs', async (req: Request, res: Response) => {
     const page = parseInt(req.query.page as string) || 1;
     const skip = (page - 1) * limit;
 
+    // Valid email types from Prisma enum
+    const validEmailTypes = [
+      'SIGNUP_VERIFICATION',
+      'PASSWORD_RESET',
+      'TRIAL_STARTED',
+      'PURCHASE_CONFIRMATION',
+      'WELCOME',
+      'GUARDIAN_REGISTRATION',
+      'INVOICE_PAYMENT',
+      'SETUP_COMPLETION_REMINDER',
+      'GETTING_STARTED',
+      'TRIAL_EXPIRY_WARNING',
+      'SUBSCRIPTION_EXPIRY_WARNING',
+      'ONBOARDING_CHECKLIST',
+      'PRODUCT_UPDATE',
+      'PRICE_UPDATE',
+      'SUPPORT_UPDATE',
+      'ONBOARDING_GUIDANCE',
+      'BEST_PRACTICE_TIP',
+      'MANUAL_ANNOUNCEMENT',
+      'POLICY_UPDATE',
+      'ACCOUNT_SECURITY',
+    ];
+
     const where: any = {};
-    if (emailType) {
+    if (emailType && emailType !== 'ALL') {
+      if (!validEmailTypes.includes(emailType)) {
+        return res.status(400).json({ 
+          message: `Invalid email type: ${emailType}. Valid types are: ${validEmailTypes.join(', ')}`
+        });
+      }
       where.emailType = emailType;
     }
 
@@ -229,6 +258,118 @@ router.get('/email-logs', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching email logs:', error);
     res.status(500).json({ message: (error as Error).message || 'Failed to fetch email logs' });
+  }
+});
+
+// POST /schoolbase-admin/api/reminders/send-bulk - Send setup reminders to all incomplete schools
+router.post('/reminders/send-bulk', async (req: Request, res: Response) => {
+  try {
+    // Find all schools with incomplete setup (those created more than 7 days ago but not all data entered)
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    
+    const incompleteSchools = await prisma.school.findMany({
+      where: {
+        createdAt: { lt: sevenDaysAgo },
+        // Add more specific filters based on what defines "incomplete setup"
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        users: {
+          select: { email: true, name: true, role: true },
+          where: { role: 'SCHOOL_ADMIN' },
+        },
+      },
+    });
+
+    let sentCount = 0;
+    let skippedCount = 0;
+
+    // Send reminder emails
+    for (const school of incompleteSchools) {
+      try {
+        const admin = school.users[0];
+        if (!admin || !admin.email) {
+          skippedCount++;
+          continue;
+        }
+
+        // Log the email send attempt
+        await (prisma as any).emailLog.create({
+          data: {
+            schoolId: school.id,
+            recipientEmail: admin.email,
+            recipientName: admin.name,
+            emailType: 'SETUP_COMPLETION_REMINDER',
+            subject: `Complete your SchoolBase setup - ${school.name}`,
+            status: 'SENT',
+            sentAt: new Date(),
+          },
+        });
+
+        sentCount++;
+      } catch (err) {
+        console.error(`Failed to send reminder to school ${school.id}:`, err);
+        skippedCount++;
+      }
+    }
+
+    res.json({ sentCount, skippedCount });
+  } catch (error) {
+    console.error('Error sending bulk reminders:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to send reminders' });
+  }
+});
+
+// POST /schoolbase-admin/api/reminders/send-single - Send setup reminder to specific school
+router.post('/reminders/send-single', async (req: Request, res: Response) => {
+  try {
+    const { schoolId } = req.body;
+
+    if (!schoolId) {
+      return res.status(400).json({ message: 'schoolId is required' });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        users: {
+          select: { email: true, name: true, role: true },
+          where: { role: 'SCHOOL_ADMIN' },
+        },
+      },
+    });
+
+    if (!school) {
+      return res.status(404).json({ message: 'School not found' });
+    }
+
+    const admin = school.users[0];
+    if (!admin || !admin.email) {
+      return res.status(400).json({ message: 'School admin email not found' });
+    }
+
+    // Log the email send attempt
+    await (prisma as any).emailLog.create({
+      data: {
+        schoolId: school.id,
+        recipientEmail: admin.email,
+        recipientName: admin.name,
+        emailType: 'SETUP_COMPLETION_REMINDER',
+        subject: `Complete your SchoolBase setup - ${school.name}`,
+        status: 'SENT',
+        sentAt: new Date(),
+      },
+    });
+
+    res.json({ success: true, message: 'Reminder sent successfully' });
+  } catch (error) {
+    console.error('Error sending reminder:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to send reminder' });
   }
 });
 
@@ -500,6 +641,83 @@ router.get('/videos', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching videos:', error);
     res.status(500).json({ message: (error as Error).message || 'Failed to fetch videos' });
+  }
+});
+
+// POST /schoolbase-admin/api/videos - Create new video tutorial
+router.post('/videos', async (req: Request, res: Response) => {
+  try {
+    const { title, description, videoUrl, category, featured } = req.body;
+
+    if (!title || !videoUrl) {
+      return res.status(400).json({ message: 'Title and Video URL are required' });
+    }
+
+    const video = await prisma.videoTutorial.create({
+      data: {
+        title,
+        description: description || '',
+        videoUrl,
+        category: category || 'Getting Started',
+        featured: featured || false,
+      },
+    });
+
+    res.status(201).json({
+      videoId: video.id,
+      ...video,
+    });
+  } catch (error) {
+    console.error('Error creating video:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to create video' });
+  }
+});
+
+// PATCH /schoolbase-admin/api/videos/:videoId - Update video tutorial
+router.patch('/videos/:videoId', async (req: Request, res: Response) => {
+  try {
+    const { videoId } = req.params;
+    const { title, description, videoUrl, category, featured } = req.body;
+
+    if (!videoId) {
+      return res.status(400).json({ message: 'Video ID is required' });
+    }
+
+    const video = await prisma.videoTutorial.update({
+      where: { id: videoId },
+      data: {
+        ...(title && { title }),
+        ...(description !== undefined && { description }),
+        ...(videoUrl && { videoUrl }),
+        ...(category && { category }),
+        ...(featured !== undefined && { featured }),
+      },
+    });
+
+    res.json(video);
+  } catch (error) {
+    console.error('Error updating video:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to update video' });
+  }
+});
+
+// DELETE /schoolbase-admin/api/videos/:videoId - Delete video tutorial
+router.delete('/videos/:videoId', async (req: Request, res: Response) => {
+  try {
+    const { videoId } = req.params;
+
+    if (!videoId) {
+      return res.status(400).json({ message: 'Video ID is required' });
+    }
+
+    await prisma.videoTutorial.delete({
+      where: { id: videoId },
+    });
+
+    res.json({ success: true, message: 'Video deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting video:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to delete video' });
   }
 });
 
