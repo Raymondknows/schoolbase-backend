@@ -198,19 +198,54 @@ router.get('/subjects', async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// GET /api/teacher/assessments - Get assessments for teacher's school
+// GET /api/teacher/assessments - Get assessments for teacher's assigned classes
 router.get('/assessments', async (req: AuthenticatedRequest, res) => {
   try {
-    const { schoolId } = req.user!;
+    const { userId, schoolId } = req.user!;
 
+    // Get teacher's assigned classes
+    const teacherClasses = await prisma.teacherClass.findMany({
+      where: { teacherId: userId },
+      include: {
+        class: {
+          select: {
+            phase: true,
+          },
+        },
+      },
+    });
+
+    // Get unique phases from assigned classes
+    const phases = Array.from(new Set(teacherClasses.map((tc) => tc.class.phase)));
+
+    if (phases.length === 0) {
+      // Teacher has no assigned classes
+      return res.json({ assessments: [] });
+    }
+
+    // Get assessments matching teacher's class phases
     const assessments = await prisma.assessment.findMany({
-      where: { schoolId },
+      where: {
+        schoolId,
+        phase: { in: phases },
+      },
       select: {
         id: true,
         name: true,
         phase: true,
         status: true,
         createdAt: true,
+        term: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        _count: {
+          select: {
+            results: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take: 50,
@@ -226,8 +261,22 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
 // GET /api/teacher/assessments/:assessmentId - Get assessment with results
 router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) => {
   try {
-    const { schoolId } = req.user!;
+    const { userId, schoolId } = req.user!;
     const { assessmentId } = req.params;
+
+    // Verify teacher is assigned to a class with this assessment's phase
+    const teacherClasses = await prisma.teacherClass.findMany({
+      where: { teacherId: userId },
+      include: {
+        class: {
+          select: {
+            phase: true,
+          },
+        },
+      },
+    });
+
+    const phases = Array.from(new Set(teacherClasses.map((tc) => tc.class.phase)));
 
     const assessment = await prisma.assessment.findUnique({
       where: { id: assessmentId },
@@ -251,6 +300,11 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
+    // Check if teacher is authorized to view this assessment (phase must match)
+    if (!phases.includes(assessment.phase)) {
+      return res.status(403).json({ error: 'Not authorized to view this assessment' });
+    }
+
     res.json({
       assessment: {
         id: assessment.id,
@@ -272,6 +326,142 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
     });
   } catch (error: any) {
     console.error('Assessment error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/teacher/classes/:classId/assessments - Get assessments for a specific class assigned to teacher
+router.get('/classes/:classId/assessments', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { userId, schoolId } = req.user!;
+    const { classId } = req.params;
+
+    // Verify teacher is assigned to this class
+    const assignment = await prisma.teacherClass.findUnique({
+      where: {
+        teacherId_classId: {
+          teacherId: userId,
+          classId,
+        },
+      },
+      include: {
+        class: true,
+      },
+    });
+
+    if (!assignment) {
+      return res.status(403).json({ error: 'Unauthorized: Not assigned to this class' });
+    }
+
+    // Get current academic year and term
+    const currentTerm = await prisma.term.findFirst({
+      where: {
+        academicYear: {
+          schoolId,
+          isCurrent: true,
+        },
+      },
+    });
+
+    if (!currentTerm) {
+      return res.json({ assessments: [] });
+    }
+
+    // Get assessments for this class's phase and current term
+    const assessments = await prisma.assessment.findMany({
+      where: {
+        schoolId,
+        phase: assignment.class.phase,
+        termId: currentTerm.id,
+        status: { in: ['APPROVED', 'PUBLISHED'] }, // Only show approved/published assessments
+      },
+      select: {
+        id: true,
+        name: true,
+        phase: true,
+        status: true,
+        createdAt: true,
+        _count: {
+          select: {
+            results: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json({ 
+      assessments: assessments.map((a) => ({
+        id: a.id,
+        title: a.name,
+        type: a.phase,
+        status: a.status,
+        createdAt: a.createdAt,
+        resultsCount: a._count.results,
+      })),
+    });
+  } catch (error: any) {
+    console.error('Class assessments error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/teacher/results/:classId - Get existing results for a class
+router.get('/results/:classId', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { userId, schoolId } = req.user!;
+    const { classId } = req.params;
+
+    // Verify teacher is assigned to this class
+    const assignment = await prisma.teacherClass.findUnique({
+      where: {
+        teacherId_classId: {
+          teacherId: userId,
+          classId,
+        },
+      },
+      include: {
+        class: true,
+      },
+    });
+
+    if (!assignment) {
+      return res.status(403).json({ error: 'Unauthorized: Not assigned to this class' });
+    }
+
+    // Get all results for this class's assessments
+    const results = await prisma.result.findMany({
+      where: {
+        assessment: {
+          schoolId,
+          phase: assignment.class.phase,
+        },
+      },
+      include: {
+        assessment: {
+          select: {
+            id: true,
+            termId: true,
+          },
+        },
+      },
+    });
+
+    res.json({ 
+      results: results.map((r) => ({
+        id: r.id,
+        studentId: r.pupilId,
+        assessmentId: r.assessmentId,
+        caScore: r.caScore,
+        testScore: r.testScore,
+        examScore: r.examScore,
+        totalScore: r.totalScore,
+        grade: r.grade,
+        score: r.totalScore, // Also include for compatibility
+      })),
+    });
+  } catch (error: any) {
+    console.error('Results error:', error);
     res.status(500).json({ error: error.message });
   }
 });
