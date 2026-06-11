@@ -181,3 +181,164 @@ export async function sendPasswordResetEmail(email: string, resetLink: string, u
     throw error;
   }
 }
+
+export async function sendFeeReminderEmail(
+  email: string,
+  guardianName: string,
+  pupilName: string,
+  className: string,
+  amount: string,
+  outstanding: string,
+  schoolName: string,
+) {
+  try {
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: `Payment Reminder: ${pupilName}'s School Fees`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+              .container { max-width: 500px; margin: 0 auto; padding: 20px; }
+              .header { background: #0A66C2; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+              .content { background: #f9fafb; padding: 30px 20px; border-radius: 0 0 8px 8px; }
+              .amount-box { background: white; border-left: 4px solid #dc2626; padding: 15px; margin: 20px 0; border-radius: 4px; }
+              .amount-box strong { display: block; color: #dc2626; font-size: 18px; margin: 10px 0; }
+              .footer { margin-top: 20px; font-size: 12px; color: #666; }
+              a { color: #0A66C2; text-decoration: none; }
+              .warning { background: #fef3c7; border: 1px solid #fcd34d; padding: 10px; border-radius: 4px; margin: 15px 0; color: #92400e; font-size: 13px; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1 style="margin: 0;">${schoolName}</h1>
+                <p style="margin: 5px 0 0 0; font-size: 14px;">Payment Reminder</p>
+              </div>
+              <div class="content">
+                <p>Dear ${guardianName},</p>
+                <p>This is a friendly reminder regarding the outstanding school fee payment for <strong>${pupilName}</strong> in <strong>${className}</strong>.</p>
+                
+                <div class="amount-box">
+                  <span>Amount Due:</span>
+                  <strong>${amount}</strong>
+                  <span style="font-size: 12px; color: #666; margin-top: 5px; display: block;">Outstanding Balance: ${outstanding}</span>
+                </div>
+
+                <p>We kindly request you to process this payment at your earliest convenience to avoid any disruptions to your child's education.</p>
+
+                <div class="warning">
+                  <strong>Payment Methods:</strong><br>
+                  Please contact the school office for available payment options and bank details.
+                </div>
+
+                <p style="color: #666; font-size: 14px; margin-top: 20px;">
+                  If you have already made this payment, please disregard this reminder and accept our thanks. If you have any questions or concerns regarding this invoice, please feel free to contact the school office.
+                </p>
+
+                <p style="margin-top: 30px;">Best regards,<br><strong>${schoolName} Management</strong></p>
+              </div>
+              <div class="footer">
+                <p>&copy; 2026 SchoolBase. All rights reserved.</p>
+                <p><a href="https://schoolbase.live">schoolbase.live</a></p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    console.log('Fee reminder email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('Failed to send fee reminder email:', error);
+    throw error;
+  }
+}
+
+export async function sendAttendanceNotificationEmail(
+  email: string,
+  guardianName: string,
+  pupilName: string,
+  status: string,
+  date: string,
+  schoolName: string,
+  customMessage?: string,
+) {
+  try {
+    const statusBgColor = status === 'ABSENT' ? '#dc2626' : status === 'LATE' ? '#ea580c' : '#16a34a';
+    const statusLabel = status === 'PRESENT' ? 'Present' : status === 'ABSENT' ? 'Absent' : 'Late';
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: `Attendance Update: ${pupilName}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+              .container { max-width: 500px; margin: 0 auto; padding: 20px; }
+              .header { background: #0A66C2; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+              .content { background: #f9fafb; padding: 30px 20px; border-radius: 0 0 8px 8px; }
+              .status-badge { 
+                background: ${statusBgColor}; 
+                color: white; 
+                display: inline-block; 
+                padding: 8px 16px; 
+                border-radius: 4px; 
+                font-weight: bold; 
+                margin: 15px 0;
+              }
+              .info-box { background: white; border-left: 4px solid #0A66C2; padding: 15px; margin: 15px 0; border-radius: 4px; }
+              .footer { margin-top: 20px; font-size: 12px; color: #666; }
+              a { color: #0A66C2; text-decoration: none; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1 style="margin: 0;">${schoolName}</h1>
+                <p style="margin: 5px 0 0 0; font-size: 14px;">Attendance Notification</p>
+              </div>
+              <div class="content">
+                <p>Dear ${guardianName},</p>
+                
+                <div class="info-box">
+                  <p style="margin: 0 0 10px 0;"><strong>Student:</strong> ${pupilName}</p>
+                  <p style="margin: 0 0 10px 0;"><strong>Date:</strong> ${date}</p>
+                  <p style="margin: 0;"><strong>Status:</strong></p>
+                  <div class="status-badge">${statusLabel}</div>
+                </div>
+
+                ${customMessage ? `<p style="background: #f3f4f6; padding: 15px; border-radius: 4px; margin: 15px 0;">${customMessage}</p>` : ''}
+
+                <p style="color: #666; font-size: 14px; margin-top: 20px;">
+                  This is an automated attendance notification from ${schoolName}. If you have any questions regarding your child's attendance, please contact the school office.
+                </p>
+
+                <p style="margin-top: 30px;">Best regards,<br><strong>${schoolName} Management</strong></p>
+              </div>
+              <div class="footer">
+                <p>&copy; 2026 SchoolBase. All rights reserved.</p>
+                <p><a href="https://schoolbase.live">schoolbase.live</a></p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    console.log('Attendance notification email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('Failed to send attendance notification email:', error);
+    throw error;
+  }
+}

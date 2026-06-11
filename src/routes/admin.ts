@@ -6,7 +6,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { sendPasswordResetEmail } from '../services/email.js';
+import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail } from '../services/email.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -842,6 +842,664 @@ router.get('/fees/data', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/admin/fees/schedules - Get all fee schedules for school
+router.get('/fees/schedules', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const feeSchedules = await prisma.feeSchedule.findMany({
+      where: { schoolId },
+      include: {
+        term: { include: { academicYear: true } },
+        class: true,
+      },
+      orderBy: [{ createdAt: 'desc' }],
+    });
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { currency: true },
+    });
+
+    const terms = await prisma.term.findMany({
+      where: { academicYear: { schoolId } },
+      include: { academicYear: true },
+      orderBy: [{ academicYear: { createdAt: 'desc' } }, { sortOrder: 'asc' }],
+    });
+
+    const classes = await prisma.class.findMany({
+      where: { schoolId },
+      select: { id: true, name: true, arm: true, phase: true },
+      orderBy: { name: 'asc' },
+    });
+
+    res.json({
+      feeSchedules,
+      currency: school?.currency || 'NGN',
+      terms,
+      classes,
+    });
+  } catch (error) {
+    console.error('Error fetching fee schedules:', error);
+    res.status(500).json({ error: 'Failed to fetch fee schedules' });
+  }
+});
+
+// POST /api/admin/fees/schedules - Create fee schedule
+router.post('/fees/schedules', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { termId, classId, name, amount } = req.body;
+
+    if (!termId || !name || amount === undefined) {
+      return res.status(400).json({
+        error: 'Missing required fields: termId, name, amount',
+      });
+    }
+
+    // Verify term belongs to school
+    const term = await prisma.term.findFirst({
+      where: { id: termId, academicYear: { schoolId } },
+    });
+
+    if (!term) {
+      return res.status(404).json({ error: 'Term not found' });
+    }
+
+    // Verify class belongs to school if provided
+    if (classId) {
+      const classExists = await prisma.class.findFirst({
+        where: { id: classId, schoolId },
+      });
+
+      if (!classExists) {
+        return res.status(404).json({ error: 'Class not found' });
+      }
+    }
+
+    const feeSchedule = await prisma.feeSchedule.create({
+      data: {
+        schoolId,
+        termId,
+        classId: classId || null,
+        name,
+        amount: Math.round(parseFloat(amount) * 100), // Convert to cents
+      },
+      include: {
+        term: { include: { academicYear: true } },
+        class: true,
+      },
+    });
+
+    res.json({ success: true, feeSchedule });
+  } catch (error) {
+    console.error('Error creating fee schedule:', error);
+    res.status(500).json({ error: 'Failed to create fee schedule' });
+  }
+});
+
+// PATCH /api/admin/fees/schedules/:id - Update fee schedule
+router.patch('/fees/schedules/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+    const { termId, classId, name, amount } = req.body;
+
+    // Verify fee schedule belongs to school
+    const feeSchedule = await prisma.feeSchedule.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!feeSchedule) {
+      return res.status(404).json({ error: 'Fee schedule not found' });
+    }
+
+    const updateData: any = {};
+
+    if (name !== undefined) updateData.name = name;
+
+    if (amount !== undefined) {
+      updateData.amount = Math.round(parseFloat(amount) * 100); // Convert to cents
+    }
+
+    if (termId !== undefined) {
+      // Verify term belongs to school
+      const term = await prisma.term.findFirst({
+        where: { id: termId, academicYear: { schoolId } },
+      });
+
+      if (!term) {
+        return res.status(404).json({ error: 'Term not found' });
+      }
+
+      updateData.termId = termId;
+    }
+
+    if (classId !== undefined) {
+      if (classId) {
+        // Verify class belongs to school
+        const classExists = await prisma.class.findFirst({
+          where: { id: classId, schoolId },
+        });
+
+        if (!classExists) {
+          return res.status(404).json({ error: 'Class not found' });
+        }
+      }
+
+      updateData.classId = classId || null;
+    }
+
+    const updated = await prisma.feeSchedule.update({
+      where: { id },
+      data: updateData,
+      include: {
+        term: { include: { academicYear: true } },
+        class: true,
+      },
+    });
+
+    res.json({ success: true, feeSchedule: updated });
+  } catch (error) {
+    console.error('Error updating fee schedule:', error);
+    res.status(500).json({ error: 'Failed to update fee schedule' });
+  }
+});
+
+// DELETE /api/admin/fees/schedules/:id - Delete fee schedule
+router.delete('/fees/schedules/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+
+    // Verify fee schedule belongs to school
+    const feeSchedule = await prisma.feeSchedule.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!feeSchedule) {
+      return res.status(404).json({ error: 'Fee schedule not found' });
+    }
+
+    // Check if schedule has invoices
+    const invoiceCount = await prisma.invoice.count({
+      where: { feeScheduleId: id },
+    });
+
+    if (invoiceCount > 0) {
+      return res.status(400).json({
+        error: `Cannot delete fee schedule with ${invoiceCount} invoice(s). Delete invoices first.`,
+      });
+    }
+
+    await prisma.feeSchedule.delete({ where: { id } });
+
+    res.json({ success: true, message: 'Fee schedule deleted' });
+  } catch (error) {
+    console.error('Error deleting fee schedule:', error);
+    res.status(500).json({ error: 'Failed to delete fee schedule' });
+  }
+});
+
+// POST /api/admin/fees/invoices/issue-bills - Create invoices for a term
+router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { termId } = req.body;
+    if (!termId) {
+      return res.status(400).json({ error: 'Term ID required' });
+    }
+
+    // Get all fee schedules for this term
+    const feeSchedules = await prisma.feeSchedule.findMany({
+      where: { termId, schoolId },
+      include: { class: true },
+    });
+
+    if (feeSchedules.length === 0) {
+      return res.status(400).json({ error: 'No fee schedules found for this term' });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { name: true },
+    });
+
+    let createdCount = 0;
+    let notificationsCount = 0;
+    const errors: string[] = [];
+
+    // For each fee schedule, create invoices for eligible pupils
+    for (const schedule of feeSchedules) {
+      let eligiblePupils: any[];
+
+      if (schedule.classId) {
+        // Schedule is for specific class
+        eligiblePupils = await prisma.pupil.findMany({
+          where: { classId: schedule.classId, isActive: true },
+          include: { guardians: { include: { guardian: true } } },
+        });
+      } else {
+        // Schedule is for all pupils in school
+        eligiblePupils = await prisma.pupil.findMany({
+          where: { schoolId, isActive: true },
+          include: { guardians: { include: { guardian: true } } },
+        });
+      }
+
+      // Create invoices for each pupil (skip if already exists)
+      for (const pupil of eligiblePupils) {
+        try {
+          // Check if invoice already exists
+          const existingInvoice = await prisma.invoice.findFirst({
+            where: {
+              pupilId: pupil.id,
+              feeScheduleId: schedule.id,
+            },
+          });
+
+          if (existingInvoice) {
+            continue; // Skip if already exists
+          }
+
+          // Generate unique invoice number
+          const invoiceNo = `INV-${Date.now()}-${Math.random().toString(36).substring(7).toUpperCase()}`;
+
+          // Create invoice
+          const invoice = await prisma.invoice.create({
+            data: {
+              schoolId,
+              pupilId: pupil.id,
+              feeScheduleId: schedule.id,
+              invoiceNo,
+              amountDue: schedule.amount,
+              status: 'SENT', // Mark as sent when created
+              dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+            },
+          });
+
+          createdCount++;
+
+          // Send notifications to guardians via both channels
+          const pupilName = `${pupil.firstName} ${pupil.lastName}`;
+          const className = pupil.class?.name || 'Unknown Class';
+          const amount = (schedule.amount / 100).toFixed(2);
+
+          for (const guardianPupil of pupil.guardians) {
+            const guardian = guardianPupil.guardian;
+            const message = `Dear ${guardian.firstName}, this is to inform you that an invoice for ${school?.name || 'School'} fees has been issued for ${pupilName} (${className}). Amount: NGN ${amount}. Please contact the school for payment details.`;
+
+            // Create and send WhatsApp notification
+            if (guardian.whatsapp) {
+              try {
+                // TODO: Implement WhatsApp Cloud API call
+                console.log(`WhatsApp to ${guardian.whatsapp}: ${message}`);
+                
+                await prisma.notification.create({
+                  data: {
+                    schoolId,
+                    guardianId: guardian.id,
+                    type: 'ISSUE_BILLS',
+                    title: 'Fee Invoice Issued',
+                    body: message,
+                    channel: 'WHATSAPP',
+                    status: 'SENT',
+                    sentAt: new Date(),
+                    relatedId: invoice.id,
+                    reference: invoiceNo,
+                  },
+                });
+                notificationsCount++;
+              } catch (err) {
+                errors.push(`Failed to send WhatsApp to ${guardian.whatsapp}`);
+                // Still create notification record with FAILED status
+                await prisma.notification.create({
+                  data: {
+                    schoolId,
+                    guardianId: guardian.id,
+                    type: 'ISSUE_BILLS',
+                    title: 'Fee Invoice Issued',
+                    body: message,
+                    channel: 'WHATSAPP',
+                    status: 'FAILED',
+                    failureReason: err instanceof Error ? err.message : String(err),
+                    relatedId: invoice.id,
+                    reference: invoiceNo,
+                  },
+                });
+              }
+            }
+
+            // Create and send Email notification
+            if (guardian.email) {
+              try {
+                await sendFeeReminderEmail(
+                  guardian.email,
+                  guardian.firstName,
+                  pupilName,
+                  className,
+                  amount,
+                  amount,
+                  school?.name || 'School',
+                );
+
+                await prisma.notification.create({
+                  data: {
+                    schoolId,
+                    guardianId: guardian.id,
+                    type: 'ISSUE_BILLS',
+                    title: 'Fee Invoice Issued',
+                    body: message,
+                    channel: 'EMAIL',
+                    status: 'SENT',
+                    sentAt: new Date(),
+                    relatedId: invoice.id,
+                    reference: invoiceNo,
+                  },
+                });
+                notificationsCount++;
+              } catch (err) {
+                errors.push(`Failed to send email to ${guardian.email}`);
+                // Still create notification record with FAILED status
+                await prisma.notification.create({
+                  data: {
+                    schoolId,
+                    guardianId: guardian.id,
+                    type: 'ISSUE_BILLS',
+                    title: 'Fee Invoice Issued',
+                    body: message,
+                    channel: 'EMAIL',
+                    status: 'FAILED',
+                    failureReason: err instanceof Error ? err.message : String(err),
+                    relatedId: invoice.id,
+                    reference: invoiceNo,
+                  },
+                });
+              }
+            }
+          }
+        } catch (err) {
+          errors.push(`Failed to create invoice for pupil ${pupil.id}: ${err}`);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Created ${createdCount} invoices for term`,
+      created: createdCount,
+      notificationsSent: notificationsCount,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (error) {
+    console.error('Error issuing bills:', error);
+    res.status(500).json({ error: 'Failed to issue bills' });
+  }
+});
+
+// POST /api/admin/fees/invoices/send-reminders - Send reminders for outstanding invoices
+router.post('/fees/invoices/send-reminders', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    // Find invoices with OVERDUE or PART_PAID status
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        schoolId,
+        status: { in: ['OVERDUE', 'PART_PAID'] },
+      },
+      include: {
+        pupil: {
+          include: {
+            guardians: { include: { guardian: true } },
+            class: true,
+          },
+        },
+        feeSchedule: true,
+      },
+    });
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: {
+        name: true,
+        waCloudAccessTokenEncrypted: true,
+        waCloudPhoneNumberIdEncrypted: true,
+        currency: true,
+      },
+    });
+
+    if (!school) {
+      return res.status(404).json({ error: 'School not found' });
+    }
+
+    let sentCount = 0;
+    const errors: string[] = [];
+
+    // Send reminders to guardians
+    for (const invoice of invoices) {
+      const pupilName = `${invoice.pupil.firstName} ${invoice.pupil.lastName}`;
+      const className = invoice.pupil.class?.name || 'Unknown Class';
+      const amount = (invoice.amountDue / 100).toFixed(2);
+      const outstanding = Math.max(0, invoice.amountDue - invoice.amountPaid) / 100;
+
+      for (const guardianPupil of invoice.pupil.guardians) {
+        const guardian = guardianPupil.guardian;
+        const message = `Dear ${guardian.firstName}, this is a reminder that fee payment of ${school.currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${school.currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
+
+        // Send via WhatsApp if available
+        if (guardian.whatsapp && school.waCloudAccessTokenEncrypted) {
+          try {
+            // TODO: Decrypt token and send via WhatsApp
+            console.log(`WhatsApp reminder to ${guardian.whatsapp}: ${message}`);
+            
+            await prisma.notification.create({
+              data: {
+                schoolId,
+                guardianId: guardian.id,
+                type: 'SEND_REMINDER',
+                title: 'Fee Payment Reminder',
+                body: message,
+                channel: 'WHATSAPP',
+                status: 'SENT',
+                sentAt: new Date(),
+                relatedId: invoice.id,
+                reference: invoice.invoiceNo,
+              },
+            });
+            sentCount++;
+          } catch (err) {
+            errors.push(`Failed to send WhatsApp to ${guardian.whatsapp}`);
+            await prisma.notification.create({
+              data: {
+                schoolId,
+                guardianId: guardian.id,
+                type: 'SEND_REMINDER',
+                title: 'Fee Payment Reminder',
+                body: message,
+                channel: 'WHATSAPP',
+                status: 'FAILED',
+                failureReason: err instanceof Error ? err.message : String(err),
+                relatedId: invoice.id,
+                reference: invoice.invoiceNo,
+              },
+            });
+          }
+        }
+
+        // Send via Email
+        if (guardian.email) {
+          try {
+            await sendFeeReminderEmail(
+              guardian.email,
+              guardian.firstName,
+              pupilName,
+              className,
+              amount,
+              outstanding.toFixed(2),
+              school.name,
+            );
+            
+            await prisma.notification.create({
+              data: {
+                schoolId,
+                guardianId: guardian.id,
+                type: 'SEND_REMINDER',
+                title: 'Fee Payment Reminder',
+                body: message,
+                channel: 'EMAIL',
+                status: 'SENT',
+                sentAt: new Date(),
+                relatedId: invoice.id,
+                reference: invoice.invoiceNo,
+              },
+            });
+            sentCount++;
+          } catch (err) {
+            errors.push(`Failed to send email to ${guardian.email}`);
+            await prisma.notification.create({
+              data: {
+                schoolId,
+                guardianId: guardian.id,
+                type: 'SEND_REMINDER',
+                title: 'Fee Payment Reminder',
+                body: message,
+                channel: 'EMAIL',
+                status: 'FAILED',
+                failureReason: err instanceof Error ? err.message : String(err),
+                relatedId: invoice.id,
+                reference: invoice.invoiceNo,
+              },
+            });
+          }
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Sent ${sentCount} reminders`,
+      sent: sentCount,
+      total: invoices.length,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (error) {
+    console.error('Error sending reminders:', error);
+    res.status(500).json({ error: 'Failed to send reminders' });
+  }
+});
+
+// GET /api/admin/notifications - Get notification log
+router.get('/notifications', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { type, status, channel, fromDate, toDate, limit = 100, offset = 0 } = req.query;
+
+    let whereClause: any = { schoolId };
+
+    if (type) whereClause.type = type;
+    if (status) whereClause.status = status;
+    if (channel) whereClause.channel = channel;
+
+    if (fromDate && toDate) {
+      const from = new Date(fromDate as string);
+      const to = new Date(toDate as string);
+      from.setUTCHours(0, 0, 0, 0);
+      to.setUTCHours(23, 59, 59, 999);
+      whereClause.createdAt = { gte: from, lte: to };
+    }
+
+    const [notifications, total] = await Promise.all([
+      prisma.notification.findMany({
+        where: whereClause,
+        include: {
+          guardian: { select: { id: true, firstName: true, lastName: true, phone: true, email: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: Number(limit),
+        skip: Number(offset),
+      }),
+      prisma.notification.count({ where: whereClause }),
+    ]);
+
+    // Calculate statistics
+    const stats = {
+      total,
+      sent: 0,
+      failed: 0,
+      pending: 0,
+      byChannel: { WHATSAPP: 0, EMAIL: 0 },
+      byType: { ISSUE_BILLS: 0, SEND_REMINDER: 0, ATTENDANCE_UPDATE: 0 },
+    };
+
+    const allNotifications = await prisma.notification.findMany({
+      where: whereClause,
+      select: { status: true, channel: true, type: true },
+    });
+
+    allNotifications.forEach((n) => {
+      if (n.status === 'SENT') stats.sent++;
+      if (n.status === 'FAILED') stats.failed++;
+      if (n.status === 'PENDING') stats.pending++;
+      stats.byChannel[n.channel as 'WHATSAPP' | 'EMAIL']++;
+      stats.byType[n.type as 'ISSUE_BILLS' | 'SEND_REMINDER' | 'ATTENDANCE_UPDATE']++;
+    });
+
+    const mappedNotifications = notifications.map((n) => ({
+      id: n.id,
+      date: n.createdAt,
+      guardian: `${n.guardian.firstName} ${n.guardian.lastName}`,
+      guardianId: n.guardian.id,
+      type: n.type,
+      title: n.title,
+      body: n.body,
+      channel: n.channel,
+      status: n.status,
+      sentAt: n.sentAt,
+      failureReason: n.failureReason,
+      reference: n.reference,
+    }));
+
+    res.json({
+      notifications: mappedNotifications,
+      stats,
+      pagination: {
+        total,
+        limit: Number(limit),
+        offset: Number(offset),
+        pages: Math.ceil(total / Number(limit)),
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching notifications:', error);
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
 // GET /api/admin/students/data - Get students list for client-side rendering
 router.get('/students/data', async (req: Request, res: Response) => {
   try {
@@ -1229,6 +1887,125 @@ router.get('/support/data', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching support data:', error);
     res.status(500).json({ error: 'Failed to fetch support data' });
+  }
+});
+
+// POST /api/admin/support - Create support request
+router.post('/support', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { subject, message, priority = 'MEDIUM' } = req.body;
+
+    if (!subject || !message) {
+      return res.status(400).json({ error: 'Subject and message are required' });
+    }
+
+    const supportRequest = await prisma.supportRequest.create({
+      data: {
+        schoolId,
+        subject,
+        message,
+        priority,
+        status: 'OPEN',
+      },
+    });
+
+    res.status(201).json({ 
+      supportRequest: {
+        id: supportRequest.id,
+        subject: supportRequest.subject,
+        message: supportRequest.message,
+        response: supportRequest.response,
+        status: supportRequest.status,
+        priority: supportRequest.priority,
+        createdAt: supportRequest.createdAt.toISOString(),
+        updatedAt: supportRequest.updatedAt.toISOString(),
+        messages: [{
+          id: `${supportRequest.id}-initial`,
+          senderRole: 'SCHOOL',
+          senderName: 'Your School',
+          senderEmail: null,
+          body: supportRequest.message,
+          createdAt: supportRequest.createdAt.toISOString(),
+        }],
+        school: null,
+      },
+      message: 'Support request created successfully'
+    });
+  } catch (error) {
+    console.error('Error creating support request:', error);
+    res.status(500).json({ error: 'Failed to create support request' });
+  }
+});
+
+// PATCH /api/admin/support/reply - Reply to support request
+router.patch('/support/reply', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { requestId, response: responseText } = req.body;
+
+    if (!requestId || !responseText) {
+      return res.status(400).json({ error: 'Request ID and response are required' });
+    }
+
+    // Verify the support request belongs to this school
+    const supportRequest = await prisma.supportRequest.findFirst({
+      where: { id: requestId, schoolId },
+    });
+
+    if (!supportRequest) {
+      return res.status(404).json({ error: 'Support request not found' });
+    }
+
+    const updated = await prisma.supportRequest.update({
+      where: { id: requestId },
+      data: { 
+        response: responseText,
+        status: 'IN_PROGRESS',
+        updatedAt: new Date(),
+      },
+      include: { messages: { orderBy: { createdAt: 'asc' } } } as any,
+    });
+
+    res.json({ 
+      supportRequest: {
+        id: updated.id,
+        subject: updated.subject,
+        message: updated.message,
+        response: updated.response,
+        status: updated.status,
+        priority: updated.priority,
+        createdAt: updated.createdAt.toISOString(),
+        updatedAt: updated.updatedAt.toISOString(),
+        messages: [
+          {
+            id: `${updated.id}-initial`,
+            senderRole: 'SCHOOL',
+            senderName: 'Your School',
+            senderEmail: null,
+            body: updated.message,
+            createdAt: updated.createdAt.toISOString(),
+          },
+          ...(updated.response ? [{
+            id: `${updated.id}-response`,
+            senderRole: 'SUPPORT',
+            senderName: 'Support Team',
+            senderEmail: null,
+            body: updated.response,
+            createdAt: updated.updatedAt.toISOString(),
+          }] : []),
+        ],
+        school: null,
+      },
+      message: 'Reply sent successfully'
+    });
+  } catch (error) {
+    console.error('Error replying to support request:', error);
+    res.status(500).json({ error: 'Failed to send reply' });
   }
 });
 
@@ -2620,6 +3397,388 @@ router.delete('/class-subjects/:classId/:subjectId', async (req: Request, res: R
   } catch (error) {
     console.error('Error removing subject from class:', error);
     res.status(500).json({ error: 'Failed to remove subject' });
+  }
+});
+
+// GET /api/admin/attendance/data - Get attendance records for class and date
+router.get('/attendance/data', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { classId, date } = req.query;
+    if (!classId || !date) {
+      return res.status(400).json({ error: 'classId and date required' });
+    }
+
+    // Parse date as ISO string
+    const attendanceDate = new Date(date as string);
+    attendanceDate.setUTCHours(0, 0, 0, 0);
+
+    // Get all pupils in the class
+    const pupils = await prisma.pupil.findMany({
+      where: { schoolId, classId: classId as string, isActive: true },
+      include: { guardians: { include: { guardian: true } } },
+      orderBy: { lastName: 'asc' },
+    });
+
+    // Get attendance records for this date
+    const attendanceRecords = await prisma.attendanceRecord.findMany({
+      where: {
+        schoolId,
+        classId: classId as string,
+        date: attendanceDate,
+      },
+    });
+
+    // Create map for quick lookup
+    const attendanceMap: { [key: string]: string } = {};
+    attendanceRecords.forEach((record) => {
+      attendanceMap[record.pupilId] = record.status;
+    });
+
+    // Build response with pupils and their attendance status
+    const attendanceData = pupils.map((pupil) => ({
+      pupilId: pupil.id,
+      name: `${pupil.firstName} ${pupil.lastName}`,
+      status: attendanceMap[pupil.id] || 'PRESENT',
+      guardians: pupil.guardians.map((gp) => ({
+        id: gp.guardian.id,
+        name: gp.guardian.firstName,
+        phone: gp.guardian.whatsapp || gp.guardian.phone,
+        email: gp.guardian.email,
+      })),
+    }));
+
+    const classData = await prisma.class.findUnique({
+      where: { id: classId as string },
+      select: { name: true, arm: true },
+    });
+
+    res.json({
+      date: attendanceDate.toISOString().split('T')[0],
+      classId,
+      className: classData ? `${classData.name} ${classData.arm || ''}` : 'Unknown',
+      pupils: attendanceData,
+      totalPupils: pupils.length,
+      presentCount: attendanceRecords.filter((r) => r.status === 'PRESENT').length,
+      absentCount: attendanceRecords.filter((r) => r.status === 'ABSENT').length,
+      lateCount: attendanceRecords.filter((r) => r.status === 'LATE').length,
+    });
+  } catch (error) {
+    console.error('Error fetching attendance data:', error);
+    res.status(500).json({ error: 'Failed to fetch attendance data' });
+  }
+});
+
+// POST /api/admin/attendance/mark - Mark attendance for students
+router.post('/attendance/mark', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { classId, date, attendance } = req.body;
+    if (!classId || !date || !attendance) {
+      return res.status(400).json({ error: 'classId, date, and attendance array required' });
+    }
+
+    // Parse date
+    const attendanceDate = new Date(date);
+    attendanceDate.setUTCHours(0, 0, 0, 0);
+
+    // Validate attendance statuses
+    const validStatuses = ['PRESENT', 'ABSENT', 'LATE'];
+    for (const att of attendance) {
+      if (!validStatuses.includes(att.status)) {
+        return res.status(400).json({ error: `Invalid status: ${att.status}` });
+      }
+    }
+
+    // Delete existing records for this date and class
+    await prisma.attendanceRecord.deleteMany({
+      where: {
+        schoolId,
+        classId,
+        date: attendanceDate,
+      },
+    });
+
+    // Create new attendance records
+    const records = await Promise.all(
+      attendance.map((att: { pupilId: string; status: 'PRESENT' | 'ABSENT' | 'LATE' | string }) =>
+        prisma.attendanceRecord.create({
+          data: {
+            schoolId,
+            classId,
+            pupilId: att.pupilId,
+            date: attendanceDate,
+            status: att.status as 'PRESENT' | 'ABSENT' | 'LATE',
+          },
+        })
+      )
+    );
+
+    res.status(201).json({
+      success: true,
+      message: `Marked attendance for ${records.length} students`,
+      recordsCreated: records.length,
+    });
+  } catch (error) {
+    console.error('Error marking attendance:', error);
+    res.status(500).json({ error: 'Failed to mark attendance' });
+  }
+});
+
+// GET /api/admin/attendance/summary - Get attendance summary and reports
+router.get('/attendance/summary', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { classId, fromDate, toDate, pupilId } = req.query;
+
+    // Build where clause
+    let whereClause: any = { schoolId };
+    if (classId) whereClause.classId = classId;
+    if (pupilId) whereClause.pupilId = pupilId;
+
+    if (fromDate && toDate) {
+      const from = new Date(fromDate as string);
+      const to = new Date(toDate as string);
+      from.setUTCHours(0, 0, 0, 0);
+      to.setUTCHours(23, 59, 59, 999);
+      whereClause.date = { gte: from, lte: to };
+    }
+
+    const records = await prisma.attendanceRecord.findMany({
+      where: whereClause,
+      include: {
+        pupil: { select: { id: true, firstName: true, lastName: true } },
+        class: { select: { id: true, name: true } },
+      },
+      orderBy: { date: 'desc' },
+    });
+
+    // Calculate statistics
+    const stats = {
+      totalRecords: records.length,
+      presentCount: records.filter((r) => r.status === 'PRESENT').length,
+      absentCount: records.filter((r) => r.status === 'ABSENT').length,
+      lateCount: records.filter((r) => r.status === 'LATE').length,
+    };
+
+    // Group by pupil for per-pupil stats
+    const pupilStats: { [key: string]: any } = {};
+    records.forEach((record) => {
+      if (!pupilStats[record.pupilId]) {
+        pupilStats[record.pupilId] = {
+          pupilId: record.pupilId,
+          name: `${record.pupil.firstName} ${record.pupil.lastName}`,
+          total: 0,
+          present: 0,
+          absent: 0,
+          late: 0,
+          attendanceRate: 0,
+        };
+      }
+      pupilStats[record.pupilId].total++;
+      if (record.status === 'PRESENT') pupilStats[record.pupilId].present++;
+      if (record.status === 'ABSENT') pupilStats[record.pupilId].absent++;
+      if (record.status === 'LATE') pupilStats[record.pupilId].late++;
+    });
+
+    // Calculate attendance rates
+    Object.values(pupilStats).forEach((stat: any) => {
+      stat.attendanceRate = stat.total > 0 ? ((stat.present + stat.late * 0.5) / stat.total) * 100 : 0;
+    });
+
+    res.json({
+      summary: stats,
+      pupilStatistics: Object.values(pupilStats),
+      records,
+    });
+  } catch (error) {
+    console.error('Error fetching attendance summary:', error);
+    res.status(500).json({ error: 'Failed to fetch attendance summary' });
+  }
+});
+
+// POST /api/admin/attendance/notify - Send attendance notifications
+router.post('/attendance/notify', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { classId, date, notificationType, customMessage } = req.body;
+    if (!classId || !date) {
+      return res.status(400).json({ error: 'classId and date required' });
+    }
+
+    // Parse date
+    const attendanceDate = new Date(date);
+    attendanceDate.setUTCHours(0, 0, 0, 0);
+
+    // Get attendance records for this date
+    const records = await prisma.attendanceRecord.findMany({
+      where: { schoolId, classId, date: attendanceDate },
+      include: {
+        pupil: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            guardians: { include: { guardian: true } },
+          },
+        },
+      },
+    });
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { name: true, waCloudAccessTokenEncrypted: true },
+    });
+
+    let sentCount = 0;
+    const errors: string[] = [];
+
+    // Send notifications to guardians
+    for (const record of records) {
+      const pupilName = `${record.pupil.firstName} ${record.pupil.lastName}`;
+      let message = '';
+
+      if (notificationType === 'ABSENT' && record.status === 'ABSENT') {
+        message = customMessage || `Dear Guardian, ${pupilName} was absent from school on ${date}. Please contact the school for more information.`;
+      } else if (notificationType === 'LATE' && record.status === 'LATE') {
+        message = customMessage || `Dear Guardian, ${pupilName} arrived late to school on ${date}.`;
+      } else if (notificationType === 'ALL') {
+        const statusMsg = record.status === 'PRESENT' ? 'present' : record.status === 'ABSENT' ? 'absent' : 'arrived late';
+        message = customMessage || `Attendance Update: ${pupilName} was ${statusMsg} on ${date}.`;
+      } else {
+        continue;
+      }
+
+      // Send to all guardians
+      for (const guardianPupil of record.pupil.guardians) {
+        const guardian = guardianPupil.guardian;
+
+        // Try WhatsApp if available
+        if (guardian.whatsapp && school?.waCloudAccessTokenEncrypted) {
+          try {
+            // TODO: Implement WhatsApp Cloud API call
+            console.log(`WhatsApp to ${guardian.whatsapp}: ${message}`);
+            sentCount++;
+          } catch (err) {
+            errors.push(`WhatsApp failed for ${guardian.whatsapp}`);
+          }
+        } else if (guardian.email) {
+          // Send email
+          try {
+            await sendAttendanceNotificationEmail(
+              guardian.email,
+              guardian.firstName,
+              pupilName,
+              record.status,
+              date,
+              school?.name || 'School',
+              message
+            );
+            sentCount++;
+          } catch (err) {
+            errors.push(`Email failed for ${guardian.email}`);
+          }
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      sent: sentCount,
+      total: records.length,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (error) {
+    console.error('Error sending attendance notifications:', error);
+    res.status(500).json({ error: 'Failed to send notifications' });
+  }
+});
+
+// GET /api/admin/guardians - Get all guardians for school
+router.get('/guardians', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const guardians = await prisma.guardian.findMany({
+      where: {
+        pupils: {
+          some: {
+            pupil: { schoolId },
+          },
+        },
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        whatsapp: true,
+        email: true,
+        relationship: true,
+      },
+      orderBy: { lastName: 'asc' },
+    });
+
+    const mappedGuardians = guardians.map((g) => ({
+      id: g.id,
+      name: `${g.firstName} ${g.lastName}`,
+      phone: g.whatsapp || g.phone,
+      email: g.email,
+      role: g.relationship || 'Guardian',
+    }));
+
+    res.json({ guardians: mappedGuardians });
+  } catch (error) {
+    console.error('Error fetching guardians:', error);
+    res.status(500).json({ error: 'Failed to fetch guardians' });
+  }
+});
+
+// POST /api/admin/whatsapp/send-message - Send WhatsApp message to guardian
+router.post('/whatsapp/send-message', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { phoneNumber, message, recipientName } = req.body;
+    if (!phoneNumber || !message) {
+      return res.status(400).json({ error: 'phoneNumber and message required' });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: {
+        name: true,
+        waCloudAccessTokenEncrypted: true,
+        waCloudPhoneNumberIdEncrypted: true,
+      },
+    });
+
+    if (!school?.waCloudAccessTokenEncrypted || !school?.waCloudPhoneNumberIdEncrypted) {
+      return res.status(400).json({ error: 'WhatsApp credentials not configured' });
+    }
+
+    // TODO: Decrypt credentials and send via WhatsApp Cloud API
+    // For now, log the message
+    console.log(`WhatsApp to ${phoneNumber}: ${message}`);
+
+    res.json({
+      success: true,
+      message: `Message queued for ${recipientName}`,
+      status: 'pending',
+    });
+  } catch (error) {
+    console.error('Error sending WhatsApp message:', error);
+    res.status(500).json({ error: 'Failed to send message' });
   }
 });
 

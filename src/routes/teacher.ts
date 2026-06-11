@@ -361,4 +361,44 @@ router.get('/profile', async (req: AuthenticatedRequest, res) => {
   }
 });
 
+// GET /api/teacher/messages - Get messages (announcements, notifications, etc.)
+router.get('/messages', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { userId, schoolId } = req.user!;
+
+    // Fetch announcements for the school
+    const announcements = await prisma.announcement.findMany({
+      where: { schoolId },
+      select: {
+        id: true,
+        title: true,
+        content: true,
+        publishedAt: true,
+        createdAt: true,
+      },
+      orderBy: { publishedAt: 'desc' },
+      take: 50,
+    });
+
+    // Transform announcements to message format
+    const messages = announcements.map((ann: any) => ({
+      id: ann.id,
+      sender: 'School Administration',
+      subject: ann.title,
+      body: ann.content,
+      timestamp: ann.publishedAt || ann.createdAt,
+      read: false,
+      type: 'announcement',
+    }));
+
+    res.json({
+      messages: messages || [],
+      total: messages.length,
+    });
+  } catch (error: any) {
+    console.error('Messages error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;
