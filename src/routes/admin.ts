@@ -2816,7 +2816,7 @@ router.delete('/teachers/:id/subjects/:subjectId', async (req: Request, res: Res
   }
 });
 
-// GET /api/admin/academic-years - Get all academic years for school
+// GET /api/admin/academic-years - Get all academic years with terms for school
 router.get('/academic-years', async (req: Request, res: Response) => {
   try {
     const schoolId = await resolveSchoolId(req);
@@ -2827,6 +2827,11 @@ router.get('/academic-years', async (req: Request, res: Response) => {
     const academicYears = await prisma.academicYear.findMany({
       where: { schoolId },
       orderBy: { createdAt: 'desc' },
+      include: {
+        terms: {
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
     });
 
     res.json({ academicYears });
@@ -2900,6 +2905,157 @@ router.delete('/academic-years/:id', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error deleting academic year:', error);
     res.status(500).json({ error: 'Failed to delete academic year' });
+  }
+});
+
+// POST /api/admin/terms - Create new term
+router.post('/terms', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { name, academicYearId, startsOn, endsOn, sortOrder } = req.body;
+
+    if (!name || !academicYearId) {
+      return res.status(400).json({ error: 'Term name and academic year are required' });
+    }
+
+    // Verify academic year belongs to this school
+    const academicYear = await prisma.academicYear.findFirst({
+      where: { id: academicYearId, schoolId },
+    });
+
+    if (!academicYear) {
+      return res.status(404).json({ error: 'Academic year not found' });
+    }
+
+    const term = await prisma.term.create({
+      data: {
+        name,
+        academicYearId,
+        startsOn: startsOn ? new Date(startsOn) : null,
+        endsOn: endsOn ? new Date(endsOn) : null,
+        sortOrder: sortOrder || 1,
+      },
+    });
+
+    res.json({ term });
+  } catch (error) {
+    console.error('Error creating term:', error);
+    res.status(500).json({ error: 'Failed to create term' });
+  }
+});
+
+// PATCH /api/admin/terms/:id - Update term
+router.patch('/terms/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+    const { name, startsOn, endsOn, sortOrder } = req.body;
+
+    // Verify term belongs to this school
+    const term = await prisma.term.findFirst({
+      where: {
+        id,
+        academicYear: { schoolId },
+      },
+    });
+
+    if (!term) {
+      return res.status(404).json({ error: 'Term not found' });
+    }
+
+    const updated = await prisma.term.update({
+      where: { id },
+      data: {
+        ...(name !== undefined && { name }),
+        ...(startsOn !== undefined && { startsOn: startsOn ? new Date(startsOn) : null }),
+        ...(endsOn !== undefined && { endsOn: endsOn ? new Date(endsOn) : null }),
+        ...(sortOrder !== undefined && { sortOrder }),
+      },
+    });
+
+    res.json({ term: updated });
+  } catch (error) {
+    console.error('Error updating term:', error);
+    res.status(500).json({ error: 'Failed to update term' });
+  }
+});
+
+// DELETE /api/admin/terms/:id - Delete term
+router.delete('/terms/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+
+    // Verify term belongs to this school
+    const term = await prisma.term.findFirst({
+      where: {
+        id,
+        academicYear: { schoolId },
+      },
+    });
+
+    if (!term) {
+      return res.status(404).json({ error: 'Term not found' });
+    }
+
+    await prisma.term.delete({
+      where: { id },
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting term:', error);
+    res.status(500).json({ error: 'Failed to delete term' });
+  }
+});
+
+// POST /api/admin/academic-years/:id/set-current - Set academic year as current
+router.post('/academic-years/:id/set-current', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+
+    // Verify academic year belongs to this school
+    const academicYear = await prisma.academicYear.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!academicYear) {
+      return res.status(404).json({ error: 'Academic year not found' });
+    }
+
+    // Unset all current academic years for this school
+    await prisma.academicYear.updateMany({
+      where: { schoolId },
+      data: { isCurrent: false },
+    });
+
+    // Set the selected one as current
+    const updated = await prisma.academicYear.update({
+      where: { id },
+      data: { isCurrent: true },
+    });
+
+    res.json({ academicYear: updated });
+  } catch (error) {
+    console.error('Error setting current academic year:', error);
+    res.status(500).json({ error: 'Failed to set current academic year' });
   }
 });
 
