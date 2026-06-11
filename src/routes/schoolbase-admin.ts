@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import axios from 'axios';
+import { sendSetupCompletionReminderEmail } from '../services/email.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -141,12 +142,18 @@ router.get('/schools', async (req: Request, res: Response) => {
           id: true,
           name: true,
           slug: true,
+          email: true,
+          phone: true,
           status: true,
           plan: true,
           country: true,
           createdAt: true,
           updatedAt: true,
           trialEndsAt: true,
+          users: {
+            where: { role: 'SCHOOL_ADMIN' },
+            select: { email: true }
+          },
           _count: {
             select: { users: true, pupils: true, classes: true }
           }
@@ -158,13 +165,45 @@ router.get('/schools', async (req: Request, res: Response) => {
       prisma.school.count({ where }),
     ]);
 
+    // Get verification status for all schools - check if admin email has verified OTP
+    const verificationMap = new Map<string, boolean>();
+    if (schools.length > 0) {
+      const adminEmails = schools
+        .map((s: any) => s.users[0]?.email)
+        .filter(Boolean);
+      
+      if (adminEmails.length > 0) {
+        const verifiedOtps = await prisma.signupOtp.findMany({
+          where: {
+            email: { in: adminEmails },
+            verifiedAt: { not: null }
+          },
+          select: { email: true }
+        });
+        
+        verifiedOtps.forEach((otp: any) => {
+          verificationMap.set(otp.email, true);
+        });
+      }
+    }
+
     res.json({
       schools: schools.map((school: any) => ({
-        ...school,
+        id: school.id,
+        name: school.name,
+        slug: school.slug,
+        email: school.email,
+        phone: school.phone,
+        status: school.status,
+        plan: school.plan,
+        country: school.country,
+        createdAt: school.createdAt,
+        updatedAt: school.updatedAt,
+        trialEndsAt: school.trialEndsAt,
         userCount: school._count.users,
         pupilCount: school._count.pupils,
         classCount: school._count.classes,
-        _count: undefined,
+        isVerified: verificationMap.has(school.users[0]?.email) || false,
       })),
       pagination: {
         page,
@@ -264,13 +303,14 @@ router.get('/email-logs', async (req: Request, res: Response) => {
 // POST /schoolbase-admin/api/reminders/send-bulk - Send setup reminders to all incomplete schools
 router.post('/reminders/send-bulk', async (req: Request, res: Response) => {
   try {
+    console.log('📧 Sending bulk setup completion reminders...');
+    
     // Find all schools with incomplete setup (those created more than 7 days ago but not all data entered)
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     
     const incompleteSchools = await prisma.school.findMany({
       where: {
         createdAt: { lt: sevenDaysAgo },
-        // Add more specific filters based on what defines "incomplete setup"
       },
       select: {
         id: true,
@@ -283,19 +323,30 @@ router.post('/reminders/send-bulk', async (req: Request, res: Response) => {
       },
     });
 
+    console.log(`Found ${incompleteSchools.length} schools to send reminders to`);
+
     let sentCount = 0;
-    let skippedCount = 0;
+    let failedCount = 0;
+    const errors: string[] = [];
 
     // Send reminder emails
     for (const school of incompleteSchools) {
       try {
         const admin = school.users[0];
         if (!admin || !admin.email) {
-          skippedCount++;
+          console.warn(`⚠️ No admin email for school ${school.id}`);
+          failedCount++;
           continue;
         }
 
-        // Log the email send attempt
+        // Send actual email
+        await sendSetupCompletionReminderEmail(
+          admin.email,
+          admin.name || 'School Administrator',
+          school.name
+        );
+
+        // Log the successful email send attempt
         await (prisma as any).emailLog.create({
           data: {
             schoolId: school.id,
@@ -308,17 +359,49 @@ router.post('/reminders/send-bulk', async (req: Request, res: Response) => {
           },
         });
 
+        console.log(`✅ Reminder sent to ${school.name} (${admin.email})`);
         sentCount++;
-      } catch (err) {
-        console.error(`Failed to send reminder to school ${school.id}:`, err);
-        skippedCount++;
+      } catch (err: any) {
+        console.error(`❌ Failed to send reminder to school ${school.id}:`, err);
+        errors.push(`${school.name}: ${err.message}`);
+        
+        // Log the failed email attempt
+        try {
+          await (prisma as any).emailLog.create({
+            data: {
+              schoolId: school.id,
+              recipientEmail: school.users[0]?.email,
+              recipientName: school.users[0]?.name,
+              emailType: 'SETUP_COMPLETION_REMINDER',
+              subject: `Complete your SchoolBase setup - ${school.name}`,
+              status: 'FAILED',
+              error: err.message,
+              sentAt: new Date(),
+            },
+          });
+        } catch (logErr) {
+          console.error('Failed to log email error:', logErr);
+        }
+        
+        failedCount++;
       }
     }
 
-    res.json({ sentCount, skippedCount });
-  } catch (error) {
-    console.error('Error sending bulk reminders:', error);
-    res.status(500).json({ message: (error as Error).message || 'Failed to send reminders' });
+    console.log(`📊 Summary: ${sentCount} sent, ${failedCount} failed`);
+    
+    res.json({ 
+      success: true,
+      sentCount, 
+      failedCount,
+      total: incompleteSchools.length,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error: any) {
+    console.error('❌ Error sending bulk reminders:', error);
+    res.status(500).json({ 
+      success: false,
+      message: error.message || 'Failed to send reminders' 
+    });
   }
 });
 
@@ -328,8 +411,13 @@ router.post('/reminders/send-single', async (req: Request, res: Response) => {
     const { schoolId } = req.body;
 
     if (!schoolId) {
-      return res.status(400).json({ message: 'schoolId is required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'schoolId is required' 
+      });
     }
+
+    console.log(`📧 Sending setup reminder to school ${schoolId}...`);
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
@@ -345,31 +433,81 @@ router.post('/reminders/send-single', async (req: Request, res: Response) => {
     });
 
     if (!school) {
-      return res.status(404).json({ message: 'School not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'School not found' 
+      });
     }
 
     const admin = school.users[0];
     if (!admin || !admin.email) {
-      return res.status(400).json({ message: 'School admin email not found' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'School admin email not found' 
+      });
     }
 
-    // Log the email send attempt
-    await (prisma as any).emailLog.create({
-      data: {
-        schoolId: school.id,
-        recipientEmail: admin.email,
-        recipientName: admin.name,
-        emailType: 'SETUP_COMPLETION_REMINDER',
-        subject: `Complete your SchoolBase setup - ${school.name}`,
-        status: 'SENT',
-        sentAt: new Date(),
-      },
-    });
+    try {
+      // Send actual email
+      await sendSetupCompletionReminderEmail(
+        admin.email,
+        admin.name || 'School Administrator',
+        school.name
+      );
 
-    res.json({ success: true, message: 'Reminder sent successfully' });
-  } catch (error) {
-    console.error('Error sending reminder:', error);
-    res.status(500).json({ message: (error as Error).message || 'Failed to send reminder' });
+      // Log the email send attempt
+      await (prisma as any).emailLog.create({
+        data: {
+          schoolId: school.id,
+          recipientEmail: admin.email,
+          recipientName: admin.name,
+          emailType: 'SETUP_COMPLETION_REMINDER',
+          subject: `Complete your SchoolBase setup - ${school.name}`,
+          status: 'SENT',
+          sentAt: new Date(),
+        },
+      });
+
+      console.log(`✅ Reminder sent to ${school.name} (${admin.email})`);
+      
+      res.json({ 
+        success: true, 
+        message: 'Reminder sent successfully',
+        school: {
+          id: school.id,
+          name: school.name,
+          adminEmail: admin.email
+        }
+      });
+    } catch (emailError: any) {
+      console.error(`❌ Failed to send email:`, emailError);
+      
+      // Log the failed attempt
+      try {
+        await (prisma as any).emailLog.create({
+          data: {
+            schoolId: school.id,
+            recipientEmail: admin.email,
+            recipientName: admin.name,
+            emailType: 'SETUP_COMPLETION_REMINDER',
+            subject: `Complete your SchoolBase setup - ${school.name}`,
+            status: 'FAILED',
+            error: emailError.message,
+            sentAt: new Date(),
+          },
+        });
+      } catch (logErr) {
+        console.error('Failed to log email error:', logErr);
+      }
+      
+      throw emailError;
+    }
+  } catch (error: any) {
+    console.error('❌ Error sending reminder:', error);
+    res.status(500).json({ 
+      success: false,
+      message: error.message || 'Failed to send reminder' 
+    });
   }
 });
 

@@ -6,7 +6,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail } from '../services/email.js';
+import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail } from '../services/email.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -2570,12 +2570,19 @@ router.post('/teachers', async (req: Request, res: Response) => {
         select: { name: true },
       });
 
-      // Send welcome email with credentials (reuse OTP email function but modify message)
-      console.log(`[Teacher Created] Sending credentials email to ${email}`);
-      // In production, send actual email with temp password or setup link
-      // For now, just log it
+      if (school) {
+        // Send welcome email with login instructions and temp password
+        await sendTeacherWelcomeEmail(
+          email,
+          name,
+          school.name,
+          'https://www.schoolbase.live/login',
+          password // Send temporary password that teacher should change
+        );
+        console.log(`✅ Teacher welcome email sent to ${email}`);
+      }
     } catch (emailError) {
-      console.warn('Failed to send teacher notification email:', emailError);
+      console.warn('⚠️ Failed to send teacher notification email:', emailError);
       // Don't fail the request if email fails
     }
 

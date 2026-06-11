@@ -3,15 +3,34 @@ import nodemailer from 'nodemailer';
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: parseInt(process.env.SMTP_PORT || '587'),
-  secure: process.env.SMTP_SECURE === 'true',
+  secure: process.env.NODE_ENV === 'production' ? true : false,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
 });
 
+/**
+ * Validate email address format
+ * @param email Email address to validate
+ * @returns true if valid, false otherwise
+ */
+export function isValidEmail(email: string): boolean {
+  if (!email || typeof email !== 'string') {
+    return false;
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email.trim().toLowerCase());
+}
+
 export async function sendSignupOtpEmail(email: string, otp: string, schoolName: string) {
   try {
+    // Validate email before sending
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
     const message = await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
@@ -47,6 +66,8 @@ export async function sendSignupOtpEmail(email: string, otp: string, schoolName:
               <div class="footer">
                 <p>&copy; 2026 SchoolBase. All rights reserved.</p>
                 <p><a href="https://schoolbase.live">schoolbase.live</a></p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 10px 0;">
+                <p style="font-size: 11px; color: #999;">You received this email because you initiated a signup request for SchoolBase. For questions or support, contact <a href="mailto:support@schoolbase.live">support@schoolbase.live</a>.</p>
               </div>
             </div>
           </body>
@@ -64,6 +85,11 @@ export async function sendSignupOtpEmail(email: string, otp: string, schoolName:
 
 export async function sendWelcomeEmail(email: string, schoolName: string, adminName: string) {
   try {
+    // Validate email before sending
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
@@ -108,6 +134,8 @@ export async function sendWelcomeEmail(email: string, schoolName: string, adminN
               </div>
               <div class="footer">
                 <p>&copy; 2026 SchoolBase. All rights reserved.</p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 10px 0;">
+                <p style="font-size: 11px; color: #999;">You received this email because you registered for a SchoolBase trial. For questions or support, contact <a href="mailto:support@schoolbase.live">support@schoolbase.live</a>.</p>
               </div>
             </div>
           </body>
@@ -124,6 +152,11 @@ export async function sendWelcomeEmail(email: string, schoolName: string, adminN
 
 export async function sendPasswordResetEmail(email: string, resetLink: string, userName: string) {
   try {
+    // Validate email before sending
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
@@ -168,6 +201,8 @@ export async function sendPasswordResetEmail(email: string, resetLink: string, u
               <div class="footer">
                 <p>&copy; 2026 SchoolBase. All rights reserved.</p>
                 <p><a href="https://schoolbase.live">schoolbase.live</a></p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 10px 0;">
+                <p style="font-size: 11px; color: #999;">You received this email because a password reset was requested for your SchoolBase account. For questions or support, contact <a href="mailto:support@schoolbase.live">support@schoolbase.live</a>.</p>
               </div>
             </div>
           </body>
@@ -192,6 +227,11 @@ export async function sendFeeReminderEmail(
   schoolName: string,
 ) {
   try {
+    // Validate email before sending
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
@@ -244,8 +284,8 @@ export async function sendFeeReminderEmail(
               </div>
               <div class="footer">
                 <p>&copy; 2026 SchoolBase. All rights reserved.</p>
-                <p><a href="https://schoolbase.live">schoolbase.live</a></p>
-              </div>
+                <p><a href="https://schoolbase.live">schoolbase.live</a></p>                <hr style="border: none; border-top: 1px solid #ddd; margin: 10px 0;">
+                <p style="font-size: 11px; color: #999;">You received this email because you have an outstanding school fee payment. For questions or support, contact <a href="mailto:support@schoolbase.live">support@schoolbase.live</a>.</p>              </div>
             </div>
           </body>
         </html>
@@ -270,6 +310,11 @@ export async function sendAttendanceNotificationEmail(
   customMessage?: string,
 ) {
   try {
+    // Validate email before sending
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
     const statusBgColor = status === 'ABSENT' ? '#dc2626' : status === 'LATE' ? '#ea580c' : '#16a34a';
     const statusLabel = status === 'PRESENT' ? 'Present' : status === 'ABSENT' ? 'Absent' : 'Late';
 
@@ -328,6 +373,8 @@ export async function sendAttendanceNotificationEmail(
               <div class="footer">
                 <p>&copy; 2026 SchoolBase. All rights reserved.</p>
                 <p><a href="https://schoolbase.live">schoolbase.live</a></p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 10px 0;">
+                <p style="font-size: 11px; color: #999;">You received this email because you are the guardian of a student at ${schoolName}. For questions or support, contact <a href="mailto:support@schoolbase.live">support@schoolbase.live</a>.</p>
               </div>
             </div>
           </body>
@@ -339,6 +386,261 @@ export async function sendAttendanceNotificationEmail(
     return true;
   } catch (error) {
     console.error('Failed to send attendance notification email:', error);
+    throw error;
+  }
+}
+
+export async function sendTeacherWelcomeEmail(
+  email: string,
+  teacherName: string,
+  schoolName: string,
+  loginUrl: string = 'https://www.schoolbase.live/login',
+  temporaryPassword?: string
+) {
+  try {
+    // Validate email before sending
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
+    const message = await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: `Welcome to ${schoolName} on SchoolBase`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+              .header { background: #0A66C2; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+              .header h1 { margin: 0; font-size: 24px; }
+              .content { background: #f9fafb; padding: 30px 20px; border-radius: 0 0 8px 8px; }
+              .cta-button { display: inline-block; background: #0A66C2; color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; font-weight: bold; margin: 20px 0; }
+              .credentials-box { background: white; border-left: 4px solid #0A66C2; padding: 15px; margin: 20px 0; font-family: monospace; font-size: 13px; }
+              .credentials-box p { margin: 8px 0; }
+              .credentials-label { color: #666; font-size: 12px; font-weight: bold; }
+              .footer { margin-top: 20px; font-size: 12px; color: #666; }
+              a { color: #0A66C2; text-decoration: none; }
+              .info-section { background: white; padding: 15px; border-radius: 4px; margin: 15px 0; border: 1px solid #e5e7eb; }
+              .info-section h3 { margin: 0 0 10px 0; color: #1f2937; }
+              .info-section ul { margin: 0; padding-left: 20px; }
+              .info-section li { margin: 5px 0; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>Welcome to SchoolBase! 👨‍🏫</h1>
+              </div>
+              <div class="content">
+                <h2>Hello ${teacherName},</h2>
+                
+                <p>Great news! Your teacher account has been created on <strong>${schoolName}'s</strong> SchoolBase system.</p>
+                
+                <p>You can now access the teacher portal to:</p>
+                <div class="info-section">
+                  <ul>
+                    <li>View your class timetable and students</li>
+                    <li>Record attendance and mark assessment results</li>
+                    <li>Create and manage assignments</li>
+                    <li>Communicate with parents and guardians</li>
+                    <li>Access school announcements and resources</li>
+                    <li>Upload class photos and documents</li>
+                  </ul>
+                </div>
+
+                <p style="text-align: center;">
+                  <a href="${loginUrl}" class="cta-button">Access Your Teacher Portal</a>
+                </p>
+
+                ${temporaryPassword ? `
+                <div class="credentials-box">
+                  <p class="credentials-label">LOGIN DETAILS:</p>
+                  <p><strong>Email:</strong> ${email}</p>
+                  <p><strong>Temporary Password:</strong> ${temporaryPassword}</p>
+                  <p style="color: #dc2626; font-size: 11px; margin-top: 10px;">⚠️ Please change your password after your first login.</p>
+                </div>
+                ` : ''}
+
+                <div class="info-section">
+                  <h3>Getting Started Tips:</h3>
+                  <ul>
+                    <li>Complete your teacher profile with a photo and bio</li>
+                    <li>Set up your class settings and preferences</li>
+                    <li>Review the parent communication guidelines</li>
+                    <li>Familiarize yourself with the attendance system</li>
+                    <li>Check out the help documentation and video tutorials</li>
+                  </ul>
+                </div>
+
+                <p style="color: #666; font-size: 13px; margin-top: 20px;">
+                  <strong>Need Help?</strong> Visit our <a href="https://schoolbase.live/help">Help Center</a> or contact support at <a href="mailto:support@schoolbase.live">support@schoolbase.live</a>
+                </p>
+
+                <p>Welcome to the SchoolBase team!<br>
+                <strong>${schoolName} Management</strong></p>
+              </div>
+              <div class="footer">
+                <p>&copy; 2026 SchoolBase. All rights reserved.</p>
+                <p><a href="https://schoolbase.live">schoolbase.live</a> | <a href="https://schoolbase.live/help">Help Center</a></p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 10px 0;">
+                <p style="font-size: 11px; color: #999;">You received this email because you were added as a teacher at ${schoolName} on SchoolBase. For questions or support, contact <a href="mailto:support@schoolbase.live">support@schoolbase.live</a>.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    console.log('Teacher welcome email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('Failed to send teacher welcome email:', error);
+    throw error;
+  }
+}
+
+export async function sendSetupCompletionReminderEmail(
+  email: string,
+  adminName: string,
+  schoolName: string
+) {
+  try {
+    // Validate email before sending
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
+    const message = await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: `Complete your SchoolBase setup - ${schoolName}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+              .header { background: linear-gradient(135deg, #0A66C2, #0052CC); color: white; padding: 30px 20px; text-align: center; border-radius: 8px 8px 0 0; }
+              .header h1 { margin: 0; font-size: 24px; }
+              .header p { margin: 5px 0 0 0; opacity: 0.9; }
+              .content { background: #f9fafb; padding: 30px 20px; border-radius: 0 0 8px 8px; }
+              .alert-box { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 4px; margin: 20px 0; }
+              .alert-box p { margin: 0; color: #92400e; }
+              .cta-button { display: inline-block; background: #0A66C2; color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; font-weight: bold; margin: 20px 0; }
+              .checklist { background: white; padding: 20px; border-radius: 6px; margin: 20px 0; border: 1px solid #e5e7eb; }
+              .checklist-item { display: flex; align-items: flex-start; margin: 12px 0; }
+              .checklist-box { width: 20px; height: 20px; border: 2px solid #d1d5db; border-radius: 4px; margin-right: 12px; flex-shrink: 0; margin-top: 2px; }
+              .checklist-text { flex: 1; color: #374151; }
+              .progress-section { background: white; padding: 20px; border-radius: 6px; margin: 20px 0; border: 1px solid #e5e7eb; }
+              .progress-bar { background: #e5e7eb; height: 8px; border-radius: 4px; overflow: hidden; margin: 10px 0; }
+              .progress-fill { background: #0A66C2; height: 100%; width: 0%; transition: width 0.3s; }
+              .footer { margin-top: 20px; font-size: 12px; color: #666; }
+              a { color: #0A66C2; text-decoration: none; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>Let's Complete Your Setup! 🚀</h1>
+                <p>${schoolName}</p>
+              </div>
+              <div class="content">
+                <h2>Hi ${adminName},</h2>
+                
+                <p>Welcome to SchoolBase! We've noticed your school account has been inactive for a while.</p>
+                
+                <div class="alert-box">
+                  <p><strong>💡 Tip:</strong> Completing your setup takes just a few minutes and unlocks all features for your school!</p>
+                </div>
+
+                <h3>What You Need to Set Up:</h3>
+                <div class="checklist">
+                  <div class="checklist-item">
+                    <div class="checklist-box"></div>
+                    <div class="checklist-text">
+                      <strong>1. School Settings</strong>
+                      <p style="margin: 4px 0 0 0; font-size: 13px; color: #6b7280;">Configure your school name, logo, and calendar</p>
+                    </div>
+                  </div>
+                  <div class="checklist-item">
+                    <div class="checklist-box"></div>
+                    <div class="checklist-text">
+                      <strong>2. Academic Phases & Classes</strong>
+                      <p style="margin: 4px 0 0 0; font-size: 13px; color: #6b7280;">Add your school phases and class structure</p>
+                    </div>
+                  </div>
+                  <div class="checklist-item">
+                    <div class="checklist-box"></div>
+                    <div class="checklist-text">
+                      <strong>3. Staff Members</strong>
+                      <p style="margin: 4px 0 0 0; font-size: 13px; color: #6b7280;">Add teachers and admin staff with their roles</p>
+                    </div>
+                  </div>
+                  <div class="checklist-item">
+                    <div class="checklist-box"></div>
+                    <div class="checklist-text">
+                      <strong>4. Students & Subjects</strong>
+                      <p style="margin: 4px 0 0 0; font-size: 13px; color: #6b7280;">Import your students and configure subjects/courses</p>
+                    </div>
+                  </div>
+                  <div class="checklist-item">
+                    <div class="checklist-box"></div>
+                    <div class="checklist-text">
+                      <strong>5. Fee Structure</strong>
+                      <p style="margin: 4px 0 0 0; font-size: 13px; color: #6b7280;">Set up your fee schedules and payment methods</p>
+                    </div>
+                  </div>
+                </div>
+
+                <p style="text-align: center;">
+                  <a href="https://www.schoolbase.live/admin/settings" class="cta-button">Start Setup Now</a>
+                </p>
+
+                <div class="progress-section">
+                  <h4 style="margin-top: 0;">Setup Benefits:</h4>
+                  <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li>Manage attendance and results easily</li>
+                    <li>Send fee reminders and payment notifications</li>
+                    <li>Communicate with parents via email and WhatsApp</li>
+                    <li>Track student progress and performance</li>
+                    <li>Generate reports and broadsheets</li>
+                    <li>And much more!</li>
+                  </ul>
+                </div>
+
+                <p style="background: #f3f4f6; padding: 15px; border-radius: 4px; margin: 20px 0; font-size: 13px;">
+                  <strong>Need Help?</strong> Our support team is ready to assist.<br>
+                  📧 Email: <a href="mailto:support@schoolbase.live">support@schoolbase.live</a><br>
+                  📚 Help Center: <a href="https://schoolbase.live/help">schoolbase.live/help</a>
+                </p>
+
+                <p>Let's get your school up and running!<br>
+                <strong>The SchoolBase Team</strong></p>
+              </div>
+              <div class="footer">
+                <p>&copy; 2026 SchoolBase. All rights reserved.</p>
+                <p><a href="https://schoolbase.live">schoolbase.live</a> | <a href="https://schoolbase.live/help">Help Center</a></p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 10px 0;">
+                <p style="margin-top: 10px; font-size: 11px; color: #999;">
+                  You received this email because your school account on SchoolBase hasn't been fully set up yet. For questions or support, contact <a href="mailto:support@schoolbase.live">support@schoolbase.live</a>.
+                </p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    console.log('Setup completion reminder email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('Failed to send setup reminder email:', error);
     throw error;
   }
 }
