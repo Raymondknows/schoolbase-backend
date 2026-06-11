@@ -372,7 +372,7 @@ router.get('/messages', async (req: AuthenticatedRequest, res) => {
       select: {
         id: true,
         title: true,
-        content: true,
+        body: true,
         publishedAt: true,
         createdAt: true,
       },
@@ -385,7 +385,7 @@ router.get('/messages', async (req: AuthenticatedRequest, res) => {
       id: ann.id,
       sender: 'School Administration',
       subject: ann.title,
-      body: ann.content,
+      body: ann.body,
       timestamp: ann.publishedAt || ann.createdAt,
       read: false,
       type: 'announcement',

@@ -3723,7 +3723,6 @@ router.get('/guardians', async (req: Request, res: Response) => {
         phone: true,
         whatsapp: true,
         email: true,
-        relationship: true,
       },
       orderBy: { lastName: 'asc' },
     });
@@ -3733,7 +3732,7 @@ router.get('/guardians', async (req: Request, res: Response) => {
       name: `${g.firstName} ${g.lastName}`,
       phone: g.whatsapp || g.phone,
       email: g.email,
-      role: g.relationship || 'Guardian',
+      role: 'Guardian',
     }));
 
     res.json({ guardians: mappedGuardians });
