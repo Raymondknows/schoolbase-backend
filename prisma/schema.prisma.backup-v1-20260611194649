@@ -22,11 +22,11 @@ model Partner {
 }
 
 model School {
-  id                            String                   @id @default(cuid())
+  id                            String             @id @default(cuid())
   partnerId                     String?
   name                          String
-  slug                          String                   @unique
-  initials                      String?                  @db.VarChar(12)
+  slug                          String             @unique
+  initials                      String?            @db.VarChar(12)
   paystackPublicEncrypted       String?
   paystackSecretEncrypted       String?
   twilioSidEncrypted            String?
@@ -41,23 +41,23 @@ model School {
   principalName                 String?
   principalSignatureUrl         String?
   stampUrl                      String?
-  principalComment              String?                  @db.LongText
+  principalComment              String?            @db.LongText
   manualPaymentAccountName      String?
   manualPaymentAccountNumber    String?
   manualPaymentBankName         String?
-  primaryColor                  String                   @default("#0A66C2")
-  country                       String                   @default("NG")
-  currency                      String                   @default("NGN")
-  timezone                      String                   @default("Africa/Lagos")
-  termCount                     Int                      @default(3)
+  primaryColor                  String             @default("#0A66C2")
+  country                       String             @default("NG")
+  currency                      String             @default("NGN")
+  timezone                      String             @default("Africa/Lagos")
+  termCount                     Int                @default(3)
   address                       String?
   city                          String?
   phone                         String?
   email                         String?
-  websiteEnabled                Boolean                  @default(true)
-  showPositions                 Boolean                  @default(false)
-  createdAt                     DateTime                 @default(now())
-  updatedAt                     DateTime                 @updatedAt
+  websiteEnabled                Boolean            @default(true)
+  showPositions                 Boolean            @default(false)
+  createdAt                     DateTime           @default(now())
+  updatedAt                     DateTime           @updatedAt
   academicYears                 AcademicYear[]
   admissionCounters             AdmissionCounter[]
   announcements                 Announcement[]
@@ -71,7 +71,7 @@ model School {
   notifications                 Notification[]
   pupils                        Pupil[]
   resultAudits                  ResultAudit[]
-  partner                       Partner?                 @relation(fields: [partnerId], references: [id])
+  partner                       Partner?           @relation(fields: [partnerId], references: [id])
   enabledPhases                 SchoolOnPhase[]
   subjects                      Subject[]
   subjectClasses                SubjectClass[]
@@ -143,8 +143,6 @@ model Class {
   subjectClasses SubjectClass[]
   teacherClasses TeacherClass[]
   feeSchedules   FeeSchedule[]
-  assessments    Assessment[]
-  results        Result[]
 
   @@index([schoolId], map: "Class_schoolId_fkey")
 }
@@ -220,7 +218,6 @@ model User {
   role              UserRole
   passwordHash      String?
   createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @default(now()) @updatedAt
   teacherClasses    TeacherClass[]
   teacherSubjects   TeacherSubject[]
   platformAuditLogs PlatformAuditLog[]
@@ -305,31 +302,31 @@ model PlatformSetting {
 }
 
 model PlatformSupportRequest {
-  id        String                   @id @default(cuid())
+  id        String                      @id @default(cuid())
   schoolId  String?
   subject   String
-  message   String                   @db.LongText
-  status    SupportStatus            @default(OPEN)
-  priority  SupportPriority          @default(MEDIUM)
-  response  String?                  @db.LongText
-  createdAt DateTime                 @default(now())
-  updatedAt DateTime                 @updatedAt
-  school    School?                  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  message   String                      @db.LongText
+  status    SupportStatus               @default(OPEN)
+  priority  SupportPriority             @default(MEDIUM)
+  response  String?                     @db.LongText
+  createdAt DateTime                    @default(now())
+  updatedAt DateTime                    @updatedAt
+  school    School?                     @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   messages  PlatformSupportMessage[]
 
   @@index([schoolId], map: "PlatformSupportRequest_schoolId_fkey")
 }
 
 model PlatformSupportMessage {
-  id             String                   @id @default(cuid())
-  requestId      String
-  senderRole     SupportMessageSenderRole @default(SCHOOL)
-  senderName     String
-  senderEmail    String?
-  body           String                   @db.LongText
-  createdAt      DateTime                 @default(now())
-  updatedAt      DateTime                 @updatedAt
-  supportRequest PlatformSupportRequest   @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  id               String                   @id @default(cuid())
+  requestId        String
+  senderRole       SupportMessageSenderRole @default(SCHOOL)
+  senderName       String
+  senderEmail      String?
+  body             String                   @db.LongText
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  supportRequest   PlatformSupportRequest   @relation(fields: [requestId], references: [id], onDelete: Cascade)
 
   @@index([requestId], map: "PlatformSupportMessage_requestId_fkey")
 }
@@ -476,83 +473,61 @@ model PlatformPayment {
 }
 
 model Assessment {
-  id            String       @id @default(cuid())
-  schoolId      String
-  termId        String
-  classId       String?
-  name          String
-  phase         SchoolPhase
-  status        ResultStatus @default(DRAFT)
-  componentData String?      @db.LongText // JSON: { components: [{ id, name, maxScore, weight, sortOrder }] }
-  description   String?      @db.Text
-  dueDate       DateTime?
-  createdBy     String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @default(now()) @updatedAt
-  school        School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  term          Term         @relation(fields: [termId], references: [id], onDelete: Cascade)
-  class         Class?       @relation(fields: [classId], references: [id])
-  results       Result[]
+  id        String       @id @default(cuid())
+  schoolId  String
+  termId    String
+  name      String
+  phase     SchoolPhase
+  status    ResultStatus @default(DRAFT)
+  createdAt DateTime     @default(now())
+  school    School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  term      Term         @relation(fields: [termId], references: [id], onDelete: Cascade)
+  results   Result[]
 
   @@index([schoolId], map: "Assessment_schoolId_fkey")
   @@index([termId], map: "Assessment_termId_fkey")
-  @@index([classId], map: "Assessment_classId_fkey")
-  @@index([schoolId, termId, status])
 }
 
 model Result {
-  id              String        @id @default(cuid())
-  assessmentId    String
-  pupilId         String
-  subject         String?
-  caScore         Float?
-  testScore       Float?
-  examScore       Float?
-  grade           String?
-  position        Int?
-  comment         String?
-  publishedAt     DateTime?
-  subjectId       String?
-  classId         String?
-  createdAt       DateTime      @default(now())
-  totalScore      Float?
-  updatedAt       DateTime      @default(now()) @updatedAt
-  updatedBy       String?
-  deletedAt       DateTime?
-  scores          String?       @db.LongText // JSON: { "ca": 10, "test": 35, "exam": 45 }
-  feedback        String?       @db.LongText
-  teacherRemark   String?       @db.Text
-  principalRemark String?       @db.Text
-  classPosition   Int?
-  subjectPosition Int?
-  lockedAt        DateTime?
-  lockedBy        String?
-  assessment      Assessment    @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  pupil           Pupil         @relation(fields: [pupilId], references: [id], onDelete: Cascade)
-  class           Class?        @relation(fields: [classId], references: [id])
-  subjectRef      Subject?      @relation(fields: [subjectId], references: [id])
-  audits          ResultAudit[] @relation("ResultToAudit")
+  id           String        @id @default(cuid())
+  assessmentId String
+  pupilId      String
+  subject      String?
+  caScore      Float?
+  testScore    Float?
+  examScore    Float?
+  grade        String?
+  position     Int?
+  comment      String?
+  publishedAt  DateTime?
+  subjectId    String?
+  createdAt    DateTime      @default(now())
+  totalScore   Float?
+  updatedAt    DateTime      @default(now()) @updatedAt
+  updatedBy    String?
+  assessment   Assessment    @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  pupil        Pupil         @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+  subjectRef   Subject?      @relation(fields: [subjectId], references: [id])
+  audits       ResultAudit[] @relation("ResultToAudit")
 
   @@unique([assessmentId, pupilId, subject])
   @@index([pupilId], map: "Result_pupilId_fkey")
   @@index([subjectId], map: "Result_subjectId_fkey")
-  @@index([classId], map: "Result_classId_fkey")
-  @@index([publishedAt])
 }
 
 model GradingScale {
   id        String   @id @default(cuid())
   schoolId  String
-  grade     String
   minScore  Int
   maxScore  Int
+  grade     String
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
   @@unique([schoolId, grade])
-  @@index([schoolId], map: "GradingScale_schoolId_fkey")
+  @@index([schoolId, minScore, maxScore])
 }
 
 model ResultAudit {

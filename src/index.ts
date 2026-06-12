@@ -92,8 +92,26 @@ async function loadRoutes() {
     console.log('✓ Loaded teacher routes');
     const { default: authRoutes } = await import('./routes/auth.js');
     console.log('✓ Loaded auth routes');
+    const { default: adminComponentsRoutes } = await import('./routes/admin-components.js');
+    console.log('✓ Loaded admin components routes');
+    const { default: adminFlexibleResultsRoutes } = await import('./routes/admin-flexible-results.js');
+    console.log('✓ Loaded admin flexible results routes');
+    const { default: resultsEngineRoutes } = await import('./routes/results-engine.js');
+    console.log('✓ Loaded results engine routes');
+    const { default: reportCardRoutes } = await import('./routes/report-card.js');
+    console.log('✓ Loaded report card routes');
+    const { default: pdfReportsRoutes } = await import('./routes/pdf-reports.js');
+    console.log('✓ Loaded PDF reports routes');
+    const { default: assessmentSetupRoutes } = await import('./routes/assessment-setup.js');
+    console.log('✓ Loaded assessment setup routes');
 
     app.use('/api/admin', adminRoutes);
+    app.use('/api/admin/assessment-components', adminComponentsRoutes);
+    app.use('/api/admin/flexible-results', adminFlexibleResultsRoutes);
+    app.use('/api/assessments/setup', assessmentSetupRoutes);
+    app.use('/api/results', resultsEngineRoutes);
+    app.use('/api/report-cards', reportCardRoutes);
+    app.use('/api/pdf-reports', pdfReportsRoutes);
     app.use('/api/country', countryRoutes);
     app.use('/api/paystack', paystackRoutes);
     app.use('/api/trial', trialRoutes);

@@ -1556,6 +1556,121 @@ router.get('/students/data', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/admin/students - Create new student with guardian
+router.post('/students', upload.single('photo'), async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const {
+      firstName,
+      lastName,
+      middleName,
+      admissionNo,
+      classId,
+      status,
+      admissionDate,
+      gender,
+      dateOfBirth,
+      studentEmail,
+      studentPhone,
+      address,
+      bloodGroup,
+      genotype,
+      medicalNotes,
+      previousSchool,
+      previousClass,
+      guardianFirst,
+      guardianLast,
+      guardianRelationship,
+      guardianEmail,
+      guardianPhone,
+      guardianAltPhone,
+      guardianOccupation,
+    } = req.body;
+
+    // Validate required fields
+    if (!firstName || !lastName) {
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'First name and last name are required' });
+    }
+
+    // Create pupil
+    const pupil = await prisma.pupil.create({
+      data: {
+        schoolId,
+        firstName,
+        lastName,
+        middleName: middleName || null,
+        admissionNo,
+        classId: classId || null,
+        status: status || 'ACTIVE',
+        admissionDate: admissionDate ? new Date(admissionDate) : new Date(),
+        gender: gender || null,
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+        studentEmail: studentEmail || null,
+        studentPhone: studentPhone || null,
+        address: address || null,
+        bloodGroup: bloodGroup || null,
+        genotype: genotype || null,
+        medicalNotes: medicalNotes || null,
+        previousSchool: previousSchool || null,
+        previousClass: previousClass || null,
+        photoUrl: req.file ? `/uploads/photos/${req.file.filename}` : null,
+      },
+      include: {
+        class: true,
+        guardians: { include: { guardian: true } },
+      },
+    });
+
+    // Create or find guardian and link to pupil
+    if (guardianFirst && guardianLast) {
+      const guardian = await prisma.guardian.create({
+        data: {
+          schoolId,
+          firstName: guardianFirst,
+          lastName: guardianLast,
+          phone: guardianPhone || '',
+          altPhone: guardianAltPhone || null,
+          email: guardianEmail || null,
+          occupation: guardianOccupation || null,
+        },
+      });
+
+      // Link guardian to pupil
+      await prisma.guardianPupil.create({
+        data: {
+          guardianId: guardian.id,
+          pupilId: pupil.id,
+          relation: guardianRelationship || 'Parent',
+        },
+      });
+    }
+
+    // Fetch updated pupil with guardians
+    const updatedPupil = await prisma.pupil.findUnique({
+      where: { id: pupil.id },
+      include: {
+        class: true,
+        guardians: { include: { guardian: true } },
+      },
+    });
+
+    res.status(201).json(updatedPupil);
+  } catch (error) {
+    if (req.file) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (e) {
+        // ignore
+      }
+    }
+    console.error('Error creating student:', error);
+    res.status(500).json({ error: 'Failed to create student' });
+  }
+});
+
 // GET /api/admin/students/:id - Get single student data
 router.get('/students/:id', async (req: Request, res: Response) => {
   try {
@@ -2329,7 +2444,7 @@ router.post('/assessments', async (req: Request, res: Response) => {
 // POST /api/admin/results - Enter/update scores for students
 router.post('/results', async (req: Request, res: Response) => {
   try {
-    const { assessmentId, entries } = req.body;
+    const { assessmentId, entries, subject } = req.body;
     const schoolId = req.headers['x-school-id'] as string;
 
     if (!schoolId || !assessmentId || !Array.isArray(entries)) {
@@ -2357,7 +2472,7 @@ router.post('/results', async (req: Request, res: Response) => {
             assessmentId_pupilId_subject: {
               assessmentId,
               pupilId: entry.pupilId,
-              subject: entry.subject || null,
+              subject: entry.subject || subject || null,
             },
           },
           update: {
@@ -2371,7 +2486,7 @@ router.post('/results', async (req: Request, res: Response) => {
           create: {
             assessmentId,
             pupilId: entry.pupilId,
-            subject: entry.subject,
+            subject: entry.subject || subject || null,
             caScore: entry.caScore,
             testScore: entry.testScore,
             examScore: entry.examScore,
@@ -2507,14 +2622,22 @@ router.post('/assessments/:id/return-draft', async (req: Request, res: Response)
 // POST /api/admin/teachers - Create new teacher
 router.post('/teachers', async (req: Request, res: Response) => {
   try {
+    console.log('[POST /teachers] Request body:', req.body);
+    
     const schoolId = await resolveSchoolId(req);
+    console.log('[POST /teachers] Resolved schoolId:', schoolId);
+    
     if (!schoolId) {
+      console.error('[POST /teachers] Failed to resolve schoolId');
       return res.status(400).json({ error: 'School ID required' });
     }
 
     const { name, email, password, classIds = [], subjectIds = [] } = req.body;
 
+    console.log('[POST /teachers] Extracted fields:', { name, email, classIds, subjectIds });
+
     if (!name || !email || !password) {
+      console.error('[POST /teachers] Missing required fields:', { name: !!name, email: !!email, password: !!password });
       return res.status(400).json({ error: 'Name, email, and password are required' });
     }
 
@@ -2524,6 +2647,7 @@ router.post('/teachers', async (req: Request, res: Response) => {
     });
 
     if (existingUser) {
+      console.error('[POST /teachers] Email already exists:', email);
       return res.status(400).json({ error: 'Email already in use' });
     }
 
@@ -2531,6 +2655,8 @@ router.post('/teachers', async (req: Request, res: Response) => {
     const passwordHash = await bcrypt.hash(password, 10);
 
     // Create teacher user
+    console.log('[POST /teachers] Creating user with:', { name, email: email.toLowerCase().trim(), role: 'TEACHER', schoolId });
+    
     const teacher = await prisma.user.create({
       data: {
         name,
@@ -2541,12 +2667,16 @@ router.post('/teachers', async (req: Request, res: Response) => {
       },
     });
 
+    console.log('[POST /teachers] User created:', teacher.id);
+
     // Assign to classes
     if (classIds && classIds.length > 0) {
+      console.log('[POST /teachers] Assigning to classes:', classIds);
       await prisma.teacherClass.createMany({
         data: classIds.map((classId: string) => ({
           teacherId: teacher.id,
           classId,
+          schoolId,
         })),
         skipDuplicates: true,
       });
@@ -2554,10 +2684,12 @@ router.post('/teachers', async (req: Request, res: Response) => {
 
     // Assign to subjects
     if (subjectIds && subjectIds.length > 0) {
+      console.log('[POST /teachers] Assigning to subjects:', subjectIds);
       await prisma.teacherSubject.createMany({
         data: subjectIds.map((subjectId: string) => ({
           teacherId: teacher.id,
           subjectId,
+          schoolId,
         })),
         skipDuplicates: true,
       });
@@ -2598,20 +2730,27 @@ router.post('/teachers', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error creating teacher:', error);
-    res.status(500).json({ error: 'Failed to create teacher' });
+    const errorMessage = error instanceof Error ? error.message : 'Failed to create teacher';
+    res.status(500).json({ error: errorMessage });
   }
 });
 
 // PATCH /api/admin/teachers/:id - Update teacher
 router.patch('/teachers/:id', async (req: Request, res: Response) => {
   try {
+    console.log('[PATCH /teachers/:id] Request ID:', req.params.id);
+    console.log('[PATCH /teachers/:id] Request body:', req.body);
+
     const schoolId = await resolveSchoolId(req);
+    console.log('[PATCH /teachers/:id] Resolved schoolId:', schoolId);
+
     if (!schoolId) {
+      console.error('[PATCH /teachers/:id] Failed to resolve schoolId');
       return res.status(400).json({ error: 'School ID required' });
     }
 
     const { id } = req.params;
-    const { name, email } = req.body;
+    const { name, email, password, classIds = [], subjectIds = [] } = req.body;
 
     // Verify teacher belongs to school
     const teacher = await prisma.user.findFirst({
@@ -2619,16 +2758,34 @@ router.patch('/teachers/:id', async (req: Request, res: Response) => {
     });
 
     if (!teacher) {
+      console.error('[PATCH /teachers/:id] Teacher not found:', id);
       return res.status(404).json({ error: 'Teacher not found' });
     }
 
-    // Update teacher
+    console.log('[PATCH /teachers/:id] Updating teacher:', { id, name, email });
+
+    // Update teacher basic info
+    const updateData: any = {};
+    if (name) updateData.name = name;
+    if (email) {
+      const trimmedEmail = email.toLowerCase().trim();
+      // Check if email is already used by another user
+      const existingUser = await prisma.user.findUnique({
+        where: { email: trimmedEmail },
+      });
+      if (existingUser && existingUser.id !== id) {
+        return res.status(400).json({ error: 'Email already in use' });
+      }
+      updateData.email = trimmedEmail;
+    }
+    if (password) {
+      console.log('[PATCH /teachers/:id] Updating password');
+      updateData.passwordHash = await bcrypt.hash(password, 10);
+    }
+
     const updated = await prisma.user.update({
       where: { id },
-      data: {
-        name: name || undefined,
-        email: email ? email.toLowerCase().trim() : undefined,
-      },
+      data: updateData,
       select: {
         id: true,
         name: true,
@@ -2637,10 +2794,56 @@ router.patch('/teachers/:id', async (req: Request, res: Response) => {
       },
     });
 
+    console.log('[PATCH /teachers/:id] User updated:', updated.id);
+
+    // Update class assignments - delete all and recreate
+    if (classIds !== undefined && Array.isArray(classIds)) {
+      console.log('[PATCH /teachers/:id] Updating class assignments to:', classIds);
+      // Delete existing assignments
+      await prisma.teacherClass.deleteMany({
+        where: { teacherId: id },
+      });
+
+      // Create new assignments
+      if (classIds && classIds.length > 0) {
+        await prisma.teacherClass.createMany({
+          data: classIds.map((classId: string) => ({
+            teacherId: id,
+            classId,
+            schoolId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    // Update subject assignments - delete all and recreate
+    if (subjectIds !== undefined && Array.isArray(subjectIds)) {
+      console.log('[PATCH /teachers/:id] Updating subject assignments to:', subjectIds);
+      // Delete existing assignments
+      await prisma.teacherSubject.deleteMany({
+        where: { teacherId: id },
+      });
+
+      // Create new assignments
+      if (subjectIds && subjectIds.length > 0) {
+        await prisma.teacherSubject.createMany({
+          data: subjectIds.map((subjectId: string) => ({
+            teacherId: id,
+            subjectId,
+            schoolId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    console.log('[PATCH /teachers/:id] Teacher updated successfully');
     res.json(updated);
   } catch (error) {
     console.error('Error updating teacher:', error);
-    res.status(500).json({ error: 'Failed to update teacher' });
+    const errorMessage = error instanceof Error ? error.message : 'Failed to update teacher';
+    res.status(500).json({ error: errorMessage });
   }
 });
 
@@ -3941,6 +4144,134 @@ router.post('/whatsapp/send-message', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error sending WhatsApp message:', error);
     res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+// POST /api/admin/seed/defaults/:schoolId
+// Seed default grading scales for a school
+router.post('/seed/defaults/:schoolId', async (req: Request, res: Response) => {
+  try {
+    const { schoolId } = req.params;
+    const { ensureGradingScales = true, ensureAssessmentConfig = false, assessmentId } = req.body;
+
+    // Verify school exists
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+    });
+
+    if (!school) {
+      return res.status(404).json({ error: 'School not found' });
+    }
+
+    const results: any = {};
+
+    // Seed grading scales if requested
+    if (ensureGradingScales) {
+      const existingScales = await prisma.gradingScale.findMany({
+        where: { schoolId },
+      });
+
+      if (existingScales.length === 0) {
+        const defaultScales = [
+          { grade: 'A', minScore: 70, maxScore: 100 },
+          { grade: 'B', minScore: 60, maxScore: 69 },
+          { grade: 'C', minScore: 50, maxScore: 59 },
+          { grade: 'D', minScore: 45, maxScore: 49 },
+          { grade: 'E', minScore: 40, maxScore: 44 },
+          { grade: 'F', minScore: 0, maxScore: 39 },
+        ];
+
+        for (const scale of defaultScales) {
+          await prisma.gradingScale.create({
+            data: { schoolId, ...scale },
+          });
+        }
+
+        results.gradingScalesCreated = defaultScales.length;
+      } else {
+        results.gradingScalesExisted = existingScales.length;
+      }
+    }
+
+    // Seed assessment configuration if requested
+    if (ensureAssessmentConfig && assessmentId) {
+      const assessment = await prisma.assessment.findFirst({
+        where: { id: assessmentId, schoolId },
+      });
+
+      if (!assessment) {
+        return res.status(404).json({ error: 'Assessment not found' });
+      }
+
+      if (!assessment.componentData) {
+        const defaultConfig = {
+          components: [
+            {
+              id: 'comp-ca',
+              name: 'Continuous Assessment',
+              maxScore: 20,
+              weight: 20,
+              sortOrder: 1,
+            },
+            {
+              id: 'comp-test',
+              name: 'Test',
+              maxScore: 20,
+              weight: 20,
+              sortOrder: 2,
+            },
+            {
+              id: 'comp-exam',
+              name: 'Examination',
+              maxScore: 60,
+              weight: 60,
+              sortOrder: 3,
+            },
+          ],
+        };
+
+        await prisma.assessment.update({
+          where: { id: assessmentId },
+          data: { componentData: JSON.stringify(defaultConfig) },
+        });
+
+        results.assessmentConfigured = true;
+      } else {
+        results.assessmentAlreadyConfigured = true;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Defaults seeded successfully',
+      schoolId,
+      results,
+    });
+  } catch (error) {
+    console.error('Error seeding defaults:', error);
+    res.status(500).json({ error: 'Failed to seed defaults' });
+  }
+});
+
+// GET /api/admin/subjects - Get all subjects for the school
+router.get('/subjects', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const subjects = await prisma.subject.findMany({
+      where: { schoolId },
+      select: {
+        id: true,
+        name: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    res.json({ subjects });
+  } catch (error) {
+    console.error('Error fetching subjects:', error);
+    res.status(500).json({ error: 'Failed to fetch subjects' });
   }
 });
 

@@ -258,11 +258,12 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// GET /api/teacher/assessments/:assessmentId - Get assessment with results
+// GET /api/teacher/assessments/:assessmentId - Get assessment with results (supports ?subject=subjectId filter)
 router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) => {
   try {
     const { userId, schoolId } = req.user!;
     const { assessmentId } = req.params;
+    const { subject } = req.query;
 
     // Verify teacher is assigned to a class with this assessment's phase
     const teacherClasses = await prisma.teacherClass.findMany({
@@ -291,6 +292,12 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
                 admissionNo: true,
               },
             },
+            subjectRef: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
           },
         },
       },
@@ -305,13 +312,30 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
       return res.status(403).json({ error: 'Not authorized to view this assessment' });
     }
 
+    // Filter results by subject if provided
+    let filteredResults = assessment.results;
+    if (subject && typeof subject === 'string') {
+      // Filter by subject name from the subjectRef relation
+      filteredResults = assessment.results.filter((r) => 
+        r.subjectRef?.name === subject || r.subject === subject
+      );
+    }
+
+    // Deduplicate by pupilId (keep first occurrence)
+    const seenPupils = new Set<string>();
+    const uniqueResults = filteredResults.filter((r) => {
+      if (seenPupils.has(r.pupilId)) return false;
+      seenPupils.add(r.pupilId);
+      return true;
+    });
+
     res.json({
       assessment: {
         id: assessment.id,
         name: assessment.name,
         phase: assessment.phase,
         status: assessment.status,
-        results: assessment.results.map((r) => ({
+        results: uniqueResults.map((r) => ({
           id: r.id,
           pupilId: r.pupil.id,
           pupilName: `${r.pupil.firstName} ${r.pupil.lastName}`,
@@ -466,11 +490,11 @@ router.get('/results/:classId', async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// POST /api/teacher/results - Save result scores
+// POST /api/teacher/results - Save result scores (supports optional subject parameter)
 router.post('/results', async (req: AuthenticatedRequest, res) => {
   try {
-    const { schoolId } = req.user!;
-    const { assessmentId, scores } = req.body;
+    const { userId, schoolId } = req.user!;
+    const { assessmentId, scores, subject } = req.body;
 
     if (!assessmentId || !Array.isArray(scores)) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -485,6 +509,23 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
+    // If subject is specified, verify teacher is assigned to it
+    if (subject && typeof subject === 'string') {
+      const teacherSubjectAssignment = await prisma.teacherSubject.findFirst({
+        where: {
+          teacherId: userId,
+          schoolId,
+          subject: {
+            name: subject,
+          },
+        },
+      });
+
+      if (!teacherSubjectAssignment) {
+        return res.status(403).json({ error: `Not authorized to score subject: ${subject}` });
+      }
+    }
+
     // Bulk upsert results
     const results = await Promise.all(
       scores.map((score: { pupilId: string; caScore?: number; testScore?: number; examScore?: number }) =>
@@ -493,7 +534,7 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
             assessmentId_pupilId_subject: {
               assessmentId,
               pupilId: score.pupilId,
-              subject: null as any,
+              subject: subject || null,
             },
           },
           update: {
@@ -504,6 +545,7 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
           create: {
             assessmentId,
             pupilId: score.pupilId,
+            subject: subject || null,
             caScore: score.caScore,
             testScore: score.testScore,
             examScore: score.examScore,
