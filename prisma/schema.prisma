@@ -62,16 +62,24 @@ model School {
   admissionCounters             AdmissionCounter[]
   announcements                 Announcement[]
   assessments                   Assessment[]
+  assessmentComponents          AssessmentComponent[]
+  assessmentTemplates           AssessmentTemplate[]
   attendance                    AttendanceRecord[]
+  behaviourAssessments          BehaviourAssessment[]
   classes                       Class[]
   feeSchedules                  FeeSchedule[]
   gradingScales                 GradingScale[]
   guardians                     Guardian[]
   invoices                      Invoice[]
   notifications                 Notification[]
+  psychomotorAssessments        PsychomotorAssessment[]
   pupils                        Pupil[]
+  reportTemplates               ReportTemplate[]
   resultAudits                  ResultAudit[]
-  partner                       Partner?                 @relation(fields: [partnerId], references: [id])
+  resultSheets                  ResultSheet[]
+  studentSummaries              StudentTermSummary[] @relation("School_StudentTermSummary")
+  promotionRecords              PromotionRecord[] @relation("School_PromotionRecord")
+  partner                       Partner?                 @relation(fields: [partnerId], references: [id], map: "School_partnerId_fkey")
   enabledPhases                 SchoolOnPhase[]
   subjects                      Subject[]
   subjectClasses                SubjectClass[]
@@ -112,8 +120,11 @@ model AcademicYear {
   createdAt DateTime @default(now())
   school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   terms     Term[]
+  resultSheets      ResultSheet[]
+  promotionRecords  PromotionRecord[]
 
   @@index([schoolId], map: "AcademicYear_schoolId_fkey")
+  @@unique([schoolId, name])
 }
 
 model Term {
@@ -124,7 +135,10 @@ model Term {
   startsOn       DateTime?
   endsOn         DateTime?
   assessments    Assessment[]
+  behaviourAssessments BehaviourAssessment[]
   feeSchedules   FeeSchedule[]
+  psychomotorAssessments PsychomotorAssessment[]
+  resultSheets   ResultSheet[]
   academicYear   AcademicYear  @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
 
   @@index([academicYearId], map: "Term_academicYearId_fkey")
@@ -138,15 +152,21 @@ model Class {
   arm            String?
   createdAt      DateTime           @default(now())
   attendance     AttendanceRecord[]
+  behaviourAssessments BehaviourAssessment[]
+  psychomotorAssessments PsychomotorAssessment[]
+  resultSheets   ResultSheet[]
   school         School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   pupils         Pupil[]
   subjectClasses SubjectClass[]
+  studentSummaries StudentTermSummary[]
+  subjectResults SubjectResult[]
   teacherClasses TeacherClass[]
   feeSchedules   FeeSchedule[]
   assessments    Assessment[]
   results        Result[]
 
   @@index([schoolId], map: "Class_schoolId_fkey")
+  @@unique([schoolId, name, phase])
 }
 
 model Pupil {
@@ -173,8 +193,13 @@ model Pupil {
   studentEmail   String?
   studentPhone   String?
   attendance     AttendanceRecord[]
+  behaviourAssessments BehaviourAssessment[]
   guardians      GuardianPupil[]
   invoices       Invoice[]
+  promotionRecords PromotionRecord[]
+  psychomotorAssessments PsychomotorAssessment[]
+  studentSummaries StudentTermSummary[]
+  subjectResults SubjectResult[]
   class          Class?             @relation(fields: [classId], references: [id])
   school         School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   results        Result[]
@@ -338,12 +363,15 @@ model Subject {
   id              String           @id @default(cuid())
   schoolId        String
   name            String
+  code            String?
   createdAt       DateTime         @default(now())
   results         Result[]
   school          School           @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   subjectClasses  SubjectClass[]
+  subjectResults  SubjectResult[]
   teacherSubjects TeacherSubject[]
 
+  @@index([schoolId])
   @@unique([schoolId, name])
 }
 
@@ -491,13 +519,51 @@ model Assessment {
   updatedAt     DateTime     @default(now()) @updatedAt
   school        School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   term          Term         @relation(fields: [termId], references: [id], onDelete: Cascade)
-  class         Class?       @relation(fields: [classId], references: [id])
+  class         Class?       @relation(fields: [classId], references: [id], onDelete: SetNull)
+  resultSheets  ResultSheet[] @relation("AssessmentToSheet")
   results       Result[]
+  components    AssessmentComponent[]
 
   @@index([schoolId], map: "Assessment_schoolId_fkey")
   @@index([termId], map: "Assessment_termId_fkey")
   @@index([classId], map: "Assessment_classId_fkey")
   @@index([schoolId, termId, status])
+}
+
+model AssessmentComponent {
+  id                String                  @id @default(cuid())
+  schoolId          String
+  assessmentId      String
+  name              String
+  componentType     AssessmentComponentType
+  maxScore          Int
+  weight            Float
+  sortOrder         Int
+  isOptional        Boolean                 @default(false)
+  createdAt         DateTime                @default(now())
+  
+  school            School                  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  assessment        Assessment              @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId])
+  @@index([assessmentId])
+  @@unique([assessmentId, name])
+}
+
+model AssessmentTemplate {
+  id                String                  @id @default(cuid())
+  schoolId          String
+  name              String
+  description       String?
+  applicablePhases  String                  @db.LongText
+  isActive          Boolean                 @default(true)
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  
+  school            School                  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId])
+  @@unique([schoolId, name])
 }
 
 model Result {
@@ -538,6 +604,251 @@ model Result {
   @@index([subjectId], map: "Result_subjectId_fkey")
   @@index([classId], map: "Result_classId_fkey")
   @@index([publishedAt])
+}
+
+model SubjectResult {
+  id                String        @id @default(cuid())
+  schoolId          String
+  classId           String
+  pupilId           String
+  subjectId         String
+  termId            String
+  academicYearId    String
+  
+  totalScore        Float
+  averageScore      Float
+  grade             String?
+  position          Int?
+  teacherRemarks    String?       @db.Text
+  
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  
+  pupil             Pupil         @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+  subject           Subject       @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  class             Class         @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([pupilId, subjectId, termId])
+  @@index([classId, termId])
+  @@index([pupilId, termId])
+  @@index([position])
+}
+
+model ResultSheet {
+  id                String        @id @default(cuid())
+  schoolId          String
+  classId           String
+  termId            String
+  academicYearId    String
+  
+  status            ResultStatus  @default(DRAFT)
+  
+  submittedBy       String?
+  submittedAt       DateTime?
+  
+  classTeacherComments String?    @db.Text
+  classTeacherReviewedBy String?
+  classTeacherReviewedAt DateTime?
+  
+  principalComments String?       @db.Text
+  principalReviewedBy String?
+  principalReviewedAt DateTime?
+  
+  publishedBy       String?
+  publishedAt       DateTime?
+  
+  totalAssessments  Int
+  totalStudents     Int
+  completionPercentage Int
+  
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  
+  school            School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  class             Class         @relation(fields: [classId], references: [id], onDelete: Cascade)
+  term              Term          @relation(fields: [termId], references: [id], onDelete: Cascade)
+  academicYear      AcademicYear  @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  assessments       Assessment[]  @relation("AssessmentToSheet")
+
+  @@unique([classId, termId])
+  @@index([schoolId, termId])
+  @@index([status])
+  @@index([academicYearId])
+}
+
+model StudentTermSummary {
+  id                String        @id @default(cuid())
+  schoolId          String
+  classId           String
+  pupilId           String
+  termId            String
+  academicYearId    String
+  
+  totalScore        Float
+  averageScore      Float
+  gradePointAverage Float?
+  classPosition     Int?
+  classPositionTied Boolean       @default(false)
+  
+  passFailStatus    String?
+  overallGrade      String?
+  performanceBand   String?
+  
+  attendancePercentage Float?
+  behaviorGrade     String?
+  
+  principalRemarks  String?       @db.LongText
+  classTeacherRemarks String?     @db.LongText
+  recommendations   String?       @db.LongText
+  
+  promotionDecision PromotionDecision?
+  promotionToClass  String?
+  promotionDecidedBy String?
+  promotionDecidedAt DateTime?
+  
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  
+  school            School        @relation("School_StudentTermSummary", fields: [schoolId], references: [id], onDelete: Cascade, map: "StudentTermSummary_schoolId_fkey")
+  pupil             Pupil         @relation(fields: [pupilId], references: [id], onDelete: Cascade, map: "StudentTermSummary_pupilId_fkey")
+  class             Class         @relation(fields: [classId], references: [id], onDelete: Cascade, map: "StudentTermSummary_classId_fkey")
+
+  @@unique([pupilId, termId])
+  @@index([classId, termId])
+  @@index([classPosition])
+  @@index([schoolId, termId])
+}
+
+model BehaviourAssessment {
+  id                String        @id @default(cuid())
+  schoolId          String
+  classId           String
+  pupilId           String
+  termId            String
+  
+  behaviours        String        @db.LongText
+  overallRating     BehaviourRating
+  comments          String?       @db.LongText
+  
+  ratedBy           String?
+  ratedAt           DateTime?
+  createdAt         DateTime      @default(now())
+  
+  school            School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  class             Class         @relation(fields: [classId], references: [id], onDelete: Cascade)
+  pupil             Pupil         @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+  term              Term          @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  @@unique([pupilId, termId])
+  @@index([classId, termId])
+}
+
+model PsychomotorAssessment {
+  id                String        @id @default(cuid())
+  schoolId          String
+  classId           String
+  pupilId           String
+  termId            String
+  
+  skills            String        @db.LongText
+  comments          String?       @db.LongText
+  
+  ratedBy           String?
+  ratedAt           DateTime?
+  createdAt         DateTime      @default(now())
+  
+  school            School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  class             Class         @relation(fields: [classId], references: [id], onDelete: Cascade)
+  pupil             Pupil         @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+  term              Term          @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  @@unique([pupilId, termId])
+  @@index([classId, termId])
+}
+
+model ResultVerification {
+  id                String        @id @default(cuid())
+  schoolId          String
+  resultSheetId     String?
+  pupilId           String?
+  
+  verificationCode  String        @unique
+  qrCodeData        String?       @db.LongText
+  barcode128        String?
+  
+  generatedAt       DateTime      @default(now())
+  expiresAt         DateTime?
+  
+  isVerified        Boolean       @default(false)
+  verifiedAt        DateTime?
+  verifiedBy        String?
+  verificationCount Int           @default(0)
+  
+  resultHash        String?
+
+  @@index([verificationCode])
+  @@index([schoolId])
+}
+
+model ReportTemplate {
+  id                String        @id @default(cuid())
+  schoolId          String
+  name              String
+  isDefault         Boolean       @default(false)
+  
+  includeSchoolHeader Boolean      @default(true)
+  includeStudentPhoto Boolean      @default(true)
+  includeAttendance   Boolean      @default(true)
+  includeBehavior     Boolean      @default(true)
+  includePsychomotor  Boolean      @default(true)
+  includeRanking      Boolean      @default(false)
+  includeTeacherRemarks Boolean    @default(true)
+  includePrincipalRemarks Boolean  @default(true)
+  includePromotionDecision Boolean @default(true)
+  includeVerificationCode Boolean  @default(true)
+  includeQRCode       Boolean      @default(true)
+  
+  headerHtml        String?       @db.LongText
+  footerHtml        String?       @db.LongText
+  cssStyles         String?       @db.LongText
+  
+  displayMode       String        @default("ALL_SUBJECTS")
+  
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  
+  school            School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([schoolId, name])
+}
+
+model PromotionRecord {
+  id                String        @id @default(cuid())
+  schoolId          String
+  pupilId           String
+  fromClassId       String
+  toClassId         String?
+  academicYearId    String
+  termId            String?
+  
+  decision          PromotionDecision
+  rationale         String?       @db.LongText
+  
+  decidedBy         String?
+  decidedAt         DateTime      @default(now())
+  
+  appealable        Boolean       @default(true)
+  appealDeadline    DateTime?
+  
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  
+  school            School        @relation("School_PromotionRecord", fields: [schoolId], references: [id], onDelete: Cascade)
+  pupil             Pupil         @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+  academicYear      AcademicYear  @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, academicYearId])
+  @@index([pupilId])
 }
 
 model GradingScale {
@@ -652,6 +963,33 @@ enum SchoolPhase {
   SECONDARY
 }
 
+enum AssessmentComponentType {
+  CA
+  ASSIGNMENT
+  QUIZ
+  PROJECT
+  PRACTICAL
+  MIDTERM
+  EXAM
+  PARTICIPATION
+  OTHER
+}
+
+enum PromotionDecision {
+  PROMOTED
+  REPEATED
+  TRANSFERRED
+  GRADUATED
+}
+
+enum BehaviourRating {
+  EXCELLENT
+  VERY_GOOD
+  GOOD
+  SATISFACTORY
+  NEEDS_IMPROVEMENT
+}
+
 enum SchoolPlan {
   FREE
   STARTER
@@ -693,6 +1031,7 @@ enum UserRole {
   BURSAR
   TEACHER
   PARENT
+  STUDENT
 }
 
 enum InvoiceStatus {
@@ -713,8 +1052,12 @@ enum PaymentMethod {
 
 enum ResultStatus {
   DRAFT
+  SUBMITTED
+  CLASS_TEACHER_REVIEW
+  ADMIN_REVIEW
   APPROVED
   PUBLISHED
+  ARCHIVED
 }
 
 enum AttendanceStatus {

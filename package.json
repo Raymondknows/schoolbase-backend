@@ -9,9 +9,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "db:generate": "prisma generate --schema ../packages/database/prisma/schema.prisma",
-    "db:push": "prisma db push --schema ../packages/database/prisma/schema.prisma",
-    "db:migrate": "prisma migrate dev --schema ../packages/database/prisma/schema.prisma"
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate dev"
   },
   "dependencies": {
     "@schoolbase/database": "file:../packages/database",
