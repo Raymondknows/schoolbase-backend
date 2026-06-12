@@ -48,7 +48,7 @@ export class ResultsValidator {
           },
         },
         results: {
-          include: { pupil: true, subject: true },
+          include: { pupil: true, subjectRef: true },
         },
         _count: { select: { results: true } },
       },

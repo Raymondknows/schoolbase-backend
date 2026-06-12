@@ -390,7 +390,7 @@ export class ResultsDomainService {
         resultId: 'BATCH', // Batch operation
         pupilId: 'BATCH',
         action: 'BATCH_LOCKED',
-        changes: { operation: 'lock_all_results', timestamp: now.toISOString() },
+        changes: JSON.stringify({ operation: 'lock_all_results', timestamp: now.toISOString() }),
         changedBy: userId,
         changedAt: now,
       },
@@ -433,7 +433,7 @@ export class ResultsDomainService {
         resultId: 'BATCH',
         pupilId: 'BATCH',
         action: 'BATCH_UNLOCKED',
-        changes: { operation: 'unlock_all_results', timestamp: now.toISOString() },
+        changes: JSON.stringify({ operation: 'unlock_all_results', timestamp: now.toISOString() }),
         changedBy: userId,
         changedAt: now,
       },
@@ -473,7 +473,6 @@ export class ResultsDomainService {
       where: { id: assessmentId },
       data: {
         status: 'PUBLISHED',
-        publishedAt: now,
       },
     });
 
@@ -485,7 +484,7 @@ export class ResultsDomainService {
         resultId: 'BATCH',
         pupilId: 'BATCH',
         action: 'ASSESSMENT_PUBLISHED',
-        changes: { status: 'PUBLISHED', timestamp: now.toISOString() },
+        changes: JSON.stringify({ status: 'PUBLISHED', timestamp: now.toISOString() }),
         changedBy: userId,
         changedAt: now,
       },
@@ -515,8 +514,7 @@ export class ResultsDomainService {
     await this.prisma.assessment.update({
       where: { id: assessmentId },
       data: {
-        status: 'LOCKED',
-        publishedAt: null,
+        status: 'APPROVED',
       },
     });
 
@@ -528,7 +526,7 @@ export class ResultsDomainService {
         resultId: 'BATCH',
         pupilId: 'BATCH',
         action: 'ASSESSMENT_UNPUBLISHED',
-        changes: { status: 'LOCKED', timestamp: now.toISOString() },
+        changes: JSON.stringify({ status: 'APPROVED', timestamp: now.toISOString() }),
         changedBy: userId,
         changedAt: now,
       },
@@ -555,7 +553,7 @@ export class ResultsDomainService {
         assessmentId,
         pupilId,
         action,
-        changes,
+        changes: typeof changes === 'string' ? changes : JSON.stringify(changes),
         changedBy: userId,
         schoolId,
         changedAt: new Date(),
@@ -580,17 +578,19 @@ export class ResultsDomainService {
 
     const results = await this.prisma.result.findMany({
       where: { assessmentId },
-      include: { pupil: true, subject: true },
+      include: { pupil: true, subjectRef: true },
       orderBy: { classPosition: 'asc' },
     });
 
-    const subjects = await this.prisma.subject.findMany({
-      where: {
-        subjectClasses: {
-          some: { classId: assessment.classId },
-        },
-      },
-    });
+    const subjects = assessment.classId
+      ? await this.prisma.subject.findMany({
+          where: {
+            subjectClasses: {
+              some: { classId: assessment.classId },
+            },
+          },
+        })
+      : [];
 
     const totalScores = results
       .map((r) => r.totalScore || 0)
