@@ -34,19 +34,29 @@ router.post('/request-otp', async (req: Request, res: Response) => {
       return res.status(409).json({ error: 'School slug already exists' });
     }
 
-    // Check if email already exists
+    // Check if email already exists as a completed user
     const existingUser = await prisma.user.findUnique({
       where: { email: adminEmail.toLowerCase() },
     });
 
     if (existingUser) {
-      return res.status(409).json({ error: 'Email already registered' });
+      return res.status(409).json({ error: 'Email already registered. Please use a different email or contact support if you need to recover your account.' });
+    }
+
+    // Allow resending OTP if email is already in signup process
+    const existingSignup = await prisma.signupOtp.findUnique({
+      where: { email: adminEmail.toLowerCase() },
+    });
+
+    if (existingSignup && !existingSignup.verifiedAt) {
+      console.log('Resending OTP to email already in signup process:', adminEmail);
     }
 
     // Generate and send OTP
     const otp = generateOtp();
     storeOtp(adminEmail, otp);
 
+    // Send email synchronously (like password reset does) - wait for it to complete
     await sendSignupOtpEmail(adminEmail, otp, schoolName);
 
     return res.json({

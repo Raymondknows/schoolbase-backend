@@ -32,7 +32,7 @@ export async function sendSignupOtpEmail(email: string, otp: string, schoolName:
     }
 
     const message = await transporter.sendMail({
-      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      from: process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
       subject: 'SchoolBase Account Verification',
       html: `
@@ -158,7 +158,7 @@ export async function sendPasswordResetEmail(email: string, resetLink: string, u
     }
 
     await transporter.sendMail({
-      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      from: process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
       subject: 'Reset your SchoolBase password',
       html: `
