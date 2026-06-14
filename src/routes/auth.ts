@@ -227,4 +227,31 @@ router.post('/verify', async (req: Request, res: Response) => {
   }
 });
 
+// ============================================
+// POST /api/auth/logout
+// Clear session and logout user
+// ============================================
+router.post('/logout', (req: Request, res: Response) => {
+  try {
+    // Clear the session cookie with exact same options as when set
+    res.clearCookie('schoolbase_session', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      path: '/',
+      domain: process.env.NODE_ENV === 'production' ? '.schoolbase.live' : undefined,
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Logged out successfully' 
+    });
+  } catch (error) {
+    console.error('[AUTH] Logout error:', error);
+    res.status(500).json({ 
+      error: 'Failed to logout' 
+    });
+  }
+});
+
 export default router;
