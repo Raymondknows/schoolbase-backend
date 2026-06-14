@@ -143,29 +143,22 @@ router.post('/school-login', async (req: Request, res: Response) => {
       });
     }
 
-    // CRITICAL: REJECT PLATFORM_ADMIN trying to login here
-    if (user.role === 'PLATFORM_ADMIN') {
-      console.warn(`[AUTH] Platform admin tried to use school login: ${email}`);
-      return res.status(403).json({ 
-        error: 'Platform admins must use the platform login portal.' 
-      });
-    }
-
-    // CRITICAL: School users MUST have a schoolId
-    if (!user.schoolId) {
+    // ALLOW: PLATFORM_ADMIN can login through this endpoint (they just have no schoolId)
+    // REQUIRED: School users MUST have a schoolId
+    if (user.role !== 'PLATFORM_ADMIN' && !user.schoolId) {
       console.error(`[AUTH] School user has no schoolId: ${email} (${user.role})`);
       return res.status(403).json({ 
         error: 'This account is not assigned to a school.' 
       });
     }
 
-    // Create JWT token (with schoolId for school users)
+    // Create JWT token (with schoolId for school users, null for platform admin)
     const token = await new SignJWT({
       userId: user.id,
       role: user.role,
       email: user.email,
       name: user.name,
-      schoolId: user.schoolId,
+      schoolId: user.schoolId || null, // Platform admin has null schoolId
     })
       .setProtectedHeader({ alg: 'HS256' })
       .setIssuedAt()
@@ -233,6 +226,11 @@ router.post('/verify', async (req: Request, res: Response) => {
 // ============================================
 router.post('/logout', (req: Request, res: Response) => {
   try {
+    // Get the incoming cookie for debugging
+    const incomingCookie = req.cookies?.schoolbase_session;
+    console.log('[AUTH] Logout request received');
+    console.log('[AUTH] Incoming session cookie:', incomingCookie ? 'present' : 'missing');
+    
     // Clear the session cookie with exact same options as when set
     res.clearCookie('schoolbase_session', {
       httpOnly: true,
@@ -242,6 +240,8 @@ router.post('/logout', (req: Request, res: Response) => {
       domain: process.env.NODE_ENV === 'production' ? '.schoolbase.live' : undefined,
     });
 
+    console.log('[AUTH] Session cookie cleared successfully');
+    
     res.json({ 
       success: true, 
       message: 'Logged out successfully' 
