@@ -222,14 +222,15 @@ router.post('/verify', async (req: Request, res: Response) => {
 
 // ============================================
 // POST /api/auth/logout
-// Clear session and logout user
+// Clear session and logout user, then redirect
 // ============================================
 router.post('/logout', (req: Request, res: Response) => {
   try {
-    // Get the incoming cookie for debugging
-    const incomingCookie = req.cookies?.schoolbase_session;
+    // Get redirect URL from query params
+    const redirectUrl = req.query.redirectUrl || '/login';
+    
     console.log('[AUTH] Logout request received');
-    console.log('[AUTH] Incoming session cookie:', incomingCookie ? 'present' : 'missing');
+    console.log('[AUTH] Redirect URL:', redirectUrl);
     
     // Clear the session cookie with exact same options as when set
     res.clearCookie('schoolbase_session', {
@@ -240,12 +241,11 @@ router.post('/logout', (req: Request, res: Response) => {
       domain: process.env.NODE_ENV === 'production' ? '.schoolbase.live' : undefined,
     });
 
-    console.log('[AUTH] Session cookie cleared successfully');
+    console.log('[AUTH] Session cookie cleared');
     
-    res.json({ 
-      success: true, 
-      message: 'Logged out successfully' 
-    });
+    // CRITICAL: Redirect to frontend login page
+    const frontendUrl = process.env.FRONTEND_URL || 'https://www.schoolbase.live';
+    res.redirect(302, `${frontendUrl}${redirectUrl}`);
   } catch (error) {
     console.error('[AUTH] Logout error:', error);
     res.status(500).json({ 
