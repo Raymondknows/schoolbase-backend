@@ -66,24 +66,36 @@ function secret() {
 }
 
 async function resolveSchoolId(req: Request) {
+  // Check query parameter first
   const schoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string);
   if (schoolId) {
+    console.log('[resolveSchoolId] Found schoolId in query/headers:', schoolId);
     return schoolId;
+  }
+
+  // Check request body
+  const bodySchoolId = (req.body as any)?.schoolId;
+  if (bodySchoolId) {
+    console.log('[resolveSchoolId] Found schoolId in body:', bodySchoolId);
+    return bodySchoolId;
   }
 
   // Check unified session cookie (supports both old and new names for backward compatibility)
   const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
-  console.log('[resolveSchoolId] token:', token ? 'present' : 'missing', 'cookies:', Object.keys(req.cookies || {}));
+  console.log('[resolveSchoolId] Checking cookies - schoolbase_session:', req.cookies?.schoolbase_session ? 'present' : 'missing', 
+    ', all cookies:', Object.keys(req.cookies || {}));
   
   if (token) {
     try {
       const { payload } = await jwtVerify(token, secret());
-      console.log('[resolveSchoolId] payload:', payload);
+      console.log('[resolveSchoolId] JWT payload:', payload);
       if (payload && typeof payload === 'object' && 'schoolId' in payload) {
-        return String((payload as any).schoolId);
+        const resolvedId = String((payload as any).schoolId);
+        console.log('[resolveSchoolId] Resolved schoolId from token:', resolvedId);
+        return resolvedId;
       }
     } catch (err) {
-      console.log('[resolveSchoolId] JWT verification failed:', (err as Error).message);
+      console.error('[resolveSchoolId] JWT verification failed:', (err as Error).message);
     }
   }
 
@@ -108,10 +120,13 @@ async function resolveSchoolId(req: Request) {
   }
 
   if (slug) {
+    console.log('[resolveSchoolId] Looking up school by slug:', slug);
     const school = await prisma.school.findUnique({ where: { slug } });
+    console.log('[resolveSchoolId] Found school by slug:', school?.id);
     return school?.id ?? null;
   }
 
+  console.log('[resolveSchoolId] No schoolId found anywhere');
   return null;
 }
 
@@ -1411,6 +1426,95 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
   }
 });
 
+// POST /api/admin/fees/payments/record - Record a payment against an invoice
+router.post('/fees/payments/record', async (req: Request, res: Response) => {
+  try {
+    console.log('[/fees/payments/record] Request received');
+    console.log('[/fees/payments/record] Cookies:', Object.keys(req.cookies || {}));
+    console.log('[/fees/payments/record] Body:', req.body);
+    
+    const schoolId = await resolveSchoolId(req);
+    console.log('[/fees/payments/record] Resolved schoolId:', schoolId);
+    
+    if (!schoolId) {
+      console.error('[/fees/payments/record] No schoolId resolved');
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { invoiceId, amount, method, reference } = req.body;
+
+    // Validate required fields
+    if (!invoiceId || !amount || !method) {
+      return res.status(400).json({ error: 'Invoice ID, amount, and payment method are required' });
+    }
+
+    // Fetch the invoice
+    const invoice = await prisma.invoice.findFirst({
+      where: { id: invoiceId, schoolId },
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    // Convert amount from string to integer (amount * 100 for cents)
+    const amountInCents = Math.round(parseFloat(amount as any) * 100);
+
+    if (amountInCents <= 0) {
+      return res.status(400).json({ error: 'Payment amount must be greater than 0' });
+    }
+
+    // Check if payment exceeds outstanding balance
+    const outstanding = invoice.amountDue - invoice.amountPaid;
+    if (amountInCents > outstanding) {
+      return res.status(400).json({ error: `Payment amount cannot exceed outstanding balance of ${(outstanding / 100).toFixed(2)}` });
+    }
+
+    // Create payment record
+    const payment = await prisma.payment.create({
+      data: {
+        invoiceId,
+        amount: amountInCents,
+        method,
+        reference: reference || null,
+      },
+    });
+
+    // Update invoice amountPaid and status
+    const newAmountPaid = invoice.amountPaid + amountInCents;
+    const newStatus = newAmountPaid >= invoice.amountDue ? 'PAID' : 'PART_PAID';
+
+    const updatedInvoice = await prisma.invoice.update({
+      where: { id: invoiceId },
+      data: {
+        amountPaid: newAmountPaid,
+        status: newStatus,
+      },
+    });
+
+    res.json({
+      success: true,
+      message: 'Payment recorded successfully',
+      payment: {
+        id: payment.id,
+        amount: (payment.amount / 100).toFixed(2),
+        method: payment.method,
+        reference: payment.reference,
+        paidAt: payment.paidAt,
+      },
+      invoice: {
+        id: updatedInvoice.id,
+        amountDue: (updatedInvoice.amountDue / 100).toFixed(2),
+        amountPaid: (updatedInvoice.amountPaid / 100).toFixed(2),
+        status: updatedInvoice.status,
+      },
+    });
+  } catch (error) {
+    console.error('Error recording payment:', error);
+    res.status(500).json({ error: 'Failed to record payment' });
+  }
+});
+
 // GET /api/admin/notifications - Get notification log
 router.get('/notifications', async (req: Request, res: Response) => {
   try {
@@ -2333,7 +2437,7 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
 // GET /api/admin/terms - Fetch available terms for current academic year
 router.get('/terms', async (req: Request, res: Response) => {
   try {
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId) {
       return res.status(401).json({ error: 'School ID required' });
@@ -2361,7 +2465,7 @@ router.get('/terms', async (req: Request, res: Response) => {
 router.get('/results/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId) {
       return res.status(401).json({ error: 'School ID required' });
@@ -2408,7 +2512,7 @@ router.get('/results/:id', async (req: Request, res: Response) => {
 router.post('/assessments', async (req: Request, res: Response) => {
   try {
     const { name, termId, phase } = req.body;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId || !name || !termId || !phase) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -2445,7 +2549,7 @@ router.post('/assessments', async (req: Request, res: Response) => {
 router.post('/results', async (req: Request, res: Response) => {
   try {
     const { assessmentId, entries, subject } = req.body;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId || !assessmentId || !Array.isArray(entries)) {
       return res.status(400).json({ error: 'Invalid request' });
@@ -2509,7 +2613,7 @@ router.post('/results', async (req: Request, res: Response) => {
 router.post('/assessments/:id/approve', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId) {
       return res.status(401).json({ error: 'School ID required' });
@@ -2544,7 +2648,7 @@ router.post('/assessments/:id/approve', async (req: Request, res: Response) => {
 router.post('/assessments/:id/publish', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId) {
       return res.status(401).json({ error: 'School ID required' });
@@ -2586,7 +2690,7 @@ router.post('/assessments/:id/publish', async (req: Request, res: Response) => {
 router.post('/assessments/:id/return-draft', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId) {
       return res.status(401).json({ error: 'School ID required' });
