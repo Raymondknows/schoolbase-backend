@@ -406,6 +406,7 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
       include: {
         class: {
           select: {
+            name: true,
             phase: true,
             pupils: {
               select: {
@@ -557,12 +558,25 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
       }
     >();
 
+    const pupilClassMap = new Map<
+      string,
+      {
+        classId: string;
+        className: string;
+      }
+    >();
+
     teacherClasses
       .filter(
         (teacherClass) =>
           teacherClass.class.phase === assessment.phase && eligibleClassIds.has(teacherClass.classId)
       )
       .forEach((teacherClass) => {
+        const classInfo = {
+          classId: teacherClass.classId,
+          className: teacherClass.class.name,
+        };
+
         teacherClass.class.pupils.forEach((pupil) => {
           if (!rosterMap.has(pupil.id)) {
             rosterMap.set(pupil.id, {
@@ -571,6 +585,10 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
               lastName: pupil.lastName,
               admissionNo: pupil.admissionNo ?? '',
             });
+          }
+
+          if (!pupilClassMap.has(pupil.id)) {
+            pupilClassMap.set(pupil.id, classInfo);
           }
         });
       });
@@ -589,6 +607,8 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
       pupilId: string;
       pupilName: string;
       admissionNo: string;
+      classId: string | null;
+      className: string | null;
       subjectId: string | null;
       subject: string;
       caScore: number | null;
@@ -619,11 +639,14 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
             grade = await resultsEngine.calculateGrade(schoolId!, computedTotal);
           }
 
-          rosterResults.push({
+          const pupilClass = pupilClassMap.get(pupil.id);
+      rosterResults.push({
             id: result.id,
             pupilId: pupil.id,
             pupilName: `${pupil.firstName} ${pupil.lastName}`,
             admissionNo: pupil.admissionNo,
+            classId: pupilClass?.classId ?? null,
+            className: pupilClass?.className ?? null,
             subjectId: result.subjectId ?? null,
             subject: subjectName,
             caScore: result.caScore ?? null,
@@ -634,11 +657,14 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
           });
         }
       } else {
+        const pupilClass = pupilClassMap.get(pupil.id);
         rosterResults.push({
           id: null,
           pupilId: pupil.id,
           pupilName: `${pupil.firstName} ${pupil.lastName}`,
           admissionNo: pupil.admissionNo,
+          classId: pupilClass?.classId ?? null,
+          className: pupilClass?.className ?? null,
           subjectId: subjectIdParam ?? null,
           subject: forcedSubjectName || 'Unknown',
           caScore: null,

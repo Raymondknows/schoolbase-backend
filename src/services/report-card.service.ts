@@ -363,14 +363,28 @@ class ReportCardService {
       where: { assessmentId, assessment: { schoolId } },
     });
 
-    const scores = results
-      .filter((r) => r.totalScore !== null)
-      .map((r) => r.totalScore!);
+    const computedResults = results.map((r) => {
+      const total =
+        r.totalScore !== null
+          ? r.totalScore
+          : r.caScore !== null && r.testScore !== null && r.examScore !== null
+          ? r.caScore + r.testScore + r.examScore
+          : null;
+
+      return {
+        ...r,
+        computedTotal: total,
+      };
+    });
+
+    const scores = computedResults
+      .filter((r) => r.computedTotal !== null)
+      .map((r) => r.computedTotal!);
 
     if (scores.length === 0) {
       return {
         assessmentId,
-        totalStudents: 0,
+        totalStudents: results.length,
         totalResults: results.length,
         statistics: {
           highestScore: 0,

@@ -2878,7 +2878,22 @@ router.get('/results/:id', async (req: Request, res: Response) => {
         term: true,
         results: {
           include: {
-            pupil: { select: { id: true, firstName: true, lastName: true } },
+            pupil: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                admissionNo: true,
+                class: {
+                  select: {
+                    id: true,
+                    name: true,
+                    arm: true,
+                    phase: true,
+                  },
+                },
+              },
+            },
             subjectRef: true,
           },
         },
