@@ -169,13 +169,13 @@ router.post('/calculate-positions/:assessmentId', async (req: Request, res: Resp
     let subjectPositionCount = 0;
     for (const subjectId of subjectIds) {
       if (subjectId) {
-        await resultsDomain.calculateSubjectPositioning(assessmentId, subjectId);
+        await resultsDomain.calculateSubjectPositioning(assessmentId, subjectId, schoolId);
         subjectPositionCount++;
       }
     }
 
     // Calculate class position (with deterministic tie-breaking)
-    await resultsDomain.calculateClassPositioning(assessmentId);
+    await resultsDomain.calculateClassPositioning(assessmentId, schoolId);
 
     res.json({
       success: true,
@@ -218,7 +218,7 @@ router.post('/validate/:assessmentId', async (req: Request, res: Response) => {
       });
     }
 
-    const validation = await resultsDomain.validateResults(assessmentId);
+    const validation = await resultsDomain.validateResults(assessmentId, schoolId);
 
     res.json(validation);
   } catch (error: any) {
@@ -265,6 +265,7 @@ router.post('/lock/:assessmentId', async (req: Request, res: Response) => {
       success: true,
       message: 'Results locked successfully',
       lockedCount: assessment._count.results,
+      status: assessment.status,
     });
   } catch (error: any) {
     console.error('Error locking results:', error);
@@ -310,6 +311,7 @@ router.post('/unlock/:assessmentId', async (req: Request, res: Response) => {
       success: true,
       message: 'Results unlocked successfully',
       unlockedCount: assessment._count.results,
+      status: assessment.status,
     });
   } catch (error: any) {
     console.error('Error unlocking results:', error);
@@ -361,6 +363,7 @@ router.post('/publish/:assessmentId', async (req: Request, res: Response) => {
       success: true,
       message: 'Results published successfully',
       assessmentId,
+      status: 'PUBLISHED',
     });
   } catch (error: any) {
     console.error('Error publishing results:', error);
@@ -405,6 +408,7 @@ router.post('/unpublish/:assessmentId', async (req: Request, res: Response) => {
       success: true,
       message: 'Results unpublished successfully',
       assessmentId,
+      status: 'APPROVED',
     });
   } catch (error: any) {
     console.error('Error unpublishing results:', error);

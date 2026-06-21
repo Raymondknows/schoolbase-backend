@@ -22,7 +22,7 @@ interface ValidationResult {
   errors: ValidationError[];
 }
 
-class ResultsEngineService {
+export default class ResultsEngineService {
   private prisma: PrismaClient;
 
   constructor(prismaClient?: PrismaClient) {
@@ -39,11 +39,16 @@ class ResultsEngineService {
    */
   async calculateTotalScore(
     assessmentId: string,
-    componentScores: Record<string, number>
+    componentScores: Record<string, number>,
+    schoolId?: string
   ): Promise<number> {
-    const assessment = await this.prisma.assessment.findUnique({
-      where: { id: assessmentId },
-    });
+    const assessment = schoolId
+      ? await this.prisma.assessment.findFirst({
+          where: { id: assessmentId, schoolId },
+        })
+      : await this.prisma.assessment.findUnique({
+          where: { id: assessmentId },
+        });
 
     if (!assessment || !assessment.componentData) {
       throw new Error('Assessment not found or has no components');
@@ -124,13 +129,15 @@ class ResultsEngineService {
    */
   async calculateSubjectPositioning(
     assessmentId: string,
-    subjectId: string
+    subjectId: string,
+    schoolId: string
   ): Promise<void> {
     // Get all results for this assessment + subject
     const results = await this.prisma.result.findMany({
       where: {
         assessmentId,
         subjectId,
+        assessment: { schoolId },
       },
       orderBy: { totalScore: 'desc' },
     });
@@ -163,10 +170,10 @@ class ResultsEngineService {
    * Rank students by average score across all their subjects
    * for a specific assessment
    */
-  async calculateClassPositioning(assessmentId: string): Promise<void> {
+  async calculateClassPositioning(assessmentId: string, schoolId: string): Promise<void> {
     // Get all results for this assessment
     const allResults = await this.prisma.result.findMany({
-      where: { assessmentId },
+      where: { assessmentId, assessment: { schoolId } },
       include: { pupil: { include: { class: true } } },
     });
 
@@ -231,12 +238,12 @@ class ResultsEngineService {
   /**
    * Validate all results for an assessment before publishing
    */
-  async validateResults(assessmentId: string): Promise<ValidationResult> {
+  async validateResults(assessmentId: string, schoolId: string): Promise<ValidationResult> {
     const errors: ValidationError[] = [];
 
     // Get assessment
-    const assessment = await this.prisma.assessment.findUnique({
-      where: { id: assessmentId },
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
       include: {
         class: {
           include: {
@@ -342,8 +349,16 @@ class ResultsEngineService {
     const now = new Date();
 
     // Update all results for this assessment
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
+    });
+
+    if (!assessment) {
+      throw new Error('Assessment not found');
+    }
+
     const results = await this.prisma.result.updateMany({
-      where: { assessmentId },
+      where: { assessmentId: assessment.id },
       data: {
         lockedAt: now,
         lockedBy: userId,
@@ -365,13 +380,21 @@ class ResultsEngineService {
     const now = new Date();
 
     // Get results to record their previous state
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
+    });
+
+    if (!assessment) {
+      throw new Error('Assessment not found');
+    }
+
     const results = await this.prisma.result.findMany({
-      where: { assessmentId, lockedAt: { not: null } },
+      where: { assessmentId: assessment.id, lockedAt: { not: null } },
     });
 
     // Update all results for this assessment
     await this.prisma.result.updateMany({
-      where: { assessmentId },
+      where: { assessmentId: assessment.id },
       data: {
         lockedAt: null,
         lockedBy: null,
@@ -418,14 +441,22 @@ class ResultsEngineService {
     const now = new Date();
 
     // Update assessment status
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
+    });
+
+    if (!assessment) {
+      throw new Error('Assessment not found');
+    }
+
     await this.prisma.assessment.update({
-      where: { id: assessmentId },
+      where: { id: assessment.id },
       data: { status: 'PUBLISHED' },
     });
 
     // Update all results to published
     const results = await this.prisma.result.updateMany({
-      where: { assessmentId },
+      where: { assessmentId: assessment.id },
       data: { publishedAt: now },
     });
 
@@ -444,14 +475,22 @@ class ResultsEngineService {
     const now = new Date();
 
     // Update assessment status
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
+    });
+
+    if (!assessment) {
+      throw new Error('Assessment not found');
+    }
+
     await this.prisma.assessment.update({
-      where: { id: assessmentId },
+      where: { id: assessment.id },
       data: { status: 'APPROVED' }, // Back to approved state
     });
 
     // Update all results to unpublished
     const results = await this.prisma.result.updateMany({
-      where: { assessmentId },
+      where: { assessmentId: assessment.id },
       data: { publishedAt: null },
     });
 
@@ -488,13 +527,13 @@ class ResultsEngineService {
         .filter((id): id is string => id !== null)
     );
     const subjects = await this.prisma.subject.findMany({
-      where: { id: { in: Array.from(subjectIds) } },
+      where: { id: { in: Array.from(subjectIds) }, schoolId },
     });
 
     // Get unique students
     const pupilIds = new Set(assessment.results.map((r) => r.pupilId));
     const pupils = await this.prisma.pupil.findMany({
-      where: { id: { in: Array.from(pupilIds) } },
+      where: { id: { in: Array.from(pupilIds) }, schoolId },
     });
 
     // Calculate statistics
@@ -544,5 +583,3 @@ class ResultsEngineService {
     };
   }
 }
-
-export default ResultsEngineService;

@@ -38,7 +38,8 @@ export class ResultsDomainService {
    */
   calculateTotalScore(
     componentScores: Record<string, number>,
-    components: Array<{ id: string; maxScore: number; weight: number }>
+    components: Array<{ id: string; maxScore: number; weight: number }>,
+    schoolId?: string
   ): number {
     let totalScore = 0;
 
@@ -108,11 +109,12 @@ export class ResultsDomainService {
    */
   async calculateSubjectPositioning(
     assessmentId: string,
-    subjectId: string
+    subjectId: string,
+    schoolId: string
   ): Promise<void> {
     // Get assessment to access CA component ID
-    const assessment = await this.prisma.assessment.findUnique({
-      where: { id: assessmentId },
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
     });
 
     if (!assessment || !assessment.componentData) return;
@@ -132,7 +134,7 @@ export class ResultsDomainService {
 
     // Get all results for this assessment + subject
     const results = await this.prisma.result.findMany({
-      where: { assessmentId, subjectId },
+      where: { assessmentId, subjectId, assessment: { schoolId } },
       include: { pupil: true },
     });
 
@@ -209,10 +211,10 @@ export class ResultsDomainService {
    * 2. Sort by average (DESC), then by student name (for determinism)
    * 3. Assign positions with tie handling
    */
-  async calculateClassPositioning(assessmentId: string): Promise<void> {
+  async calculateClassPositioning(assessmentId: string, schoolId: string): Promise<void> {
     // Get all results for this assessment
     const allResults = await this.prisma.result.findMany({
-      where: { assessmentId },
+      where: { assessmentId, assessment: { schoolId } },
       include: { pupil: true },
     });
 
@@ -289,15 +291,15 @@ export class ResultsDomainService {
   /**
    * Validate assessment results before publish
    */
-  async validateResults(assessmentId: string): Promise<ValidationResult> {
-    return this.validator.validateAssessmentResults(assessmentId);
+  async validateResults(assessmentId: string, schoolId: string): Promise<ValidationResult> {
+    return this.validator.validateAssessmentResults(assessmentId, schoolId);
   }
 
   /**
    * Check publish readiness
    */
-  async isReadyForPublish(assessmentId: string): Promise<{ ready: boolean; reason?: string }> {
-    return this.validator.isReadyForPublish(assessmentId);
+  async isReadyForPublish(assessmentId: string, schoolId: string): Promise<{ ready: boolean; reason?: string }> {
+    return this.validator.isReadyForPublish(assessmentId, schoolId);
   }
 
   // ==================== STATE TRANSITIONS ====================
@@ -306,9 +308,9 @@ export class ResultsDomainService {
    * Calculate next workflow state
    * Called after each operation to update assessment state
    */
-  async calculateNextState(assessmentId: string): Promise<ResultWorkflowState> {
-    const assessment = await this.prisma.assessment.findUnique({
-      where: { id: assessmentId },
+  async calculateNextState(assessmentId: string, schoolId: string): Promise<ResultWorkflowState> {
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
       include: {
         results: { select: { id: true, totalScore: true, grade: true, classPosition: true, subjectPosition: true } },
       },
@@ -331,12 +333,12 @@ export class ResultsDomainService {
     if (!hasPositions) return ResultWorkflowState.GRADED;
 
     // Check if validated
-    const validation = await this.validateResults(assessmentId);
+    const validation = await this.validateResults(assessmentId, schoolId);
     if (!validation.isValid) return ResultWorkflowState.POSITIONED;
 
     // If locked, stay locked
     const results = await this.prisma.result.findMany({
-      where: { assessmentId },
+      where: { assessmentId, assessment: { schoolId } },
       select: { lockedAt: true },
       take: 1,
     });
@@ -366,7 +368,7 @@ export class ResultsDomainService {
     }
 
     // Validate before locking
-    const validation = await this.validateResults(assessmentId);
+    const validation = await this.validateResults(assessmentId, schoolId);
     if (!validation.isValid) {
       throw new Error(`Cannot lock - validation errors exist: ${validation.blockers[0]?.message}`);
     }
@@ -375,7 +377,7 @@ export class ResultsDomainService {
 
     // Lock all results
     await this.prisma.result.updateMany({
-      where: { assessmentId },
+      where: { assessmentId: assessment.id },
       data: {
         lockedAt: now,
         lockedBy: userId,
@@ -418,7 +420,7 @@ export class ResultsDomainService {
 
     // Unlock all results
     await this.prisma.result.updateMany({
-      where: { assessmentId },
+      where: { assessmentId: assessment.id },
       data: {
         lockedAt: null,
         lockedBy: null,
@@ -461,7 +463,7 @@ export class ResultsDomainService {
     }
 
     // Check publish readiness
-    const { ready, reason } = await this.isReadyForPublish(assessmentId);
+    const { ready, reason } = await this.isReadyForPublish(assessmentId, schoolId);
     if (!ready) {
       throw new Error(`Not ready to publish: ${reason}`);
     }
@@ -470,7 +472,7 @@ export class ResultsDomainService {
 
     // Update assessment status
     await this.prisma.assessment.update({
-      where: { id: assessmentId },
+      where: { id: assessment.id },
       data: {
         status: 'PUBLISHED',
       },
@@ -512,7 +514,7 @@ export class ResultsDomainService {
 
     // Update assessment status
     await this.prisma.assessment.update({
-      where: { id: assessmentId },
+      where: { id: assessment.id },
       data: {
         status: 'APPROVED',
       },
@@ -577,7 +579,7 @@ export class ResultsDomainService {
     }
 
     const results = await this.prisma.result.findMany({
-      where: { assessmentId },
+      where: { assessmentId, assessment: { schoolId }, pupil: { schoolId } },
       include: { pupil: true, subjectRef: true },
       orderBy: { classPosition: 'asc' },
     });
@@ -585,6 +587,7 @@ export class ResultsDomainService {
     const subjects = assessment.classId
       ? await this.prisma.subject.findMany({
           where: {
+            schoolId,
             subjectClasses: {
               some: { classId: assessment.classId },
             },

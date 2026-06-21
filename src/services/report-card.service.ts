@@ -130,6 +130,8 @@ class ReportCardService {
       where: {
         assessmentId,
         pupilId,
+        assessment: { schoolId },
+        pupil: { schoolId },
       },
       include: {
         subjectRef: true,
@@ -145,13 +147,22 @@ class ReportCardService {
     // Build subject results
     const subjects: SubjectResult[] = [];
 
-    for (const result of results.filter((r) => r.subjectRef)) {
-      const totalScore = (result.caScore ?? 0) + (result.examScore ?? 0);
+    for (const result of results) {
+      const subjectName = result.subjectRef?.name || result.subject || 'Unknown';
+      if (!subjectName || subjectName === 'Unknown') {
+        continue;
+      }
+
+      const totalScore =
+        result.totalScore ??
+        (result.caScore ?? 0) +
+          (result.testScore ?? 0) +
+          (result.examScore ?? 0);
       const grade = await this.calculateGrade(schoolId, totalScore, result.grade);
 
       subjects.push({
         subjectId: result.subjectId || '',
-        subjectName: result.subjectRef?.name || 'Unknown',
+        subjectName,
         caScore: result.caScore ?? null,
         testScore: result.testScore ?? null,
         examScore: result.examScore ?? null,
@@ -249,7 +260,7 @@ class ReportCardService {
 
     // Get all results for this assessment
     const results = await this.prisma.result.findMany({
-      where: { assessmentId },
+      where: { assessmentId, assessment: { schoolId } },
       select: { pupilId: true },
       distinct: ['pupilId'],
     });
@@ -295,7 +306,7 @@ class ReportCardService {
 
     // Get all unique students in this assessment
     const results = await this.prisma.result.findMany({
-      where: { assessmentId },
+      where: { assessmentId, assessment: { schoolId } },
       include: {
         pupil: true,
       },
@@ -349,7 +360,7 @@ class ReportCardService {
 
     // Get all results
     const results = await this.prisma.result.findMany({
-      where: { assessmentId },
+      where: { assessmentId, assessment: { schoolId } },
     });
 
     const scores = results

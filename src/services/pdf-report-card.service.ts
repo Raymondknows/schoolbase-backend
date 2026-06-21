@@ -48,6 +48,7 @@ interface ReportCardData {
 
 type ReportCardSubject = ReportCardData['subjects'][number] & {
   caScore?: number | null;
+  testScore?: number | null;
   examScore?: number | null;
 };
 
@@ -137,8 +138,6 @@ class PDFReportCardService {
       reportCard.principalSignatureDataUrl ?? (await this.fetchAssetDataUrl(reportCard.school.principalSignatureUrl));
 
     const subjects = reportCard.subjects as ReportCardSubject[];
-    const hasCa = true;
-    const hasExam = true;
     const totalLabel = 'Total';
 
     const subjectsHtml = subjects
@@ -146,6 +145,7 @@ class PDFReportCardService {
         <tr>
           <td class="subject">${this.escapeHtml(subject.subjectName)}</td>
           <td class="num">${subject.caScore ?? '-'}</td>
+          <td class="num">${subject.testScore ?? '-'}</td>
           <td class="num">${subject.examScore ?? '-'}</td>
           <td class="num total">${subject.totalScore.toFixed(1)}</td>
           <td class="grade"><span>${this.escapeHtml(subject.grade)}</span></td>
@@ -368,6 +368,7 @@ class PDFReportCardService {
                     <tr>
                       <th style="text-align:left">Subject</th>
                       <th>CA</th>
+                      <th>Test</th>
                       <th>Exam</th>
                       <th>${totalLabel}</th>
                       <th>Grade</th>
@@ -485,7 +486,7 @@ class PDFReportCardService {
 
     // Get all students in this assessment
     const results = await this.prisma.result.findMany({
-      where: { assessmentId },
+      where: { assessmentId, assessment: { schoolId } },
       select: { pupilId: true },
       distinct: ['pupilId'],
     });
@@ -501,8 +502,8 @@ class PDFReportCardService {
         );
 
         // Get pupil name for filename
-        const pupil = await this.prisma.pupil.findUnique({
-          where: { id: result.pupilId },
+        const pupil = await this.prisma.pupil.findFirst({
+          where: { id: result.pupilId, schoolId },
         });
 
         const filename = `${pupil?.firstName}_${pupil?.lastName}_${assessmentId}.pdf`;

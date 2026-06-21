@@ -1,9 +1,32 @@
 import { Router } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { verifyAuth, requireTeacher, AuthenticatedRequest } from '../middleware/roleAuth.js';
+import ResultsEngineService from '../services/results-engine.service.js';
 
 const router = Router();
 const prisma = new PrismaClient();
+const resultsEngine = new ResultsEngineService(prisma);
+
+const DEFAULT_WA_COMPONENTS = [
+  { id: 'ca', name: 'Continuous Assessment', maxScore: 20, weight: 20, sortOrder: 1 },
+  { id: 'test', name: 'Test', maxScore: 20, weight: 20, sortOrder: 2 },
+  { id: 'exam', name: 'Examination', maxScore: 60, weight: 60, sortOrder: 3 },
+];
+
+function getAssessmentComponents(componentData?: string | null) {
+  if (!componentData) return DEFAULT_WA_COMPONENTS;
+
+  try {
+    const parsed = JSON.parse(componentData);
+    const components = Array.isArray(parsed?.components) ? parsed.components : [];
+
+    if (components.length === 0) return DEFAULT_WA_COMPONENTS;
+
+    return [...components].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  } catch {
+    return DEFAULT_WA_COMPONENTS;
+  }
+}
 
 // Apply authentication middleware to all teacher routes
 router.use(verifyAuth);
@@ -37,7 +60,7 @@ router.get('/dashboard', async (req: AuthenticatedRequest, res) => {
 
     // Get assigned classes
     const teacherClasses = await prisma.teacherClass.findMany({
-      where: { teacherId: userId },
+      where: { teacherId: userId, schoolId },
       include: {
         class: {
           include: {
@@ -47,9 +70,21 @@ router.get('/dashboard', async (req: AuthenticatedRequest, res) => {
       },
     });
 
+    const classIds = teacherClasses.map((teacherClass) => teacherClass.class.id);
+
     // Get assigned subjects
     const teacherSubjects = await prisma.teacherSubject.findMany({
-      where: { teacherId: userId },
+      where: {
+        teacherId: userId,
+        schoolId,
+        subject: {
+          subjectClasses: {
+            some: {
+              classId: { in: classIds },
+            },
+          },
+        },
+      },
       include: {
         subject: true,
       },
@@ -96,8 +131,10 @@ router.get('/classes', async (req: AuthenticatedRequest, res) => {
   try {
     const { userId } = req.user!;
 
+    const { schoolId } = req.user!;
+
     const classes = await prisma.teacherClass.findMany({
-      where: { teacherId: userId },
+      where: { teacherId: userId, schoolId },
       include: {
         class: {
           include: {
@@ -135,12 +172,13 @@ router.get('/classes/:classId/students', async (req: AuthenticatedRequest, res) 
     const { classId } = req.params;
 
     // Verify teacher has access to this class
-    const assignment = await prisma.teacherClass.findUnique({
+    const { schoolId } = req.user!;
+
+    const assignment = await prisma.teacherClass.findFirst({
       where: {
-        teacherId_classId: {
-          teacherId: userId,
-          classId,
-        },
+        teacherId: userId,
+        classId,
+        schoolId,
       },
     });
 
@@ -198,10 +236,38 @@ router.get('/classes/:classId/students', async (req: AuthenticatedRequest, res) 
 // GET /api/teacher/subjects - Get assigned subjects
 router.get('/subjects', async (req: AuthenticatedRequest, res) => {
   try {
-    const { userId } = req.user!;
+    const { userId, schoolId } = req.user!;
+
+    const teacherClasses = await prisma.teacherClass.findMany({
+      where: { teacherId: userId, schoolId },
+      select: {
+        classId: true,
+        class: {
+          select: {
+            phase: true,
+          },
+        },
+      },
+    });
+
+    const classIds = teacherClasses.map((teacherClass) => teacherClass.classId);
+
+    if (classIds.length === 0) {
+      return res.json({ subjects: [] });
+    }
 
     const subjects = await prisma.teacherSubject.findMany({
-      where: { teacherId: userId },
+      where: {
+        teacherId: userId,
+        schoolId,
+        subject: {
+          subjectClasses: {
+            some: {
+              classId: { in: classIds },
+            },
+          },
+        },
+      },
       include: {
         subject: true,
       },
@@ -226,11 +292,38 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
 
     // Get teacher's assigned classes
     const teacherClasses = await prisma.teacherClass.findMany({
-      where: { teacherId: userId },
+      where: { teacherId: userId, schoolId },
       include: {
         class: {
           select: {
             phase: true,
+            pupils: {
+              select: {
+                id: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const teacherSubjects = await prisma.teacherSubject.findMany({
+      where: {
+        teacherId: userId,
+        schoolId,
+        subject: {
+          subjectClasses: {
+            some: {
+              classId: { in: teacherClasses.map((teacherClass) => teacherClass.classId) },
+            },
+          },
+        },
+      },
+      select: {
+        subject: {
+          select: {
+            id: true,
+            name: true,
           },
         },
       },
@@ -238,6 +331,18 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
 
     // Get unique phases from assigned classes
     const phases = Array.from(new Set(teacherClasses.map((tc) => tc.class.phase)));
+
+    const studentsByPhase = new Map<string, Set<string>>();
+    teacherClasses.forEach((teacherClass) => {
+      const phase = teacherClass.class.phase;
+      const students = studentsByPhase.get(phase) ?? new Set<string>();
+
+      teacherClass.class.pupils.forEach((pupil) => {
+        students.add(pupil.id);
+      });
+
+      studentsByPhase.set(phase, students);
+    });
 
     if (phases.length === 0) {
       // Teacher has no assigned classes
@@ -256,6 +361,7 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
         phase: true,
         status: true,
         createdAt: true,
+        updatedAt: true,
         term: {
           select: {
             id: true,
@@ -272,7 +378,14 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
       take: 50,
     });
 
-    res.json({ assessments });
+    res.json({
+      assessments: assessments.map((assessment) => ({
+        ...assessment,
+        studentCount: studentsByPhase.get(assessment.phase)?.size ?? 0,
+        entryCount: assessment._count.results,
+        subjectCount: teacherSubjects.length,
+      })),
+    });
   } catch (error: any) {
     console.error('Assessments error:', error);
     res.status(500).json({ error: error.message });
@@ -284,15 +397,36 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
   try {
     const { userId, schoolId } = req.user!;
     const { assessmentId } = req.params;
-    const { subject } = req.query;
+    const subjectIdParam = typeof req.query.subjectId === 'string' ? req.query.subjectId : null;
+    const subjectParam = typeof req.query.subject === 'string' ? req.query.subject : null;
 
     // Verify teacher is assigned to a class with this assessment's phase
     const teacherClasses = await prisma.teacherClass.findMany({
-      where: { teacherId: userId },
+      where: { teacherId: userId, schoolId },
       include: {
         class: {
           select: {
             phase: true,
+            pupils: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                admissionNo: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const teacherSubjects = await prisma.teacherSubject.findMany({
+      where: { teacherId: userId, schoolId },
+      select: {
+        subject: {
+          select: {
+            id: true,
+            name: true,
           },
         },
       },
@@ -300,8 +434,8 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
 
     const phases = Array.from(new Set(teacherClasses.map((tc) => tc.class.phase)));
 
-    const assessment = await prisma.assessment.findUnique({
-      where: { id: assessmentId },
+    const assessment = await prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
       include: {
         results: {
           include: {
@@ -335,20 +469,199 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
 
     // Filter results by subject if provided
     let filteredResults = assessment.results;
-    if (subject && typeof subject === 'string') {
-      // Filter by subject name from the subjectRef relation
+    if (subjectIdParam) {
+      const allowedSubjectIds = new Set(teacherSubjects.map((teacherSubject) => teacherSubject.subject.id));
+      if (!allowedSubjectIds.has(subjectIdParam)) {
+        return res.status(403).json({ error: 'Not authorized to view this subject' });
+      }
+
+      filteredResults = assessment.results.filter((r) => r.subjectId === subjectIdParam);
+    } else if (subjectParam) {
+      // Backward compatibility for existing links that still send a subject name.
+      const allowedSubjectNames = new Set(teacherSubjects.map((teacherSubject) => teacherSubject.subject.name));
+      if (!allowedSubjectNames.has(subjectParam)) {
+        return res.status(403).json({ error: 'Not authorized to view this subject' });
+      }
+
       filteredResults = assessment.results.filter((r) => 
-        r.subjectRef?.name === subject || r.subject === subject
+        r.subjectRef?.name === subjectParam || r.subject === subjectParam
       );
     }
 
-    // Deduplicate by pupilId (keep first occurrence)
-    const seenPupils = new Set<string>();
-    const uniqueResults = filteredResults.filter((r) => {
-      if (seenPupils.has(r.pupilId)) return false;
-      seenPupils.add(r.pupilId);
-      return true;
+    const phaseClassIds = teacherClasses
+      .filter((teacherClass) => teacherClass.class.phase === assessment.phase)
+      .map((teacherClass) => teacherClass.classId);
+
+    let eligibleClassIds = new Set<string>(phaseClassIds);
+    let forcedSubjectName: string | null = null;
+
+    if (subjectIdParam || subjectParam) {
+      const allowedSubjectIds = new Set(teacherSubjects.map((teacherSubject) => teacherSubject.subject.id));
+      const allowedSubjectNames = new Set(teacherSubjects.map((teacherSubject) => teacherSubject.subject.name));
+
+      if (subjectIdParam) {
+        if (!allowedSubjectIds.has(subjectIdParam)) {
+          return res.status(403).json({ error: 'Not authorized to view this subject' });
+        }
+      } else if (subjectParam) {
+        if (!allowedSubjectNames.has(subjectParam)) {
+          return res.status(403).json({ error: 'Not authorized to view this subject' });
+        }
+      }
+
+      const teacherSubjectAssignment = teacherSubjects.find((teacherSubject) => {
+        if (subjectIdParam) return teacherSubject.subject.id === subjectIdParam;
+        return teacherSubject.subject.name === subjectParam;
+      });
+
+      if (!teacherSubjectAssignment) {
+        return res.status(403).json({ error: 'Not authorized to view this subject' });
+      }
+
+      const subjectClasses = await prisma.subjectClass.findMany({
+        where: {
+          schoolId,
+          subjectId: teacherSubjectAssignment.subject.id,
+          classId: { in: phaseClassIds },
+        },
+        select: {
+          classId: true,
+        },
+      });
+
+      if (subjectClasses.length === 0) {
+        return res.status(403).json({
+          error: 'Not authorized to view this subject for the assessment classes',
+        });
+      }
+
+      eligibleClassIds = new Set(subjectClasses.map((subjectClass) => subjectClass.classId));
+      forcedSubjectName = teacherSubjectAssignment.subject.name;
+
+      if (subjectIdParam) {
+        filteredResults = assessment.results.filter((r) => r.subjectId === subjectIdParam);
+      } else {
+        filteredResults = assessment.results.filter(
+          (r) => r.subjectRef?.name === subjectParam || r.subject === subjectParam
+        );
+      }
+    }
+
+    const rosterMap = new Map<
+      string,
+      {
+        id: string;
+        firstName: string;
+        lastName: string;
+        admissionNo: string;
+      }
+    >();
+
+    teacherClasses
+      .filter(
+        (teacherClass) =>
+          teacherClass.class.phase === assessment.phase && eligibleClassIds.has(teacherClass.classId)
+      )
+      .forEach((teacherClass) => {
+        teacherClass.class.pupils.forEach((pupil) => {
+          if (!rosterMap.has(pupil.id)) {
+            rosterMap.set(pupil.id, {
+              id: pupil.id,
+              firstName: pupil.firstName,
+              lastName: pupil.lastName,
+              admissionNo: pupil.admissionNo ?? '',
+            });
+          }
+        });
+      });
+
+    const resultsByPupilId = new Map<string, typeof filteredResults>(
+      filteredResults.reduce((acc, result) => {
+        const existing = acc.get(result.pupilId) ?? [];
+        existing.push(result);
+        acc.set(result.pupilId, existing);
+        return acc;
+      }, new Map<string, typeof filteredResults>())
+    );
+
+    const rosterResults: Array<{
+      id: string | null;
+      pupilId: string;
+      pupilName: string;
+      admissionNo: string;
+      subjectId: string | null;
+      subject: string;
+      caScore: number | null;
+      testScore: number | null;
+      examScore: number | null;
+      totalScore: number | null;
+      grade: string | null;
+    }> = [];
+
+    for (const pupil of rosterMap.values()) {
+      const pupilResults = resultsByPupilId.get(pupil.id) ?? [];
+
+      if (pupilResults.length > 0) {
+        for (const result of pupilResults) {
+          const subjectName =
+            forcedSubjectName || result.subjectRef?.name || result.subject || 'Unknown';
+
+          const totalFromResult = result.totalScore ?? null;
+          const computedTotal =
+            totalFromResult !== null
+              ? totalFromResult
+              : result.caScore !== null && result.testScore !== null && result.examScore !== null
+              ? result.caScore + result.testScore + result.examScore
+              : null;
+
+          let grade = result.grade ?? null;
+          if (!grade && computedTotal !== null) {
+            grade = await resultsEngine.calculateGrade(schoolId!, computedTotal);
+          }
+
+          rosterResults.push({
+            id: result.id,
+            pupilId: pupil.id,
+            pupilName: `${pupil.firstName} ${pupil.lastName}`,
+            admissionNo: pupil.admissionNo,
+            subjectId: result.subjectId ?? null,
+            subject: subjectName,
+            caScore: result.caScore ?? null,
+            testScore: result.testScore ?? null,
+            examScore: result.examScore ?? null,
+            totalScore: computedTotal,
+            grade,
+          });
+        }
+      } else {
+        rosterResults.push({
+          id: null,
+          pupilId: pupil.id,
+          pupilName: `${pupil.firstName} ${pupil.lastName}`,
+          admissionNo: pupil.admissionNo,
+          subjectId: subjectIdParam ?? null,
+          subject: forcedSubjectName || 'Unknown',
+          caScore: null,
+          testScore: null,
+          examScore: null,
+          totalScore: null,
+          grade: null,
+        });
+      }
+    }
+
+    rosterResults.sort((a, b) => {
+      const studentComparison = a.pupilName.localeCompare(b.pupilName);
+      if (studentComparison !== 0) return studentComparison;
+      return a.subject.localeCompare(b.subject);
     });
+
+    const uniqueStudentCount = rosterMap.size;
+    const resultSubjects = Array.from(
+      new Set(filteredResults.map((result) => result.subjectRef?.name || result.subject || forcedSubjectName || 'Unknown'))
+    )
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
 
     res.json({
       assessment: {
@@ -356,17 +669,11 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
         name: assessment.name,
         phase: assessment.phase,
         status: assessment.status,
-        results: uniqueResults.map((r) => ({
-          id: r.id,
-          pupilId: r.pupil.id,
-          pupilName: `${r.pupil.firstName} ${r.pupil.lastName}`,
-          admissionNo: r.pupil.admissionNo,
-          caScore: r.caScore,
-          testScore: r.testScore,
-          examScore: r.examScore,
-          totalScore: r.totalScore,
-          grade: r.grade,
-        })),
+        studentCount: uniqueStudentCount,
+        entryCount: filteredResults.length,
+        subjectCount: resultSubjects.length,
+        subjects: resultSubjects,
+        results: rosterResults,
       },
     });
   } catch (error: any) {
@@ -382,12 +689,11 @@ router.get('/classes/:classId/assessments', async (req: AuthenticatedRequest, re
     const { classId } = req.params;
 
     // Verify teacher is assigned to this class
-    const assignment = await prisma.teacherClass.findUnique({
+    const assignment = await prisma.teacherClass.findFirst({
       where: {
-        teacherId_classId: {
-          teacherId: userId,
-          classId,
-        },
+        teacherId: userId,
+        classId,
+        schoolId,
       },
       include: {
         class: true,
@@ -515,36 +821,120 @@ router.get('/results/:classId', async (req: AuthenticatedRequest, res) => {
 router.post('/results', async (req: AuthenticatedRequest, res) => {
   try {
     const { userId, schoolId } = req.user!;
-    const { assessmentId, scores, subject } = req.body;
+    const { assessmentId, scores, subjectId, subject } = req.body;
 
     if (!assessmentId || !Array.isArray(scores)) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     // Verify assessment belongs to teacher's school
-    const assessment = await prisma.assessment.findUnique({
-      where: { id: assessmentId },
+    const assessment = await prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
     });
 
     if (!assessment || assessment.schoolId !== schoolId) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
+    const teacherClasses = await prisma.teacherClass.findMany({
+      where: {
+        teacherId: userId,
+        schoolId,
+      },
+      select: {
+        classId: true,
+        class: {
+          select: {
+            phase: true,
+          },
+        },
+      },
+    });
+
+    const classIdsInAssessmentPhase = teacherClasses
+      .filter((teacherClass) => teacherClass.class.phase === assessment.phase)
+      .map((teacherClass) => teacherClass.classId);
+
     // If subject is specified, verify teacher is assigned to it
-    if (subject && typeof subject === 'string') {
+    if ((subjectId && typeof subjectId === 'string') || (subject && typeof subject === 'string')) {
       const teacherSubjectAssignment = await prisma.teacherSubject.findFirst({
         where: {
           teacherId: userId,
           schoolId,
-          subject: {
-            name: subject,
-          },
+          ...(subjectId && typeof subjectId === 'string'
+            ? { subjectId }
+            : {
+                subject: {
+                  name: subject,
+                },
+              }),
+        },
+        include: {
+          subject: true,
         },
       });
 
       if (!teacherSubjectAssignment) {
-        return res.status(403).json({ error: `Not authorized to score subject: ${subject}` });
+        return res.status(403).json({ error: `Not authorized to score subject` });
       }
+
+      const subjectClassAssignment = await prisma.subjectClass.findFirst({
+        where: {
+          schoolId,
+          subjectId: teacherSubjectAssignment.subjectId,
+          classId: {
+            in: classIdsInAssessmentPhase,
+          },
+        },
+        include: {
+          class: true,
+          subject: true,
+        },
+      });
+
+      if (!subjectClassAssignment) {
+        return res.status(403).json({
+          error: 'Not authorized to score this subject for the assessment class',
+        });
+      }
+
+      const resolvedSubjectId = teacherSubjectAssignment.subjectId;
+      const resolvedSubjectName = teacherSubjectAssignment.subject.name;
+
+      // Bulk upsert results
+      const results = await Promise.all(
+        scores.map((score: { pupilId: string; caScore?: number; testScore?: number; examScore?: number }) =>
+          prisma.result.upsert({
+            where: {
+              assessmentId_pupilId_subject: {
+                assessmentId,
+                pupilId: score.pupilId,
+                subject: resolvedSubjectName,
+              },
+            },
+            update: {
+              classId: assessment.classId ?? null,
+              subjectId: resolvedSubjectId,
+              subject: resolvedSubjectName,
+              caScore: score.caScore,
+              testScore: score.testScore,
+              examScore: score.examScore,
+            },
+            create: {
+              assessmentId,
+              pupilId: score.pupilId,
+              subjectId: resolvedSubjectId,
+              subject: resolvedSubjectName,
+              classId: assessment.classId ?? null,
+              caScore: score.caScore,
+              testScore: score.testScore,
+              examScore: score.examScore,
+            },
+          })
+        )
+      );
+
+      return res.json({ success: true, results });
     }
 
     // Bulk upsert results
@@ -559,6 +949,8 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
             },
           },
           update: {
+            classId: assessment.classId ?? null,
+            subjectId: null,
             caScore: score.caScore,
             testScore: score.testScore,
             examScore: score.examScore,
@@ -567,6 +959,8 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
             assessmentId,
             pupilId: score.pupilId,
             subject: subject || null,
+            subjectId: null,
+            classId: assessment.classId ?? null,
             caScore: score.caScore,
             testScore: score.testScore,
             examScore: score.examScore,
@@ -593,12 +987,11 @@ router.post('/attendance', async (req: AuthenticatedRequest, res) => {
     }
 
     // Verify teacher is assigned to this class
-    const assignment = await prisma.teacherClass.findUnique({
+    const assignment = await prisma.teacherClass.findFirst({
       where: {
-        teacherId_classId: {
-          teacherId: userId,
-          classId,
-        },
+        teacherId: userId,
+        classId,
+        schoolId,
       },
     });
 

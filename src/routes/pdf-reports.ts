@@ -35,12 +35,12 @@ router.get('/:assessmentId/:pupilId', async (req: Request, res: Response) => {
     }
 
     // Get pupil for filename
-    const pupil = await prisma.pupil.findUnique({
-      where: { id: pupilId },
+    const pupil = await prisma.pupil.findFirst({
+      where: { id: pupilId, schoolId },
     });
 
-    const assessment = await prisma.assessment.findUnique({
-      where: { id: assessmentId },
+    const assessment = await prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
       include: { term: { include: { academicYear: true } } },
     });
 

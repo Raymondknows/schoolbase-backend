@@ -32,14 +32,14 @@ export class ResultsValidator {
    * Comprehensive validation for results
    * Used before publish or other critical operations
    */
-  async validateAssessmentResults(assessmentId: string): Promise<ValidationResult> {
+  async validateAssessmentResults(assessmentId: string, schoolId: string): Promise<ValidationResult> {
     const errors: ValidationError[] = [];
     const warnings: ValidationError[] = [];
     const blockers: ValidationError[] = [];
 
     // Fetch assessment with full context
-    const assessment = await this.prisma.assessment.findUnique({
-      where: { id: assessmentId },
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, schoolId },
       include: {
         class: {
           include: {
@@ -308,10 +308,11 @@ export class ResultsValidator {
   async validateResultEntry(
     resultId: string,
     scores: Record<string, number>,
-    assessmentId: string
+    assessmentId: string,
+    schoolId: string
   ): Promise<ValidationResult> {
-    const result = await this.prisma.result.findUnique({
-      where: { id: resultId },
+    const result = await this.prisma.result.findFirst({
+      where: { id: resultId, assessment: { schoolId } },
       include: { assessment: true, pupil: true },
     });
 
@@ -329,6 +330,15 @@ export class ResultsValidator {
           message: 'Result not found',
           severity: 'error',
         }],
+      };
+    }
+
+    if (result.assessment.schoolId !== schoolId) {
+      return {
+        isValid: false,
+        errors: [{ field: 'result', message: 'Result not found', severity: 'error' }],
+        warnings: [],
+        blockers: [{ field: 'result', message: 'Result not found', severity: 'error' }],
       };
     }
 
@@ -380,8 +390,8 @@ export class ResultsValidator {
   /**
    * Check if ready for publish
    */
-  async isReadyForPublish(assessmentId: string): Promise<{ ready: boolean; reason?: string }> {
-    const validation = await this.validateAssessmentResults(assessmentId);
+  async isReadyForPublish(assessmentId: string, schoolId: string): Promise<{ ready: boolean; reason?: string }> {
+    const validation = await this.validateAssessmentResults(assessmentId, schoolId);
 
     if (!validation.isValid) {
       return {
