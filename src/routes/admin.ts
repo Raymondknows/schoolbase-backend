@@ -510,6 +510,10 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         manualPaymentAccountName: school.manualPaymentAccountName,
         manualPaymentAccountNumber: school.manualPaymentAccountNumber,
         manualPaymentBankName: school.manualPaymentBankName,
+        paystackPublicKey:
+          process.env.PAYSTACK_SUBSCRIPTION_PUBLIC_KEY ||
+          process.env.PAYSTACK_PUBLIC_KEY ||
+          null,
         hasPaystackPublic: Boolean(school.paystackPublicEncrypted),
         hasPaystackSecret: Boolean(school.paystackSecretEncrypted),
         hasWaCloudAccessToken: Boolean(school.waCloudAccessTokenEncrypted),
@@ -1087,7 +1091,10 @@ router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) =>
     // Get all fee schedules for this term
     const feeSchedules = await prisma.feeSchedule.findMany({
       where: { termId, schoolId },
-      include: { class: true },
+      include: { 
+        class: true,
+        term: true,
+      },
     });
 
     if (feeSchedules.length === 0) {
@@ -1111,13 +1118,19 @@ router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) =>
         // Schedule is for specific class
         eligiblePupils = await prisma.pupil.findMany({
           where: { classId: schedule.classId, isActive: true },
-          include: { guardians: { include: { guardian: true } } },
+          include: { 
+            guardians: { include: { guardian: true } },
+            class: true,
+          },
         });
       } else {
         // Schedule is for all pupils in school
         eligiblePupils = await prisma.pupil.findMany({
           where: { schoolId, isActive: true },
-          include: { guardians: { include: { guardian: true } } },
+          include: { 
+            guardians: { include: { guardian: true } },
+            class: true,
+          },
         });
       }
 
@@ -1207,12 +1220,15 @@ router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) =>
             // Create and send Email notification
             if (guardian.email) {
               try {
+                const termName = schedule.term?.name || 'Current Term';
                 await sendFeeReminderEmail(
                   guardian.email,
                   guardian.firstName,
                   pupilName,
                   className,
+                  termName,
                   amount,
+                  '0.00',
                   amount,
                   school?.name || 'School',
                 );
@@ -1292,7 +1308,7 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
             class: true,
           },
         },
-        feeSchedule: true,
+        feeSchedule: { include: { term: true } },
       },
     });
 
@@ -1367,12 +1383,16 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
         // Send via Email
         if (guardian.email) {
           try {
+            const termName = invoice.feeSchedule?.term?.name || 'Current Term';
+            const paidAmount = (invoice.amountPaid / 100).toFixed(2);
             await sendFeeReminderEmail(
               guardian.email,
               guardian.firstName,
               pupilName,
               className,
+              termName,
               amount,
+              paidAmount,
               outstanding.toFixed(2),
               school.name,
             );
@@ -1423,6 +1443,319 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
   } catch (error) {
     console.error('Error sending reminders:', error);
     res.status(500).json({ error: 'Failed to send reminders' });
+  }
+});
+
+// GET /api/admin/invoices/:id - Get invoice details with all related data
+router.get('/invoices/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+
+    // Fetch invoice with all related data
+    const invoice = await prisma.invoice.findFirst({
+      where: { id, schoolId },
+      include: {
+        pupil: {
+          include: {
+            class: true,
+            guardians: { include: { guardian: true } },
+          },
+        },
+        feeSchedule: {
+          include: {
+            term: { include: { academicYear: true } },
+          },
+        },
+        payments: {
+          orderBy: { paidAt: 'desc' },
+        },
+      },
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    // Fetch school details for invoice
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: {
+        name: true,
+        currency: true,
+        address: true,
+        city: true,
+        phone: true,
+        email: true,
+        logoUrl: true,
+        principalName: true,
+        principalSignatureUrl: true,
+        stampUrl: true,
+        manualPaymentAccountName: true,
+        manualPaymentAccountNumber: true,
+        manualPaymentBankName: true,
+      },
+    });
+
+    // Map invoice data
+    const mappedInvoice = {
+      ...invoice,
+      dueDate: invoice.dueDate ? invoice.dueDate.toISOString() : null,
+      createdAt: invoice.createdAt.toISOString(),
+      updatedAt: invoice.updatedAt.toISOString(),
+      payments: invoice.payments.map((p) => ({
+        ...p,
+        paidAt: p.paidAt.toISOString(),
+      })),
+    };
+
+    res.json({
+      invoice: mappedInvoice,
+      school,
+      outstanding: Math.max(0, invoice.amountDue - invoice.amountPaid),
+    });
+  } catch (error) {
+    console.error('Error fetching invoice:', error);
+    res.status(500).json({ error: 'Failed to fetch invoice' });
+  }
+});
+
+// GET /api/admin/invoices/:id/pdf - Download invoice as PDF
+router.get('/invoices/:id/pdf', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+
+    // Fetch invoice with all related data
+    const invoice = await prisma.invoice.findFirst({
+      where: { id, schoolId },
+      include: {
+        pupil: {
+          include: {
+            class: true,
+            guardians: { include: { guardian: true } },
+          },
+        },
+        feeSchedule: {
+          include: {
+            term: { include: { academicYear: true } },
+          },
+        },
+        payments: {
+          orderBy: { paidAt: 'desc' },
+        },
+      },
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    // Fetch school details
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: {
+        name: true,
+        currency: true,
+        address: true,
+        city: true,
+        phone: true,
+        email: true,
+        logoUrl: true,
+        principalName: true,
+        principalSignatureUrl: true,
+        stampUrl: true,
+        manualPaymentAccountName: true,
+        manualPaymentAccountNumber: true,
+        manualPaymentBankName: true,
+      },
+    });
+
+    // Format currency
+    const formatAmount = (amount: number, currency: string) => {
+      return `${currency} ${(amount / 100).toFixed(2)}`;
+    };
+
+    // Generate HTML invoice
+    const pupilName = `${invoice.pupil.firstName} ${invoice.pupil.lastName}`;
+    const className = invoice.pupil.class
+      ? `${invoice.pupil.class.name}${invoice.pupil.class.arm ? ` ${invoice.pupil.class.arm}` : ""}`
+      : "Unassigned";
+    const termName = invoice.feeSchedule?.term?.name || "Unknown Term";
+    const academicYear = invoice.feeSchedule?.term?.academicYear?.name || "";
+    const currency = school?.currency || "NGN";
+    const outstanding = Math.max(0, invoice.amountDue - invoice.amountPaid);
+
+    const paymentRows = invoice.payments
+      .map(
+        (p) => `
+        <tr>
+          <td>${new Date(p.paidAt).toLocaleDateString()}</td>
+          <td>${p.method.replace(/_/g, " ")}</td>
+          <td>${p.reference || "—"}</td>
+          <td style="text-align: right;">${formatAmount(p.amount, currency)}</td>
+        </tr>
+      `
+      )
+      .join("");
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: Arial, sans-serif; color: #333; line-height: 1.6; }
+          .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+          .header { display: flex; justify-content: space-between; margin-bottom: 40px; border-bottom: 2px solid #ddd; padding-bottom: 20px; }
+          .school-info h2 { font-size: 24px; margin-bottom: 10px; }
+          .school-info p { font-size: 12px; color: #666; }
+          .invoice-meta { text-align: right; }
+          .invoice-meta p { font-size: 13px; margin: 5px 0; }
+          .bill-to { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-bottom: 40px; }
+          .bill-to-section h4 { font-size: 11px; text-transform: uppercase; color: #999; margin-bottom: 5px; font-weight: bold; }
+          .bill-to-section p { margin: 3px 0; font-size: 13px; }
+          table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
+          thead { background: #f5f5f5; }
+          th { padding: 10px; text-align: left; font-weight: bold; font-size: 13px; border-bottom: 2px solid #ddd; }
+          td { padding: 10px; font-size: 13px; border-bottom: 1px solid #eee; }
+          .summary-table { width: 100%; margin-bottom: 30px; }
+          .summary-table td { padding: 8px 10px; font-size: 13px; }
+          .summary-table .label { text-align: right; padding-right: 20px; font-weight: bold; }
+          .summary-table .amount { text-align: right; font-weight: bold; }
+          .outstanding { color: #d32f2f; }
+          .paid { color: #388e3c; }
+          .payment-instructions { background: #e3f2fd; padding: 15px; border-radius: 4px; margin-bottom: 20px; font-size: 13px; }
+          .payment-instructions h4 { font-weight: bold; margin-bottom: 8px; }
+          .payment-instructions p { margin: 4px 0; }
+          .footer { text-align: center; font-size: 11px; color: #999; border-top: 1px solid #ddd; padding-top: 20px; margin-top: 30px; }
+          .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 11px; }
+          .status-paid { background: #c8e6c9; color: #1b5e20; }
+          .status-overdue { background: #ffcdd2; color: #b71c1c; }
+          .status-part-paid { background: #fff3e0; color: #e65100; }
+          .status-draft { background: #f5f5f5; color: #424242; }
+          @media print {
+            body { margin: 0; padding: 0; }
+            .container { padding: 20px; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <!-- Header -->
+          <div class="header">
+            <div class="school-info">
+              <h2>${school?.name || "School"}</h2>
+              ${school?.address ? `<p>${school.address}${school.city ? `, ${school.city}` : ""}</p>` : ""}
+              ${school?.email ? `<p>${school.email}</p>` : ""}
+              ${school?.phone ? `<p>${school.phone}</p>` : ""}
+            </div>
+            <div class="invoice-meta">
+              <div>
+                <p><strong>Invoice #:</strong> ${invoice.invoiceNo}</p>
+                <p><strong>Date:</strong> ${new Date(invoice.createdAt).toLocaleDateString()}</p>
+                ${invoice.dueDate ? `<p><strong>Due Date:</strong> ${new Date(invoice.dueDate).toLocaleDateString()}</p>` : ""}
+                <p style="margin-top: 10px;"><span class="status-badge status-${invoice.status.toLowerCase().replace("_", "-")}">${invoice.status}</span></p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bill To -->
+          <div class="bill-to">
+            <div class="bill-to-section">
+              <h4>Bill To</h4>
+              <p><strong>${pupilName}</strong></p>
+              <p>${className}</p>
+              <p>${termName}, ${academicYear}</p>
+            </div>
+          </div>
+
+          <!-- Invoice Details -->
+          <table>
+            <thead>
+              <tr>
+                <th>Description</th>
+                <th style="text-align: right;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>${invoice.feeSchedule?.name || "Fee"}</td>
+                <td style="text-align: right;">${formatAmount(invoice.amountDue, currency)}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- Summary -->
+          <table class="summary-table">
+            <tr>
+              <td class="label">Amount Due:</td>
+              <td class="amount">${formatAmount(invoice.amountDue, currency)}</td>
+            </tr>
+            <tr>
+              <td class="label">Amount Paid:</td>
+              <td class="amount paid">${formatAmount(invoice.amountPaid, currency)}</td>
+            </tr>
+            ${outstanding > 0 ? `<tr>
+              <td class="label">Outstanding Balance:</td>
+              <td class="amount outstanding">${formatAmount(outstanding, currency)}</td>
+            </tr>` : ""}
+          </table>
+
+          <!-- Payment History -->
+          ${invoice.payments.length > 0 ? `
+            <h4 style="margin-bottom: 15px;">Payment History</h4>
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Method</th>
+                  <th>Reference</th>
+                  <th style="text-align: right;">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${paymentRows}
+              </tbody>
+            </table>
+          ` : ""}
+
+          <!-- Payment Instructions -->
+          ${outstanding > 0 && school && (school.manualPaymentAccountName || school.manualPaymentAccountNumber) ? `
+            <div class="payment-instructions">
+              <h4>Payment Instructions</h4>
+              ${school.manualPaymentAccountName ? `<p><strong>Account Name:</strong> ${school.manualPaymentAccountName}</p>` : ""}
+              ${school.manualPaymentAccountNumber ? `<p><strong>Account Number:</strong> ${school.manualPaymentAccountNumber}</p>` : ""}
+              ${school.manualPaymentBankName ? `<p><strong>Bank:</strong> ${school.manualPaymentBankName}</p>` : ""}
+            </div>
+          ` : ""}
+
+          <!-- Footer -->
+          <div class="footer">
+            <p>This is an automated invoice generated by SchoolBase</p>
+            <p>Please retain for your records</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    // Set response headers for PDF download
+    res.setHeader("Content-Type", "text/html; charset=UTF-8");
+    res.setHeader("Content-Disposition", `attachment; filename="invoice-${invoice.invoiceNo}.html"`);
+    res.send(htmlContent);
+  } catch (error) {
+    console.error('Error generating invoice PDF:', error);
+    res.status(500).json({ error: 'Failed to generate invoice PDF' });
   }
 });
 
@@ -2279,8 +2612,17 @@ router.get('/analytics/data', async (req: Request, res: Response) => {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
+    const termId = req.query.termId as string | undefined;
+    const phaseQuery = req.query.phase as string | undefined;
+    
+    // Only include phase in where clause if it's valid and not 'ALL'
+    const classWhere: any = { schoolId };
+    if (phaseQuery && phaseQuery !== 'ALL') {
+      classWhere.phase = phaseQuery;
+    }
+
     const classes = await prisma.class.findMany({
-      where: { schoolId },
+      where: classWhere,
       orderBy: { name: 'asc' },
     });
 
@@ -2289,29 +2631,88 @@ router.get('/analytics/data', async (req: Request, res: Response) => {
       orderBy: { name: 'asc' },
     });
 
-    // Basic school analytics: count results and calculate metrics
+    // Build filter for assessments
+    const assessmentWhere: any = {
+      schoolId,
+      status: 'PUBLISHED',
+    };
+    
+    if (phaseQuery && phaseQuery !== 'ALL') {
+      assessmentWhere.phase = phaseQuery;
+    }
+
+    if (termId) {
+      assessmentWhere.termId = termId;
+    }
+
+    // Fetch published assessments for the selected term and phase
+    const assessments = await prisma.assessment.findMany({
+      where: assessmentWhere,
+      select: { id: true },
+    });
+
+    const assessmentIds = assessments.map((a) => a.id);
+
+    // Fetch results for these assessments
     const results = await prisma.result.findMany({
       where: {
-        pupil: { schoolId },
+        assessmentId: { in: assessmentIds },
         publishedAt: { not: null },
+      },
+      include: {
+        pupil: true,
       },
     });
 
+    // Calculate grade distribution
+    const gradeDistribution: Record<string, number> = { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 };
+
+    results.forEach((result: any) => {
+      // Calculate grade from score (assuming 40+ is pass)
+      const score = result.totalScore || 0;
+      let grade = 'F';
+      if (score >= 90) grade = 'A';
+      else if (score >= 80) grade = 'B';
+      else if (score >= 70) grade = 'C';
+      else if (score >= 60) grade = 'D';
+      else if (score >= 40) grade = 'E';
+
+      gradeDistribution[grade]++;
+    });
+
     const schoolAverage = results.length > 0 
-      ? (results.reduce((sum: number, r: any) => sum + (r.score || 0), 0) / results.length) 
+      ? (results.reduce((sum: number, r: any) => sum + (r.totalScore || 0), 0) / results.length) 
       : 0;
 
-    const passCount = results.filter((r: any) => (r.score || 0) >= 40).length;
+    const passCount = results.filter((r: any) => (r.totalScore || 0) >= 40).length;
     const passRate = results.length > 0 ? (passCount / results.length) * 100 : 0;
+
+    // Get top performers and struggling students
+    const sortedResults = [...results].sort((a: any, b: any) => (b.totalScore || 0) - (a.totalScore || 0));
+    const topPerformers = sortedResults.slice(0, 10).map((r: any) => {
+      const pupilName = r.pupil ? `${r.pupil.firstName} ${r.pupil.lastName}`.trim() : 'Unknown';
+      return {
+        name: pupilName,
+        score: r.totalScore || 0,
+      };
+    });
+
+    const strugglingStudents = sortedResults.slice(-10).map((r: any) => {
+      const pupilName = r.pupil ? `${r.pupil.firstName} ${r.pupil.lastName}`.trim() : 'Unknown';
+      return {
+        name: pupilName,
+        score: r.totalScore || 0,
+      };
+    }).reverse();
 
     res.json({
       schoolAnalytics: {
-        schoolAverage,
-        passRate,
+        schoolAverage: Math.round(schoolAverage * 10) / 10,
+        passRate: Math.round(passRate * 10) / 10,
         totalResults: results.length,
-        gradeDistribution: { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 },
-        topPerformers: [],
-        strugglingStudents: [],
+        gradeDistribution,
+        topPerformers,
+        strugglingStudents,
       },
       classes,
       subjects,
@@ -3502,6 +3903,118 @@ router.get('/announcements', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/admin/announcements - Create new announcement
+router.post('/announcements', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { title, body, publish } = req.body;
+
+    if (!title || !body) {
+      return res.status(400).json({ error: 'Title and body are required' });
+    }
+
+    const announcement = await prisma.announcement.create({
+      data: {
+        schoolId,
+        title,
+        body,
+        published: publish === true || publish === 'true',
+        publishedAt: (publish === true || publish === 'true') ? new Date() : null,
+      },
+    });
+
+    res.status(201).json({ 
+      success: true, 
+      announcement,
+      message: 'Announcement created successfully' 
+    });
+  } catch (error) {
+    console.error('Error creating announcement:', error);
+    res.status(500).json({ error: 'Failed to create announcement' });
+  }
+});
+
+// PATCH /api/admin/announcements/:id - Update announcement
+router.patch('/announcements/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+    const { title, body, publish } = req.body;
+
+    // Verify announcement belongs to school
+    const announcement = await prisma.announcement.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!announcement) {
+      return res.status(404).json({ error: 'Announcement not found' });
+    }
+
+    const updateData: any = {};
+    if (title !== undefined) updateData.title = title;
+    if (body !== undefined) updateData.body = body;
+    if (publish !== undefined) {
+      const shouldPublish = publish === true || publish === 'true';
+      updateData.published = shouldPublish;
+      if (shouldPublish && !announcement.publishedAt) {
+        updateData.publishedAt = new Date();
+      }
+    }
+
+    const updated = await prisma.announcement.update({
+      where: { id },
+      data: updateData,
+    });
+
+    res.json({ 
+      success: true, 
+      announcement: updated,
+      message: 'Announcement updated successfully'
+    });
+  } catch (error) {
+    console.error('Error updating announcement:', error);
+    res.status(500).json({ error: 'Failed to update announcement' });
+  }
+});
+
+// DELETE /api/admin/announcements/:id - Delete announcement
+router.delete('/announcements/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+
+    // Verify announcement belongs to school
+    const announcement = await prisma.announcement.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!announcement) {
+      return res.status(404).json({ error: 'Announcement not found' });
+    }
+
+    await prisma.announcement.delete({
+      where: { id },
+    });
+
+    res.json({ success: true, message: 'Announcement deleted' });
+  } catch (error) {
+    console.error('Error deleting announcement:', error);
+    res.status(500).json({ error: 'Failed to delete announcement' });
+  }
+});
+
 // GET /api/admin/payments/recent - Get recent payments for dashboard
 router.get('/payments/recent', async (req: Request, res: Response) => {
   try {
@@ -4097,6 +4610,7 @@ router.post('/attendance/notify', async (req: Request, res: Response) => {
             id: true,
             firstName: true,
             lastName: true,
+            class: { select: { name: true } },
             guardians: { include: { guardian: true } },
           },
         },
@@ -4143,12 +4657,15 @@ router.post('/attendance/notify', async (req: Request, res: Response) => {
         } else if (guardian.email) {
           // Send email
           try {
+            const className = record.pupil.class?.name || 'Unknown Class';
+            const status = record.status.toLowerCase() as 'present' | 'absent' | 'late';
             await sendAttendanceNotificationEmail(
               guardian.email,
               guardian.firstName,
               pupilName,
-              record.status,
+              className,
               date,
+              status,
               school?.name || 'School',
               message
             );

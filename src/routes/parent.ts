@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { SignJWT } from 'jose';
+import { SignJWT, jwtVerify } from 'jose';
 import { PrismaClient } from '@prisma/client';
 
 const router = Router();
@@ -205,5 +205,623 @@ router.post('/login', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Login failed' });
   }
 });
+
+// Verify parent session
+router.post('/verify', async (req: Request, res: Response) => {
+  try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+    
+    if (!sessionCookie) {
+      return res.json({ authenticated: false });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+
+    return res.json({
+      authenticated: true,
+      guardianId: data.guardianId,
+      name: data.name,
+      phone: data.phone,
+      schoolId: data.schoolId,
+    });
+  } catch (error) {
+    res.json({ authenticated: false });
+  }
+});
+
+// Get parent dashboard data
+router.get('/dashboard', async (req: Request, res: Response) => {
+  try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+    
+    if (!sessionCookie) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+
+    const guardian = await prisma.guardian.findUnique({
+      where: { id: data.guardianId },
+      include: { 
+        pupils: { 
+          include: { 
+            pupil: { 
+              include: { 
+                class: true,
+              } 
+            } 
+          } 
+        },
+        school: true
+      },
+    });
+
+    if (!guardian) {
+      return res.status(404).json({ error: 'Guardian not found' });
+    }
+
+    const children = guardian.pupils.map((gp: any) => ({
+      id: gp.pupil.id,
+      firstName: gp.pupil.firstName,
+      lastName: gp.pupil.lastName,
+      admissionNo: gp.pupil.admissionNo,
+      class: gp.pupil.class,
+      status: gp.pupil.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE',
+      latestGrade: null,
+    }));
+
+    // Get invoices for all children
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        pupilId: { in: children.map((c: any) => c.id) },
+      },
+      include: { pupil: true },
+    });
+
+    const outstandingFees = invoices
+      .filter(inv => ['SENT', 'PART_PAID', 'OVERDUE'].includes(inv.status))
+      .reduce((sum, inv) => sum + inv.amountDue, 0);
+
+    // Get announcements
+    const announcements = await prisma.announcement.findMany({
+      where: { 
+        schoolId: data.schoolId,
+        published: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    });
+
+    res.json({
+      guardianName: `${guardian.firstName} ${guardian.lastName}`,
+      children,
+      outstandingFees,
+      announcements: announcements.map(a => ({
+        id: a.id,
+        title: a.title,
+        content: a.body,
+        createdAt: a.createdAt,
+      })),
+      recentResults: [],
+    });
+  } catch (error) {
+    console.error('Error loading dashboard:', error);
+    res.status(500).json({ error: 'Failed to load dashboard' });
+  }
+});
+
+// Get parent's children
+router.get('/children', async (req: Request, res: Response) => {
+  try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+    
+    if (!sessionCookie) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+
+    const guardian = await prisma.guardian.findUnique({
+      where: { id: data.guardianId },
+      include: {
+        pupils: {
+          include: {
+            pupil: {
+              include: {
+                class: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!guardian) {
+      return res.status(404).json({ error: 'Guardian not found' });
+    }
+
+    // Get invoices for children
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        pupilId: { in: guardian.pupils.map((gp: any) => gp.pupil.id) },
+      },
+    });
+
+    const children = guardian.pupils.map((gp: any) => ({
+      id: gp.pupil.id,
+      firstName: gp.pupil.firstName,
+      lastName: gp.pupil.lastName,
+      admissionNo: gp.pupil.admissionNo,
+      class: gp.pupil.class,
+      status: gp.pupil.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE',
+      latestGrade: null,
+      outstandingFee: invoices
+        .filter(inv => inv.pupilId === gp.pupil.id && ['SENT', 'PART_PAID', 'OVERDUE'].includes(inv.status))
+        .reduce((sum, inv) => sum + inv.amountDue, 0),
+    }));
+
+    res.json({ children });
+  } catch (error) {
+    console.error('Error loading children:', error);
+    res.status(500).json({ error: 'Failed to load children' });
+  }
+});
+
+// Get available terms
+router.get('/terms', async (req: Request, res: Response) => {
+  try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+    
+    if (!sessionCookie) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+
+    // Get school from guardian's children
+    const guardian = await prisma.guardian.findUnique({
+      where: { id: data.guardianId },
+      include: { 
+        pupils: { 
+          include: { 
+            pupil: { 
+              select: { 
+                schoolId: true 
+              } 
+            } 
+          } 
+        } 
+      },
+    });
+
+    if (!guardian || guardian.pupils.length === 0) {
+      return res.json({ terms: [] });
+    }
+
+    const schoolId = guardian.pupils[0].pupil.schoolId;
+
+    const terms = await prisma.term.findMany({
+      where: {
+        academicYear: {
+          schoolId,
+          isCurrent: true,
+        },
+      },
+      orderBy: { sortOrder: 'asc' },
+      select: { id: true, name: true, sortOrder: true },
+    });
+
+    res.json({ terms });
+  } catch (error) {
+    console.error('Error fetching terms:', error);
+    res.status(500).json({ error: 'Failed to fetch terms' });
+  }
+});
+
+// Get child results by term and assessment
+router.get('/results', async (req: Request, res: Response) => {
+  try {
+    const childId = req.query.childId as string;
+    const termId = req.query.termId as string;
+
+    if (!childId) {
+      return res.status(400).json({ error: 'childId required' });
+    }
+
+    // Get child's school and phase
+    const child = await prisma.pupil.findUnique({
+      where: { id: childId },
+      include: {
+        class: {
+          select: { phase: true, schoolId: true }
+        }
+      }
+    });
+
+    if (!child || !child.class) {
+      return res.json({ results: [], term: null });
+    }
+
+    // Build where clause for assessments
+    const where: any = {
+      schoolId: child.class.schoolId,
+      phase: child.class.phase,
+      status: 'PUBLISHED'
+    };
+
+    // If termId is specified, filter by term
+    if (termId && termId !== 'latest') {
+      where.termId = termId;
+    }
+
+    // Get the assessments (and their results for this child)
+    const assessments = await prisma.assessment.findMany({
+      where,
+      include: {
+        term: {
+          select: { id: true, name: true }
+        },
+        results: {
+          where: { pupilId: childId },
+          select: {
+            id: true,
+            caScore: true,
+            testScore: true,
+            examScore: true,
+            totalScore: true,
+          }
+        }
+      },
+      orderBy: [
+        { term: { sortOrder: 'desc' } },
+        { createdAt: 'desc' }
+      ]
+    });
+
+    // Determine which term to display (latest or selected)
+    let selectedTerm = null;
+    let filteredAssessments = assessments;
+
+    if (!termId || termId === 'latest') {
+      // Group by term and get latest
+      const groupedByTerm = new Map();
+      assessments.forEach(a => {
+        if (a.term) {
+          if (!groupedByTerm.has(a.term.id)) {
+            groupedByTerm.set(a.term.id, []);
+          }
+          groupedByTerm.get(a.term.id).push(a);
+        }
+      });
+
+      // Get first (latest) term
+      if (groupedByTerm.size > 0) {
+        const firstTermId = groupedByTerm.keys().next().value;
+        selectedTerm = assessments.find(a => a.term?.id === firstTermId)?.term || null;
+        filteredAssessments = groupedByTerm.get(firstTermId);
+      }
+    } else {
+      selectedTerm = assessments[0]?.term || null;
+      filteredAssessments = assessments.filter(a => a.term?.id === termId);
+    }
+
+    // Transform results - flatten assessment results into subjects
+    const results = filteredAssessments
+      .filter(a => a.results.length > 0)
+      .map(assessment => {
+        const result = assessment.results[0];
+        return {
+          id: result.id,
+          subject: assessment.name,
+          assessmentId: assessment.id,
+          caScore: result.caScore,
+          testScore: result.testScore,
+          examScore: result.examScore,
+          totalScore: result.totalScore,
+          grade: result.totalScore ? getGrade(result.totalScore) : null,
+        };
+      });
+
+    res.json({ 
+      results,
+      term: selectedTerm,
+      assessments: filteredAssessments
+    });
+  } catch (error) {
+    console.error('Error loading results:', error);
+    res.status(500).json({ error: 'Failed to load results' });
+  }
+});
+
+// Get invoices
+router.get('/invoices', async (req: Request, res: Response) => {
+  try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+    
+    if (!sessionCookie) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+
+    const guardian = await prisma.guardian.findUnique({
+      where: { id: data.guardianId },
+      include: { pupils: { include: { pupil: true } } },
+    });
+
+    if (!guardian) {
+      return res.status(404).json({ error: 'Guardian not found' });
+    }
+
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        pupilId: { in: guardian.pupils.map((gp: any) => gp.pupil.id) },
+      },
+      include: { 
+        pupil: true,
+        feeSchedule: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json({
+      invoices: invoices.map(inv => ({
+        id: inv.id,
+        childId: inv.pupilId,
+        childName: `${inv.pupil.firstName} ${inv.pupil.lastName}`,
+        amountDue: inv.amountDue,
+        status: inv.status,
+        dueDate: inv.dueDate,
+        description: inv.feeSchedule?.name || 'School Fees',
+      })),
+    });
+  } catch (error) {
+    console.error('Error loading invoices:', error);
+    res.status(500).json({ error: 'Failed to load invoices' });
+  }
+});
+
+// Get payments
+router.get('/payments', async (req: Request, res: Response) => {
+  try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+    
+    if (!sessionCookie) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+
+    const guardian = await prisma.guardian.findUnique({
+      where: { id: data.guardianId },
+      include: { pupils: true },
+    });
+
+    if (!guardian) {
+      return res.status(404).json({ error: 'Guardian not found' });
+    }
+
+    const payments = await prisma.payment.findMany({
+      where: {
+        invoice: {
+          pupilId: { in: guardian.pupils.map((gp: any) => gp.pupilId) },
+        },
+      },
+      include: { invoice: true },
+      orderBy: { paidAt: 'desc' },
+      take: 50,
+    });
+
+    res.json({
+      payments: payments.map(p => ({
+        id: p.id,
+        invoiceId: p.invoiceId,
+        amount: p.amount,
+        paidAt: p.paidAt,
+        method: p.method || 'UNKNOWN',
+        reference: p.reference,
+      })),
+    });
+  } catch (error) {
+    console.error('Error loading payments:', error);
+    res.status(500).json({ error: 'Failed to load payments' });
+  }
+});
+
+// Get announcements
+router.get('/announcements', async (req: Request, res: Response) => {
+  try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+    
+    if (!sessionCookie) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+
+    const announcements = await prisma.announcement.findMany({
+      where: { 
+        schoolId: data.schoolId,
+        published: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+
+    res.json({
+      announcements: announcements.map(a => ({
+        id: a.id,
+        title: a.title,
+        body: a.body,
+        publishedAt: a.publishedAt,
+        createdAt: a.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error('Error loading announcements:', error);
+    res.status(500).json({ error: 'Failed to load announcements' });
+  }
+});
+
+// Get school info
+router.get('/school', async (req: Request, res: Response) => {
+  try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+    
+    if (!sessionCookie) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+
+    const school = await prisma.school.findUnique({
+      where: { id: data.schoolId },
+    });
+
+    if (!school) {
+      return res.status(404).json({ error: 'School not found' });
+    }
+
+    res.json({
+      id: school.id,
+      name: school.name,
+      address: school.address || '',
+      phone: school.phone || '',
+      email: school.email || '',
+      principal: school.principalName || '',
+      motto: school.tagline || '',
+      city: school.city || '',
+      country: school.country || 'NG',
+      currency: school.currency || 'NGN',
+      initials: school.initials || '',
+      termCount: school.termCount,
+      logoUrl: school.logoUrl || '',
+      principalComment: school.principalComment || '',
+    });
+  } catch (error) {
+    console.error('Error loading school:', error);
+    res.status(500).json({ error: 'Failed to load school' });
+  }
+});
+
+// Get invoice details
+router.get('/invoices/:id', async (req: Request, res: Response) => {
+  try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+
+    if (!sessionCookie) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+    const { id } = req.params;
+
+    const guardian = await prisma.guardian.findUnique({
+      where: { id: data.guardianId },
+      include: { pupils: { include: { pupil: true } } },
+    });
+
+    if (!guardian) {
+      return res.status(404).json({ error: 'Guardian not found' });
+    }
+
+    const allowedPupilIds = guardian.pupils.map((gp: any) => gp.pupil.id);
+
+    const invoice = await prisma.invoice.findFirst({
+      where: {
+        id,
+        pupilId: { in: allowedPupilIds },
+      },
+      include: {
+        pupil: {
+          include: { class: true },
+        },
+        feeSchedule: {
+          include: {
+            term: { include: { academicYear: true } },
+          },
+        },
+        payments: {
+          orderBy: { paidAt: 'desc' },
+        },
+      },
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: data.schoolId },
+      select: {
+        name: true,
+        currency: true,
+        address: true,
+        city: true,
+        phone: true,
+        email: true,
+        logoUrl: true,
+        principalName: true,
+        tagline: true,
+        principalComment: true,
+      },
+    });
+
+    res.json({
+      invoice: {
+        ...invoice,
+        dueDate: invoice.dueDate ? invoice.dueDate.toISOString() : null,
+        createdAt: invoice.createdAt.toISOString(),
+        updatedAt: invoice.updatedAt.toISOString(),
+        payments: invoice.payments.map((payment) => ({
+          ...payment,
+          paidAt: payment.paidAt.toISOString(),
+        })),
+      },
+      school,
+      outstanding: Math.max(0, invoice.amountDue - invoice.amountPaid),
+    });
+  } catch (error) {
+    console.error('Error fetching invoice:', error);
+    res.status(500).json({ error: 'Failed to fetch invoice' });
+  }
+});
+
+// Helper function to calculate grade
+function getGrade(score: number): string {
+  if (score >= 90) return 'A+';
+  if (score >= 80) return 'A';
+  if (score >= 70) return 'B';
+  if (score >= 60) return 'C';
+  if (score >= 50) return 'D';
+  return 'F';
+}
 
 export default router;

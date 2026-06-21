@@ -6,6 +6,14 @@ const router = Router();
 const prisma = new PrismaClient();
 const pdfService = new PDFReportCardService(prisma);
 
+function sanitizeFilename(value: string): string {
+  return value
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 120);
+}
+
 /**
  * PDF Report Card API Routes - Phase 6
  * 
@@ -31,7 +39,12 @@ router.get('/:assessmentId/:pupilId', async (req: Request, res: Response) => {
       where: { id: pupilId },
     });
 
-    if (!pupil) {
+    const assessment = await prisma.assessment.findUnique({
+      where: { id: assessmentId },
+      include: { term: { include: { academicYear: true } } },
+    });
+
+    if (!pupil || !assessment) {
       return res.status(404).json({ error: 'Student not found' });
     }
 
@@ -43,9 +56,11 @@ router.get('/:assessmentId/:pupilId', async (req: Request, res: Response) => {
 
     // Set response headers
     res.setHeader('Content-Type', 'application/pdf');
+    const studentName = sanitizeFilename(`${pupil.firstName}_${pupil.lastName}`);
+    const assessmentLabel = sanitizeFilename(assessment.name || assessment.term?.name || 'report');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="${pupil.firstName}_${pupil.lastName}_reportcard.pdf"`
+      `attachment; filename="${studentName}_${assessmentLabel}.pdf"`
     );
     res.setHeader('Content-Length', pdfBytes.length);
 

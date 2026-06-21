@@ -1,25 +1,43 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { jwtVerify } from 'jose';
 import axios from 'axios';
-import { sendSetupCompletionReminderEmail } from '../services/email.js';
+import { sendSetupReminderEmail } from '../services/email.js';
 
 const router = Router();
 const prisma = new PrismaClient();
 
+// Helper to get JWT secret
+function secret() {
+  return new TextEncoder().encode(
+    process.env.SESSION_SECRET || 'your-secret-key'
+  );
+}
+
 // Middleware to verify platform admin session
 const requirePlatformAdminSession = async (req: Request, res: Response): Promise<string | null> => {
   try {
-    // Get session from frontend auth context (passed via header or cookie)
-    const sessionToken = req.headers['x-session-token'] as string;
+    // Get session from httpOnly cookie
+    const sessionToken = req.cookies?.schoolbase_session;
     if (!sessionToken) {
-      res.status(401).json({ message: 'Unauthorized' });
+      res.status(401).json({ message: 'Unauthorized - no session' });
       return null;
     }
-    // In production, verify the session token is valid
-    // For now, trust that frontend already verified auth
-    return sessionToken;
+
+    // Verify JWT token
+    const { payload } = await jwtVerify(sessionToken, secret());
+    
+    // Verify it's a platform admin
+    if (payload.role !== 'PLATFORM_ADMIN') {
+      res.status(403).json({ message: 'Forbidden - not a platform admin' });
+      return null;
+    }
+
+    // Return userId for audit purposes
+    return payload.userId as string;
   } catch (error) {
-    res.status(401).json({ message: 'Unauthorized' });
+    console.error('[ADMIN] Session verification error:', error);
+    res.status(401).json({ message: 'Unauthorized - invalid session' });
     return null;
   }
 };
@@ -150,6 +168,7 @@ router.get('/schools', async (req: Request, res: Response) => {
           createdAt: true,
           updatedAt: true,
           trialEndsAt: true,
+          logoUrl: true,
           users: {
             where: { role: 'SCHOOL_ADMIN' },
             select: { email: true }
@@ -200,6 +219,7 @@ router.get('/schools', async (req: Request, res: Response) => {
         createdAt: school.createdAt,
         updatedAt: school.updatedAt,
         trialEndsAt: school.trialEndsAt,
+        logoUrl: school.logoUrl,
         userCount: school._count.users,
         pupilCount: school._count.pupils,
         classCount: school._count.classes,
@@ -340,7 +360,7 @@ router.post('/reminders/send-bulk', async (req: Request, res: Response) => {
         }
 
         // Send actual email
-        await sendSetupCompletionReminderEmail(
+        await sendSetupReminderEmail(
           admin.email,
           admin.name || 'School Administrator',
           school.name
@@ -449,7 +469,7 @@ router.post('/reminders/send-single', async (req: Request, res: Response) => {
 
     try {
       // Send actual email
-      await sendSetupCompletionReminderEmail(
+      await sendSetupReminderEmail(
         admin.email,
         admin.name || 'School Administrator',
         school.name
@@ -511,6 +531,17 @@ router.post('/reminders/send-single', async (req: Request, res: Response) => {
   }
 });
 
+// Helper function to get the next plan tier
+function getNextPlan(currentPlan: string): string {
+  const planProgression: Record<string, string> = {
+    'FREE': 'STARTER',
+    'STARTER': 'GROWTH',
+    'GROWTH': 'ENTERPRISE',
+    'ENTERPRISE': 'ENTERPRISE' // Can't upgrade beyond ENTERPRISE
+  };
+  return planProgression[currentPlan] || currentPlan;
+}
+
 // PATCH /schoolbase-admin/api/schools - School management actions
 router.patch('/schools', async (req: Request, res: Response) => {
   const session = await requirePlatformAdminSession(req, res);
@@ -542,9 +573,11 @@ router.patch('/schools', async (req: Request, res: Response) => {
         auditDetails = `Activated school ${school.name}`;
         break;
       case 'upgrade':
-        updateData.plan = plan ?? (school as any).plan;
+        const currentPlan = (school as any).plan;
+        const nextPlan = getNextPlan(currentPlan);
+        updateData.plan = nextPlan;
         updateData.status = 'ACTIVE';
-        auditDetails = `Upgraded ${school.name} to ${plan}`;
+        auditDetails = `Upgraded ${school.name} from ${currentPlan} to ${nextPlan}`;
         break;
       case 'extendTrial':
         if (!days) {
@@ -856,6 +889,139 @@ router.delete('/videos/:videoId', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error deleting video:', error);
     res.status(500).json({ message: (error as Error).message || 'Failed to delete video' });
+  }
+});
+
+// POST /schoolbase-admin/api/emails/send - Send platform communication emails
+router.post('/emails/send', async (req: Request, res: Response) => {
+  try {
+    const { targetType, selectedSchoolId, selectedSegment, emailType, subject, body } = req.body as {
+      targetType: 'school' | 'segment';
+      selectedSchoolId?: string;
+      selectedSegment?: string;
+      emailType: string;
+      subject: string;
+      body: string;
+    };
+
+    // Validate required fields
+    if (!emailType || !subject || !body) {
+      return res.status(400).json({ message: 'Email type, subject, and body are required.' });
+    }
+
+    let schools: any[] = [];
+
+    // Get schools based on target type
+    if (targetType === 'school') {
+      if (!selectedSchoolId) {
+        return res.status(400).json({ message: 'School ID is required for single school target.' });
+      }
+      schools = await prisma.school.findMany({
+        where: { id: selectedSchoolId },
+        include: {
+          users: {
+            where: { role: 'SCHOOL_ADMIN' },
+            select: { email: true, name: true },
+          },
+        },
+      });
+    } else if (targetType === 'segment') {
+      const where: any = {};
+      
+      if (selectedSegment === 'active') {
+        where.status = 'ACTIVE';
+      } else if (selectedSegment === 'trial') {
+        where.status = 'TRIAL';
+      } else if (selectedSegment === 'new') {
+        // New schools in the last 7 days
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        where.createdAt = { gte: sevenDaysAgo };
+      }
+      // 'all' segment has no where clause
+
+      schools = await prisma.school.findMany({
+        where,
+        include: {
+          users: {
+            where: { role: 'SCHOOL_ADMIN' },
+            select: { email: true, name: true },
+          },
+        },
+      });
+    }
+
+    if (schools.length === 0) {
+      return res.status(400).json({ message: 'No schools found matching the selection criteria.' });
+    }
+
+    // Send emails
+    const { sendPlatformCommunicationEmail } = await import('../services/email.js');
+    
+    let sentCount = 0;
+    let skippedCount = 0;
+
+    for (const school of schools) {
+      const adminUser = school.users[0];
+      if (!adminUser?.email) {
+        skippedCount++;
+        continue;
+      }
+
+      try {
+        await sendPlatformCommunicationEmail(
+          adminUser.email,
+          adminUser.name || 'School Admin',
+          school.name,
+          emailType,
+          subject,
+          body
+        );
+
+        // Log email sent
+        await (prisma as any).emailLog.create({
+          data: {
+            schoolId: school.id,
+            recipientEmail: adminUser.email,
+            recipientName: adminUser.name,
+            emailType,
+            subject,
+            sentAt: new Date(),
+            status: 'SENT',
+          },
+        }).catch(() => {}); // Ignore logging errors
+
+        sentCount++;
+      } catch (err) {
+        skippedCount++;
+        console.error(`Failed to send email to ${adminUser.email}:`, err);
+        
+        // Log failed email
+        await (prisma as any).emailLog.create({
+          data: {
+            schoolId: school.id,
+            recipientEmail: adminUser.email,
+            recipientName: adminUser.name,
+            emailType,
+            subject,
+            sentAt: new Date(),
+            status: 'FAILED',
+            error: (err as Error).message,
+          },
+        }).catch(() => {}); // Ignore logging errors
+      }
+    }
+
+    res.json({
+      success: true,
+      sentCount,
+      skippedCount,
+      total: schools.length,
+    });
+  } catch (error: any) {
+    console.error('❌ Error sending platform emails:', error);
+    res.status(500).json({ 
+      message: error.message || 'Failed to send emails'
+    });
   }
 });
 

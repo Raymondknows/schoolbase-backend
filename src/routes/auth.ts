@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import { jwtVerify, SignJWT } from 'jose';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { hasPendingOtp, resendSignupOtp, generateOtp, getSignupOtp } from '../services/otp.js';
+import { sendSignupOtpEmail } from '../services/email.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -128,8 +130,39 @@ router.post('/school-login', async (req: Request, res: Response) => {
       },
     });
 
-    // User not found
+    // User not found - check if there's a pending OTP
     if (!user || !user.passwordHash) {
+      const normalizedEmail = String(email).trim().toLowerCase();
+      
+      // Check if this email has a pending OTP waiting to be verified
+      if (await hasPendingOtp(normalizedEmail)) {
+        const pendingSignup = await getSignupOtp(normalizedEmail);
+
+        // Resend OTP for this pending signup
+        console.log(`[AUTH] Resending OTP for pending signup: ${normalizedEmail}`);
+        
+        // Generate new OTP and store it
+        const otp = generateOtp();
+        await resendSignupOtp(normalizedEmail, otp);
+        
+        // Send email asynchronously
+        sendSignupOtpEmail(normalizedEmail, otp, pendingSignup?.schoolName || 'Your School')
+          .then(() => {
+            console.log('[AUTH] OTP resent successfully to:', normalizedEmail);
+          })
+          .catch((error) => {
+            console.error('[AUTH] OTP resend failed (non-blocking):', error);
+          });
+        
+        // Return special response indicating verification needed
+        return res.status(401).json({ 
+          error: 'Please verify your email first',
+          needsVerification: true,
+          email: normalizedEmail,
+        });
+      }
+      
+      // No pending OTP - standard "not found" response
       return res.status(401).json({ 
         error: 'Invalid email or password.' 
       });

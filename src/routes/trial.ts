@@ -1,8 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcryptjs';
 import { SignJWT } from 'jose';
-import { generateOtp, storeOtp, verifyOtp } from '../services/otp.js';
+import { generateOtp, getSignupOtp, saveSignupOtp, verifySignupOtp } from '../services/otp.js';
 import { sendSignupOtpEmail, sendWelcomeEmail } from '../services/email.js';
 
 const router = Router();
@@ -17,7 +16,15 @@ function secret() {
 // POST /api/trial/request-otp - Request OTP for signup
 router.post('/request-otp', async (req: Request, res: Response) => {
   try {
-    const { schoolName, slug, country, adminName, adminEmail, password } = req.body;
+    const schoolName = String(req.body.schoolName ?? '').trim();
+    const slug = String(req.body.slug ?? '').trim();
+    const tagline = String(req.body.tagline ?? '').trim();
+    const address = String(req.body.address ?? '').trim();
+    const phone = String(req.body.phone ?? '').trim();
+    const country = String(req.body.country ?? '').trim();
+    const adminName = String(req.body.adminName ?? '').trim();
+    const adminEmail = String(req.body.adminEmail ?? '').trim().toLowerCase();
+    const password = String(req.body.password ?? '');
 
     if (!schoolName || !slug || !country || !adminName || !adminEmail || !password) {
       return res.status(400).json({ 
@@ -36,7 +43,7 @@ router.post('/request-otp', async (req: Request, res: Response) => {
 
     // Check if email already exists as a completed user
     const existingUser = await prisma.user.findUnique({
-      where: { email: adminEmail.toLowerCase() },
+      where: { email: adminEmail },
     });
 
     if (existingUser) {
@@ -45,20 +52,37 @@ router.post('/request-otp', async (req: Request, res: Response) => {
 
     // Allow resending OTP if email is already in signup process
     const existingSignup = await prisma.signupOtp.findUnique({
-      where: { email: adminEmail.toLowerCase() },
+      where: { email: adminEmail },
     });
 
     if (existingSignup && !existingSignup.verifiedAt) {
       console.log('Resending OTP to email already in signup process:', adminEmail);
     }
 
-    // Generate and send OTP
+    // Generate and store OTP in the database
     const otp = generateOtp();
-    storeOtp(adminEmail, otp);
+    await saveSignupOtp({
+      email: adminEmail,
+      schoolName,
+      slug,
+      country,
+      adminName,
+      password,
+      otp,
+    });
 
-    // Send email synchronously (like password reset does) - wait for it to complete
-    await sendSignupOtpEmail(adminEmail, otp, schoolName);
+    // Send email asynchronously (don't await - return immediately)
+    // This prevents the endpoint from hanging on SMTP timeouts
+    sendSignupOtpEmail(adminEmail, otp, schoolName)
+      .then(() => {
+        console.log('OTP email sent successfully to:', adminEmail);
+      })
+      .catch((error) => {
+        console.error('OTP email failed (non-blocking):', error);
+        // Still allow signup flow even if email fails - user can retry
+      });
 
+    // Return success immediately without waiting for email
     return res.json({
       success: true,
       message: 'Verification code sent to your email',
@@ -67,7 +91,7 @@ router.post('/request-otp', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Request OTP error:', error);
     return res.status(500).json({
-      error: 'Failed to send verification email',
+      error: 'Failed to request OTP',
       details: error.message,
     });
   }
@@ -76,30 +100,42 @@ router.post('/request-otp', async (req: Request, res: Response) => {
 // POST /api/trial/verify-otp - Verify OTP and create account
 router.post('/verify-otp', async (req: Request, res: Response) => {
   try {
-    const { schoolName, slug, country, adminName, adminEmail, password, otp } = req.body;
+    const adminEmail = String(req.body.adminEmail ?? '').trim().toLowerCase();
+    const otp = String(req.body.otp ?? '').trim();
+    const tagline = String(req.body.tagline ?? '').trim();
+    const address = String(req.body.address ?? '').trim();
+    const phone = String(req.body.phone ?? '').trim();
 
-    if (!schoolName || !slug || !country || !adminName || !adminEmail || !password || !otp) {
+    if (!adminEmail || !otp) {
       return res.status(400).json({ 
         error: 'Missing required fields'
       });
     }
 
     // Verify OTP
-    if (!verifyOtp(adminEmail, otp)) {
+    if (!(await verifySignupOtp(adminEmail, otp))) {
       return res.status(401).json({ 
         error: 'Invalid or expired verification code'
       });
     }
 
-    // Hash password
-    const passwordHash = await bcrypt.hash(password, 10);
+    const signupOtp = await getSignupOtp(adminEmail);
+
+    if (!signupOtp) {
+      return res.status(400).json({
+        error: 'Signup verification data was not found. Please request a new code and try again.',
+      });
+    }
 
     // Create school
     const school = await prisma.school.create({
       data: {
-        name: schoolName,
-        slug: slug.toLowerCase(),
-        country,
+        name: signupOtp.schoolName,
+        slug: signupOtp.slug,
+        tagline: tagline || null,
+        address: address || null,
+        phone: phone || null,
+        country: signupOtp.country,
         email: adminEmail,
         status: 'TRIAL',
         trialEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
@@ -109,12 +145,21 @@ router.post('/verify-otp', async (req: Request, res: Response) => {
     // Create admin user
     const adminUser = await prisma.user.create({
       data: {
-        email: adminEmail.toLowerCase(),
-        name: adminName,
+        email: adminEmail,
+        name: signupOtp.adminName,
         role: 'SCHOOL_ADMIN',
-        passwordHash,
+        passwordHash: signupOtp.passwordHash,
         schoolId: school.id,
       },
+    });
+
+    // Mark OTP as verified in the database
+    await prisma.signupOtp.update({
+      where: { email: adminEmail },
+      data: { verifiedAt: new Date() },
+    }).catch((err) => {
+      console.warn('Failed to update SignupOtp verification timestamp:', err);
+      // Non-blocking - don't fail the signup if this update fails
     });
 
     // Generate JWT token
@@ -132,7 +177,7 @@ router.post('/verify-otp', async (req: Request, res: Response) => {
 
     // Send welcome email
     try {
-      await sendWelcomeEmail(adminEmail, schoolName, adminName);
+      await sendWelcomeEmail(adminEmail, signupOtp.schoolName, signupOtp.adminName);
     } catch (emailError) {
       console.warn('Welcome email failed (non-blocking):', emailError);
     }

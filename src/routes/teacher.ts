@@ -150,12 +150,28 @@ router.get('/classes/:classId/students', async (req: AuthenticatedRequest, res) 
 
     const pupils = await prisma.pupil.findMany({
       where: { classId },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        admissionNo: true,
-        studentEmail: true,
+      include: {
+        class: {
+          select: {
+            id: true,
+            name: true,
+            arm: true,
+            phase: true,
+          },
+        },
+        guardians: {
+          include: {
+            guardian: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                phone: true,
+                email: true,
+              },
+            },
+          },
+        },
       },
       orderBy: { firstName: 'asc' },
     });
@@ -163,9 +179,14 @@ router.get('/classes/:classId/students', async (req: AuthenticatedRequest, res) 
     res.json({
       students: pupils.map((p) => ({
         id: p.id,
-        name: `${p.firstName} ${p.lastName}`,
+        firstName: p.firstName,
+        lastName: p.lastName,
         admissionNo: p.admissionNo,
         email: p.studentEmail,
+        photoUrl: p.photoUrl,
+        status: p.isActive ? 'ACTIVE' : 'INACTIVE',
+        class: p.class,
+        guardians: p.guardians,
       })),
     });
   } catch (error: any) {
@@ -561,6 +582,231 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
   }
 });
 
+// POST /api/teacher/attendance - Save attendance records
+router.post('/attendance', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { userId, schoolId } = req.user!;
+    const { classId, date, attendanceData } = req.body;
+
+    if (!classId || !date || !Array.isArray(attendanceData)) {
+      return res.status(400).json({ error: 'classId, date, and attendanceData array required' });
+    }
+
+    // Verify teacher is assigned to this class
+    const assignment = await prisma.teacherClass.findUnique({
+      where: {
+        teacherId_classId: {
+          teacherId: userId,
+          classId,
+        },
+      },
+    });
+
+    if (!assignment) {
+      return res.status(403).json({ error: 'Unauthorized: Not assigned to this class' });
+    }
+
+    // Parse date
+    const attendanceDate = new Date(date);
+    attendanceDate.setUTCHours(0, 0, 0, 0);
+
+    // Validate attendance statuses
+    const validStatuses = ['PRESENT', 'ABSENT', 'LATE', 'EXCUSED'];
+    for (const att of attendanceData) {
+      if (!validStatuses.includes(att.status)) {
+        return res.status(400).json({ error: `Invalid status: ${att.status}` });
+      }
+    }
+
+    // Delete existing records for this date and class
+    await prisma.attendanceRecord.deleteMany({
+      where: {
+        schoolId,
+        classId,
+        date: attendanceDate,
+      },
+    });
+
+    // Create new attendance records
+    const records = await Promise.all(
+      attendanceData.map((att: { studentId?: string; pupilId?: string; status: string }) => {
+        const pupilId = att.pupilId || att.studentId;
+        if (!pupilId) {
+          throw new Error('pupilId or studentId required for each attendance record');
+        }
+        return prisma.attendanceRecord.create({
+          data: {
+            schoolId,
+            classId,
+            pupilId: pupilId!, // Non-null assertion after validation
+            date: attendanceDate,
+            status: att.status as any,
+          },
+        });
+      })
+    );
+
+    res.status(201).json({
+      success: true,
+      message: `Marked attendance for ${records.length} students`,
+      recordsCreated: records.length,
+    });
+  } catch (error: any) {
+    console.error('Error marking attendance:', error);
+    res.status(500).json({ error: 'Failed to mark attendance' });
+  }
+});
+
+// GET /api/teacher/attendance/summary?classId=X&startDate=Y&endDate=Z - Get attendance summary for a date range
+router.get('/attendance/summary', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { userId, schoolId } = req.user!;
+    const { classId, startDate, endDate } = req.query;
+
+    if (!classId || !startDate || !endDate) {
+      return res.status(400).json({ error: 'classId, startDate, and endDate query parameters required' });
+    }
+
+    // Verify teacher is assigned to this class
+    const assignment = await prisma.teacherClass.findUnique({
+      where: {
+        teacherId_classId: {
+          teacherId: userId,
+          classId: classId as string,
+        },
+      },
+    });
+
+    if (!assignment) {
+      return res.status(403).json({ error: 'Unauthorized: Not assigned to this class' });
+    }
+
+    // Parse dates
+    const start = new Date(startDate as string);
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(endDate as string);
+    end.setUTCHours(0, 0, 0, 0);
+
+    // Fetch students in the class
+    const students = await prisma.pupil.findMany({
+      where: {
+        schoolId,
+        classId: classId as string,
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        admissionNo: true,
+      },
+      orderBy: { firstName: 'asc' },
+    });
+
+    // Fetch attendance records for the date range
+    const attendanceRecords = await prisma.attendanceRecord.findMany({
+      where: {
+        schoolId,
+        classId: classId as string,
+        date: {
+          gte: start,
+          lte: end,
+        },
+      },
+      select: {
+        pupilId: true,
+        date: true,
+        status: true,
+      },
+    });
+
+    // Group attendance by student and date
+    const attendanceByStudent: Record<string, Record<string, { status: string }>> = {};
+    
+    students.forEach((student) => {
+      attendanceByStudent[student.id] = {};
+    });
+
+    attendanceRecords.forEach((record) => {
+      const dateStr = record.date.toISOString().split('T')[0];
+      if (!attendanceByStudent[record.pupilId]) {
+        attendanceByStudent[record.pupilId] = {};
+      }
+      attendanceByStudent[record.pupilId][dateStr] = {
+        status: record.status,
+      };
+    });
+
+    // Format response
+    const formattedStudents = students.map((student) => ({
+      id: student.id,
+      firstName: student.firstName,
+      lastName: student.lastName,
+      admissionNo: student.admissionNo,
+      attendance: attendanceByStudent[student.id],
+    }));
+
+    res.json({
+      students: formattedStudents,
+      dateRange: {
+        startDate: start.toISOString().split('T')[0],
+        endDate: end.toISOString().split('T')[0],
+      },
+    });
+  } catch (error: any) {
+    console.error('Error fetching attendance summary:', error);
+    res.status(500).json({ error: 'Failed to fetch attendance summary' });
+  }
+});
+
+// GET /api/teacher/attendance/check - Check if attendance already taken for a date
+router.get('/attendance/check', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { userId, schoolId } = req.user!;
+    const { classId, date } = req.query;
+
+    if (!classId || !date) {
+      return res.status(400).json({ error: 'classId and date required' });
+    }
+
+    // Verify teacher is assigned to this class
+    const assignment = await prisma.teacherClass.findUnique({
+      where: {
+        teacherId_classId: {
+          teacherId: userId,
+          classId: classId as string,
+        },
+      },
+    });
+
+    if (!assignment) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Parse date
+    const checkDate = new Date(date as string);
+    checkDate.setUTCHours(0, 0, 0, 0);
+
+    // Check if attendance exists for this date
+    const existingAttendance = await prisma.attendanceRecord.findMany({
+      where: {
+        schoolId,
+        classId: classId as string,
+        date: checkDate,
+      },
+      select: { pupilId: true, status: true },
+    });
+
+    res.json({
+      exists: existingAttendance.length > 0,
+      count: existingAttendance.length,
+      submittedDate: existingAttendance.length > 0 ? checkDate.toISOString().split('T')[0] : null,
+    });
+  } catch (error: any) {
+    console.error('Error checking attendance:', error);
+    res.status(500).json({ error: 'Failed to check attendance' });
+  }
+});
+
 // GET /api/teacher/profile - Get teacher profile
 router.get('/profile', async (req: AuthenticatedRequest, res) => {
   try {
@@ -593,14 +839,17 @@ router.get('/profile', async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// GET /api/teacher/messages - Get messages (announcements, notifications, etc.)
-router.get('/messages', async (req: AuthenticatedRequest, res) => {
+// GET /api/teacher/announcements - Get announcements for teacher dashboard
+router.get('/announcements', async (req: AuthenticatedRequest, res) => {
   try {
     const { userId, schoolId } = req.user!;
 
     // Fetch announcements for the school
     const announcements = await prisma.announcement.findMany({
-      where: { schoolId },
+      where: { 
+        schoolId,
+        published: true,
+      },
       select: {
         id: true,
         title: true,
@@ -612,20 +861,9 @@ router.get('/messages', async (req: AuthenticatedRequest, res) => {
       take: 50,
     });
 
-    // Transform announcements to message format
-    const messages = announcements.map((ann: any) => ({
-      id: ann.id,
-      sender: 'School Administration',
-      subject: ann.title,
-      body: ann.body,
-      timestamp: ann.publishedAt || ann.createdAt,
-      read: false,
-      type: 'announcement',
-    }));
-
     res.json({
-      messages: messages || [],
-      total: messages.length,
+      announcements: announcements || [],
+      total: announcements.length,
     });
   } catch (error: any) {
     console.error('Messages error:', error);

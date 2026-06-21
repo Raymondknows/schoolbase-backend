@@ -3,6 +3,9 @@ import { PrismaClient } from '@prisma/client';
 interface SubjectResult {
   subjectId: string;
   subjectName: string;
+  caScore: number | null;
+  testScore: number | null;
+  examScore: number | null;
   totalScore: number;
   grade: string;
   subjectPosition: number | null;
@@ -55,6 +58,31 @@ class ReportCardService {
 
   constructor(prismaClient?: PrismaClient) {
     this.prisma = prismaClient || new PrismaClient();
+  }
+
+  private async calculateGrade(schoolId: string, totalScore: number, storedGrade: string | null): Promise<string> {
+    const gradingScales = await this.prisma.gradingScale.findMany({
+      where: { schoolId },
+      orderBy: { minScore: 'desc' },
+    });
+
+    if (gradingScales.length > 0) {
+      for (const scale of gradingScales) {
+        if (totalScore >= scale.minScore && totalScore <= scale.maxScore) {
+          return scale.grade;
+        }
+      }
+
+      return gradingScales[gradingScales.length - 1].grade;
+    }
+
+    if (totalScore >= 70) return 'A';
+    if (totalScore >= 60) return 'B';
+    if (totalScore >= 50) return 'C';
+    if (totalScore >= 45) return 'D';
+    if (totalScore >= 40) return 'E';
+
+    return storedGrade || 'F';
   }
 
   /**
@@ -115,18 +143,27 @@ class ReportCardService {
     }
 
     // Build subject results
-    const subjects: SubjectResult[] = results
-      .filter((r) => r.subjectRef) // Only include results with valid subjects
-      .map((r) => ({
-        subjectId: r.subjectId || '',
-        subjectName: r.subjectRef?.name || 'Unknown',
-        totalScore: r.totalScore || 0,
-        grade: r.grade || 'N/A',
-        subjectPosition: r.subjectPosition,
-        teacherRemark: r.teacherRemark,
-        comment: r.comment,
-      }))
-      .sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+    const subjects: SubjectResult[] = [];
+
+    for (const result of results.filter((r) => r.subjectRef)) {
+      const totalScore = (result.caScore ?? 0) + (result.examScore ?? 0);
+      const grade = await this.calculateGrade(schoolId, totalScore, result.grade);
+
+      subjects.push({
+        subjectId: result.subjectId || '',
+        subjectName: result.subjectRef?.name || 'Unknown',
+        caScore: result.caScore ?? null,
+        testScore: result.testScore ?? null,
+        examScore: result.examScore ?? null,
+        totalScore,
+        grade,
+        subjectPosition: result.subjectPosition,
+        teacherRemark: result.teacherRemark,
+        comment: result.comment,
+      });
+    }
+
+    subjects.sort((a, b) => a.subjectName.localeCompare(b.subjectName));
 
     // Calculate statistics
     const validScores = subjects.filter((s) => s.totalScore > 0).map((s) => s.totalScore);

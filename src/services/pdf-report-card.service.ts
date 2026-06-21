@@ -46,6 +46,19 @@ interface ReportCardData {
   };
 }
 
+type ReportCardSubject = ReportCardData['subjects'][number] & {
+  caScore?: number | null;
+  examScore?: number | null;
+};
+
+type InlineReportCardData = ReportCardData & {
+  subjects: ReportCardSubject[];
+  studentPhotoDataUrl?: string | null;
+  schoolLogoDataUrl?: string | null;
+  schoolStampDataUrl?: string | null;
+  principalSignatureDataUrl?: string | null;
+};
+
 class PDFReportCardService {
   private prisma: PrismaClient;
   private reportCardService: ReportCardService;
@@ -69,206 +82,389 @@ class PDFReportCardService {
       pupilId,
       schoolId
     );
+    const html = await PDFReportCardService.buildReportCardHtml(reportCard as InlineReportCardData);
+    return await PDFReportCardService.renderHtmlToPdf(html);
+  }
 
-    // Create PDF document (A4 size)
-    const pdfDoc = await PDFDocument.create();
-    const helvetica = await pdfDoc.embedFont('Helvetica');
-    const page = pdfDoc.addPage(PageSizes.A4);
-    const { width, height } = page.getSize();
+  private static escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
-    let yPosition = height - 40;
-    const leftMargin = 40;
-    const rightMargin = width - 40;
-    const contentWidth = rightMargin - leftMargin;
-    const lineHeight = 14;
+  private static buildImageHtml(src?: string | null, alt = ''): string {
+    if (!src) return '';
+    const safeSrc = this.escapeHtml(src);
+    const safeAlt = this.escapeHtml(alt);
+    return `<img src="${safeSrc}" alt="${safeAlt}" />`;
+  }
 
-    // Helper functions
-    const drawText = (text: string, x: number, y: number, size: number = 11) => {
-      page.drawText(text, {
-        x,
-        y,
-        size,
-        font: helvetica,
-        color: rgb(0, 0, 0),
-      });
-    };
-
-    const drawBoldText = (text: string, x: number, y: number, size: number = 11) => {
-      page.drawText(text, {
-        x,
-        y,
-        size,
-        font: helvetica,
-        color: rgb(0, 0, 0),
-      });
-    };
-
-    const drawLine = (y: number) => {
-      page.drawLine({
-        start: { x: leftMargin, y },
-        end: { x: rightMargin, y },
-        thickness: 0.5,
-        color: rgb(0.5, 0.5, 0.5),
-      });
-    };
-
-    const drawRect = (x: number, y: number, width: number, height: number) => {
-      page.drawRectangle({
-        x,
-        y,
-        width,
-        height,
-        borderColor: rgb(0, 0, 0),
-        borderWidth: 0.5,
-      });
-    };
-
-    // 1. Header - School Info
-    drawBoldText(reportCard.school.name, leftMargin, yPosition, 16);
-    yPosition -= lineHeight * 1.5;
-
-    if (reportCard.school.address) {
-      drawText(`Address: ${reportCard.school.address}`, leftMargin, yPosition, 9);
-      yPosition -= lineHeight;
+  private static buildAssetUrl(value?: string | null): string | null {
+    if (!value) return null;
+    if (/^https?:\/\//i.test(value) || value.startsWith('data:')) {
+      return value;
     }
 
-    drawText('REPORT CARD', leftMargin, yPosition - 10, 14);
-    yPosition -= lineHeight * 2;
+    const baseUrl = process.env.NEXT_PUBLIC_API_URL || process.env.BACKEND_URL || 'http://localhost:3006';
+    const normalizedBase = baseUrl.replace(/\/$/, '');
+    return new URL(value.startsWith('/') ? value : `/${value}`, normalizedBase).toString();
+  }
 
-    drawLine(yPosition);
-    yPosition -= 15;
+  private static async fetchAssetDataUrl(value?: string | null): Promise<string | null> {
+    const assetUrl = this.buildAssetUrl(value);
+    if (!assetUrl) return null;
 
-    // 2. Student Info Section
-    drawBoldText('STUDENT INFORMATION', leftMargin, yPosition, 11);
-    yPosition -= lineHeight;
+    try {
+      const response = await fetch(assetUrl);
+      if (!response.ok) return assetUrl;
 
-    const infoFieldWidth = contentWidth / 2;
-    const col1X = leftMargin;
-    const col2X = leftMargin + infoFieldWidth;
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const contentType = response.headers.get('content-type') || 'image/png';
+      return `data:${contentType};base64,${buffer.toString('base64')}`;
+    } catch {
+      return assetUrl;
+    }
+  }
 
-    drawText(`Name: ${reportCard.student.name}`, col1X, yPosition, 10);
-    drawText(
-      `Admission No: ${reportCard.student.admissionNo || 'N/A'}`,
-      col2X,
-      yPosition,
-      10
-    );
-    yPosition -= lineHeight;
+  private static async buildReportCardHtml(reportCard: InlineReportCardData): Promise<string> {
+    const studentPhotoDataUrl = reportCard.studentPhotoDataUrl ?? (await this.fetchAssetDataUrl(reportCard.student.photoUrl));
+    const schoolLogoDataUrl = reportCard.schoolLogoDataUrl ?? (await this.fetchAssetDataUrl(reportCard.school.logoUrl));
+    const schoolStampDataUrl = reportCard.schoolStampDataUrl ?? (await this.fetchAssetDataUrl(reportCard.school.stampUrl));
+    const principalSignatureDataUrl =
+      reportCard.principalSignatureDataUrl ?? (await this.fetchAssetDataUrl(reportCard.school.principalSignatureUrl));
 
-    drawText(`Class: ${reportCard.class.name}`, col1X, yPosition, 10);
-    drawText(
-      `Gender: ${reportCard.student.gender || 'N/A'}`,
-      col2X,
-      yPosition,
-      10
-    );
-    yPosition -= lineHeight;
+    const subjects = reportCard.subjects as ReportCardSubject[];
+    const hasCa = true;
+    const hasExam = true;
+    const totalLabel = 'Total';
 
-    drawText(`Term: ${reportCard.term.name}`, col1X, yPosition, 10);
-    drawText(`Session: ${reportCard.term.session}`, col2X, yPosition, 10);
-    yPosition -= lineHeight * 2;
+    const subjectsHtml = subjects
+      .map((subject) => `
+        <tr>
+          <td class="subject">${this.escapeHtml(subject.subjectName)}</td>
+          <td class="num">${subject.caScore ?? '-'}</td>
+          <td class="num">${subject.examScore ?? '-'}</td>
+          <td class="num total">${subject.totalScore.toFixed(1)}</td>
+          <td class="grade"><span>${this.escapeHtml(subject.grade)}</span></td>
+          <td class="num">${subject.subjectPosition ?? '-'}</td>
+        </tr>
+      `)
+      .join('');
 
-    drawLine(yPosition);
-    yPosition -= 15;
+    const summaryPosition = reportCard.classPosition ?? '-';
+    const principalName = reportCard.school.principalName || 'Principal/Headmaster';
 
-    // 3. Academic Results Section
-    drawBoldText('ACADEMIC RESULTS', leftMargin, yPosition, 11);
-    yPosition -= lineHeight;
+    return `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <style>
+            @page { size: A4; margin: 0; }
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              padding: 0;
+              background: #fff;
+              font-family: Arial, sans-serif;
+              color: #111827;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            .page {
+              width: 210mm;
+              min-height: 297mm;
+              padding: 10mm;
+              margin: 0 auto;
+            }
+            .card {
+              border: 2px solid #111827;
+              padding: 10mm;
+            }
+            .header {
+              text-align: center;
+              padding-bottom: 10px;
+              border-bottom: 2px solid #111827;
+              margin-bottom: 14px;
+            }
+            .logo {
+              width: 80px;
+              height: 80px;
+              object-fit: contain;
+              margin: 0 auto 8px;
+            }
+            .title {
+              margin: 0;
+              font-size: 20px;
+              font-weight: 700;
+            }
+            .subtle {
+              margin: 4px 0 0;
+              font-size: 11px;
+              color: #374151;
+            }
+            .report-tag {
+              margin: 6px 0 0;
+              font-size: 12px;
+              font-weight: 700;
+            }
+            .meta-grid {
+              display: grid;
+              grid-template-columns: repeat(4, 1fr);
+              gap: 8px;
+              margin-top: 12px;
+              font-size: 10px;
+              color: #374151;
+            }
+            .meta-grid strong { display: block; color: #6b7280; font-size: 9px; }
+            .student {
+              display: flex;
+              gap: 16px;
+              margin-bottom: 14px;
+            }
+            .photo {
+              flex: 0 0 auto;
+              width: 80px;
+              height: 96px;
+              border: 2px solid #9ca3af;
+              border-radius: 6px;
+              overflow: hidden;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              background: #f3f4f6;
+            }
+            .photo img { width: 100%; height: 100%; object-fit: cover; }
+            .info-grid {
+              flex: 1;
+              display: grid;
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+              gap: 10px 24px;
+              font-size: 10px;
+              padding-top: 2px;
+            }
+            .info-grid .label { color: #6b7280; font-weight: 700; }
+            .info-grid .value { color: #111827; font-weight: 700; }
+            .section-title {
+              font-size: 11px;
+              font-weight: 700;
+              margin: 0 0 6px;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 10px;
+            }
+            thead th {
+              background: #1f2937;
+              color: #fff;
+              padding: 5px 6px;
+              border: 1px solid #6b7280;
+              text-align: center;
+            }
+            tbody td {
+              border: 1px solid #6b7280;
+              padding: 4px 6px;
+              background: #fff;
+            }
+            tbody tr:nth-child(even) td { background: #f9fafb; }
+            td.subject { font-weight: 700; text-align: left; }
+            td.num { text-align: center; }
+            td.total { font-weight: 700; }
+            td.grade span {
+              display: inline-block;
+              background: #dbeafe;
+              color: #1e3a8a;
+              font-weight: 700;
+              padding: 2px 7px;
+              border-radius: 999px;
+            }
+            .summary-grid {
+              display: grid;
+              grid-template-columns: repeat(4, 1fr);
+              gap: 8px;
+              margin: 14px 0;
+              font-size: 10px;
+            }
+            .summary-box {
+              border: 2px solid #9ca3af;
+              border-radius: 6px;
+              padding: 8px;
+              text-align: center;
+            }
+            .summary-box .name { color: #6b7280; font-weight: 700; }
+            .summary-box .value { font-size: 16px; font-weight: 700; color: #111827; margin-top: 2px; }
+            .remarks { margin-top: 8px; display: grid; gap: 8px; }
+            .remark-box { border: 1px solid #9ca3af; border-radius: 4px; padding: 6px; font-size: 10px; }
+            .remark-box .remark-title { font-weight: 700; margin-bottom: 4px; }
+            .footer-signatures {
+              display: grid;
+              grid-template-columns: repeat(3, 1fr);
+              gap: 10px;
+              margin-top: 16px;
+              font-size: 10px;
+            }
+            .sig { border-top: 1px solid #4b5563; padding-top: 8px; }
+            .sig-line { height: 48px; display:flex; align-items:center; justify-content:center; margin-bottom: 4px; }
+            .sig-line img { max-width: 100%; max-height: 48px; object-fit: contain; }
+            .stamp {
+              border: 2px dashed #9ca3af;
+              border-radius: 6px;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+              min-height: 78px;
+              padding: 8px;
+            }
+            .stamp img { max-width: 100%; max-height: 62px; object-fit: contain; }
+            .footer-note {
+              margin-top: 12px;
+              padding-top: 8px;
+              border-top: 1px solid #d1d5db;
+              text-align: center;
+              font-size: 10px;
+              color: #6b7280;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="page">
+            <div class="card">
+              <div class="header">
+                ${schoolLogoDataUrl ? `<img class="logo" src="${this.escapeHtml(schoolLogoDataUrl)}" alt="School Logo" />` : '<div class="logo" style="border:4px solid #111827;border-radius:999px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#2563eb,#1e3a8a);color:#fff;font-weight:700;font-size:18px;">SB</div>'}
+                <h1 class="title">${this.escapeHtml(reportCard.school.name)}</h1>
+                ${reportCard.school.address ? `<p class="subtle">${this.escapeHtml(reportCard.school.address)}</p>` : ''}
+                <p class="report-tag">STATEMENT OF RESULT</p>
+                <p class="subtle">${this.escapeHtml(reportCard.term.session)}</p>
+                <div class="meta-grid">
+                  <div><strong>TERM</strong>${this.escapeHtml(reportCard.term.name)}</div>
+                  <div><strong>CLASS</strong>${this.escapeHtml(reportCard.class.name)}</div>
+                  <div><strong>ASSESSMENT</strong>${this.escapeHtml('Assessment')}</div>
+                  <div><strong>DATE</strong>${new Date().toLocaleDateString()}</div>
+                </div>
+              </div>
 
-    // Table header
-    const tableX = leftMargin;
-    const tableColWidths = [contentWidth * 0.35, contentWidth * 0.15, contentWidth * 0.15, contentWidth * 0.15, contentWidth * 0.2];
+              <div class="student">
+                <div class="photo">
+                  ${studentPhotoDataUrl ? `<img src="${this.escapeHtml(studentPhotoDataUrl)}" alt="Student Photo" />` : '<span style="font-size:10px;color:#6b7280;text-align:center;padding:4px;">Student Photo</span>'}
+                </div>
+                <div class="info-grid">
+                  <div><div class="label">Pupil's Name:</div><div class="value">${this.escapeHtml(reportCard.student.name)}</div></div>
+                  <div><div class="label">Admission No:</div><div class="value">${this.escapeHtml(reportCard.student.admissionNo || 'N/A')}</div></div>
+                  <div><div class="label">Class:</div><div class="value">${this.escapeHtml(reportCard.class.name)}</div></div>
+                  <div><div class="label">Term/Session:</div><div class="value">${this.escapeHtml(reportCard.term.name)} ${this.escapeHtml(reportCard.term.session)}</div></div>
+                  <div><div class="label">Date of Birth:</div><div class="value">${this.escapeHtml(reportCard.student.dateOfBirth || '—')}</div></div>
+                  <div><div class="label">Gender:</div><div class="value">${this.escapeHtml(reportCard.student.gender || '—')}</div></div>
+                </div>
+              </div>
 
-    const drawTableHeader = () => {
-      drawBoldText('Subject', tableX, yPosition, 10);
-      drawBoldText('Score', tableX + tableColWidths[0], yPosition, 10);
-      drawBoldText('Grade', tableX + tableColWidths[0] + tableColWidths[1], yPosition, 10);
-      drawBoldText('Position', tableX + tableColWidths[0] + tableColWidths[1] + tableColWidths[2], yPosition, 10);
-      yPosition -= lineHeight;
-      drawLine(yPosition);
-      yPosition -= 8;
-    };
+              <div>
+                <p class="section-title">ACADEMIC PERFORMANCE</p>
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="text-align:left">Subject</th>
+                      <th>CA</th>
+                      <th>Exam</th>
+                      <th>${totalLabel}</th>
+                      <th>Grade</th>
+                      <th>Position</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${subjectsHtml}
+                  </tbody>
+                </table>
+              </div>
 
-    drawTableHeader();
+              <div class="summary-grid">
+                <div class="summary-box"><div class="name">Average</div><div class="value">${reportCard.averageScore.toFixed(1)}%</div></div>
+                <div class="summary-box"><div class="name">Position</div><div class="value">${summaryPosition}</div></div>
+                <div class="summary-box"><div class="name">Subjects</div><div class="value">${reportCard.totalSubjects}</div></div>
+                <div class="summary-box"><div class="name">Pass Rate</div><div class="value">${reportCard.statistics.passRate.toFixed(0)}%</div></div>
+              </div>
 
-    // Subject rows
-    let maxScores = reportCard.subjects.map((s) => s.totalScore);
-    let minScores = reportCard.subjects.map((s) => s.totalScore);
+              <div class="remarks">
+                ${reportCard.teacherRemark ? `<div class="remark-box"><div class="remark-title">TEACHER'S REMARK:</div><div>${this.escapeHtml(reportCard.teacherRemark)}</div></div>` : ''}
+                ${reportCard.principalRemark ? `<div class="remark-box"><div class="remark-title">PRINCIPAL'S REMARK:</div><div>${this.escapeHtml(reportCard.principalRemark)}</div></div>` : ''}
+              </div>
 
-    for (const subject of reportCard.subjects) {
-      if (yPosition < 100) {
-        // Add new page if not enough space
-        const newPage = pdfDoc.addPage(PageSizes.A4);
-        yPosition = newPage.getSize().height - 40;
-        drawTableHeader();
+              <div class="footer-signatures">
+                <div class="sig">
+                  <div class="sig-line"></div>
+                  <div><strong>Teacher's Signature</strong></div>
+                  <div>${new Date().toLocaleDateString()}</div>
+                </div>
+                <div class="sig">
+                  <div class="stamp">
+                    ${schoolStampDataUrl ? `<img src="${this.escapeHtml(schoolStampDataUrl)}" alt="School Stamp" />` : '<div style="color:#9ca3af;font-weight:700;text-align:center;">SCHOOL STAMP</div>'}
+                  </div>
+                </div>
+                <div class="sig">
+                  <div class="sig-line">
+                    ${principalSignatureDataUrl ? `<img src="${this.escapeHtml(principalSignatureDataUrl)}" alt="Principal Signature" />` : ''}
+                  </div>
+                  <div><strong>Principal's Signature</strong></div>
+                  <div>${this.escapeHtml(principalName)}</div>
+                </div>
+              </div>
+
+              <div class="footer-note">
+                <div>Verification Code: ${this.escapeHtml(reportCard.student.id.slice(0, 8).toUpperCase())}</div>
+                <div>Generated on ${new Date().toLocaleString()}</div>
+              </div>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+  }
+
+  private static async renderHtmlToPdf(html: string): Promise<Uint8Array> {
+    const puppeteer = await import('puppeteer-core');
+    const executablePath = this.resolveChromeExecutable();
+
+    const browser = await puppeteer.launch({
+      headless: true,
+      executablePath,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1240, height: 1754, deviceScaleFactor: 2 });
+      await page.setContent(html, { waitUntil: 'networkidle0' });
+      const pdf = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        preferCSSPageSize: true,
+        margin: { top: '0', right: '0', bottom: '0', left: '0' },
+      });
+      await page.close();
+      return new Uint8Array(pdf);
+    } finally {
+      await browser.close();
+    }
+  }
+
+  private static resolveChromeExecutable(): string {
+    const candidates = [
+      process.env.CHROME_PATH,
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Google Chrome 2.app/Contents/MacOS/Google Chrome',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    ].filter(Boolean) as string[];
+
+    for (const candidate of candidates) {
+      if (candidate && fs.existsSync(candidate)) {
+        return candidate;
       }
-
-      drawText(subject.subjectName.substring(0, 20), tableX, yPosition, 9);
-      drawText(subject.totalScore.toFixed(2), tableX + tableColWidths[0], yPosition, 9);
-      drawText(subject.grade, tableX + tableColWidths[0] + tableColWidths[1], yPosition, 9);
-      drawText(
-        subject.subjectPosition?.toString() || 'N/A',
-        tableX + tableColWidths[0] + tableColWidths[1] + tableColWidths[2],
-        yPosition,
-        9
-      );
-      yPosition -= lineHeight;
     }
 
-    yPosition -= 10;
-    drawLine(yPosition);
-    yPosition -= 15;
-
-    // 4. Summary Section
-    drawBoldText('SUMMARY', leftMargin, yPosition, 11);
-    yPosition -= lineHeight;
-
-    const summaryCol1 = leftMargin;
-    const summaryCol2 = leftMargin + contentWidth / 3;
-    const summaryCol3 = leftMargin + (contentWidth * 2) / 3;
-
-    drawText(`Average Score: ${reportCard.averageScore.toFixed(2)}`, summaryCol1, yPosition, 10);
-    drawText(`Class Position: ${reportCard.classPosition || 'N/A'}`, summaryCol2, yPosition, 10);
-    drawText(`Total Subjects: ${reportCard.totalSubjects}`, summaryCol3, yPosition, 10);
-    yPosition -= lineHeight * 2;
-
-    // 5. Remarks Section
-    if (reportCard.teacherRemark) {
-      drawBoldText('TEACHER REMARK', leftMargin, yPosition, 11);
-      yPosition -= lineHeight;
-      const maxRemarkLength = 80;
-      const remark = reportCard.teacherRemark.substring(0, maxRemarkLength);
-      drawText(remark, leftMargin, yPosition, 9);
-      yPosition -= lineHeight * 1.5;
-    }
-
-    if (reportCard.principalRemark) {
-      drawBoldText('PRINCIPAL REMARK', leftMargin, yPosition, 11);
-      yPosition -= lineHeight;
-      const remark = reportCard.principalRemark.substring(0, 80);
-      drawText(remark, leftMargin, yPosition, 9);
-      yPosition -= lineHeight * 2;
-    }
-
-    // 6. Signature Section
-    yPosition -= 20;
-
-    const sigCol1 = leftMargin;
-    const sigCol2 = leftMargin + contentWidth / 2;
-
-    drawText('_________________________', sigCol1, yPosition, 9);
-    drawText('_________________________', sigCol2, yPosition, 9);
-    yPosition -= lineHeight;
-
-    drawText("Teacher's Signature", sigCol1, yPosition, 9);
-    drawText("Principal's Signature", sigCol2, yPosition, 9);
-    yPosition -= lineHeight;
-
-    drawText(`Date: ${new Date().toLocaleDateString()}`, sigCol1, yPosition, 9);
-
-    // Serialize to bytes
-    const pdfBytes = await pdfDoc.save();
-    return pdfBytes;
+    throw new Error('Chrome executable not found. Set CHROME_PATH to your local Chrome binary.');
   }
 
   /**
