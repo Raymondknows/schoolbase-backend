@@ -138,7 +138,7 @@ router.post('/verify-otp', async (req: Request, res: Response) => {
         country: signupOtp.country,
         email: adminEmail,
         status: 'TRIAL',
-        trialEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+        trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
       },
     });
 
@@ -210,7 +210,7 @@ router.post('/verify-otp', async (req: Request, res: Response) => {
 // POST /api/trial/start - Start trial for a school
 router.post('/start', async (req: Request, res: Response) => {
   try {
-    const { schoolId, days = 30 } = req.body;
+    const { schoolId, days = 7 } = req.body;
 
     if (!schoolId) {
       return res.status(400).json({ error: 'Missing schoolId' });

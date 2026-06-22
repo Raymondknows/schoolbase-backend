@@ -32,6 +32,55 @@ const BRAND = {
   background: '#F3F2EF',     // Off-White
 };
 
+const DEFAULT_EMAIL_LOGO = 'https://schoolbase.live/logo.png';
+
+function buildAssetUrl(value?: string | null): string | null {
+  if (!value) return null;
+
+  if (/^https?:\/\//.test(value)) {
+    return value;
+  }
+
+  const baseUrl = process.env.NEXT_PUBLIC_API_URL || process.env.BACKEND_URL || 'http://localhost:3006';
+  const normalizedBase = baseUrl.replace(/\/$/, '');
+
+  return new URL(value.startsWith('/') ? value : `/${value}`, normalizedBase).toString();
+}
+
+function getLogoExtension(contentType: string): string {
+  if (contentType.includes('png')) return 'png';
+  if (contentType.includes('jpeg') || contentType.includes('jpg')) return 'jpg';
+  if (contentType.includes('webp')) return 'webp';
+  if (contentType.includes('gif')) return 'gif';
+  return 'img';
+}
+
+async function fetchInlineLogo(value?: string | null) {
+  const assetUrl = buildAssetUrl(value);
+  if (!assetUrl) return null;
+
+  try {
+    const response = await fetch(assetUrl);
+    if (!response.ok) return { src: assetUrl };
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers.get('content-type') || 'image/png';
+    const cid = `school-logo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    return {
+      src: `cid:${cid}`,
+      attachment: {
+        filename: `school-logo.${getLogoExtension(contentType)}`,
+        content: buffer,
+        cid,
+        contentType,
+      },
+    };
+  } catch {
+    return { src: assetUrl };
+  }
+}
+
 const EMAIL_STYLES = `
   * { margin: 0; padding: 0; }
   body {
@@ -229,10 +278,13 @@ export async function sendSignupOtpEmail(email: string, otp: string, schoolName:
       throw new Error(`Invalid email address: ${email}`);
     }
 
+    const textBody = `SchoolBase Email Verification Code\n\nHello,\n\nWelcome to SchoolBase! You're creating a school account for ${schoolName}.\n\nTo complete your registration, enter the verification code: ${otp}\n\nThis code expires in 10 minutes. Never share this code with anyone. SchoolBase staff will never ask for your verification code.\n\nIf you didn't request this code, ignore this email. Your email won't be registered unless verified.\n\nContact support at support@schoolbase.live if you need help.`;
+
     const message = await transporter.sendMail({
       from: process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
       subject: 'SchoolBase Email Verification Code',
+      text: textBody,
       html: `
         <!DOCTYPE html>
         <html>
@@ -243,7 +295,7 @@ export async function sendSignupOtpEmail(email: string, otp: string, schoolName:
           <body>
             <div class="email-container">
               <div class="header">
-                <div class="logo">🎓</div>
+                <img src="https://schoolbase.live/logo.png" alt="SchoolBase Logo" class="logo" />
                 <h1>SchoolBase</h1>
                 <p class="header-subtitle">Verify Your Email Address</p>
               </div>
@@ -298,10 +350,13 @@ export async function sendWelcomeEmail(email: string, schoolName: string, adminN
       throw new Error(`Invalid email address: ${email}`);
     }
 
+    const textBody = `Welcome to SchoolBase!\n\nHello ${adminName},\n\nCongratulations! Your workspace for ${schoolName} is now active and ready to use. You now have 7 days of free access to explore all SchoolBase features.\n\nWhat you can do right now:\n- Add your school staff and teachers\n- Register students and their classes\n- Set up fee structures and payment terms\n- Configure your school settings and branding\n- Invite parents to the portal\n\nIf you need help, contact support@schoolbase.live or visit https://schoolbase.live/help.\n\nWarm regards,\nThe SchoolBase Team`;
+
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
       subject: `Welcome to SchoolBase! Your workspace is ready – Let's go live in 48 hours`,
+      text: textBody,
       html: `
         <!DOCTYPE html>
         <html>
@@ -312,14 +367,14 @@ export async function sendWelcomeEmail(email: string, schoolName: string, adminN
           <body>
             <div class="email-container">
               <div class="header">
-                <div class="logo">🎓</div>
+                <img src="https://schoolbase.live/logo.png" alt="SchoolBase Logo" class="logo" />
                 <h1>Welcome to SchoolBase!</h1>
                 <p class="header-subtitle">Your school's management just got simpler</p>
               </div>
               <div class="content">
                 <p>Hello ${adminName},</p>
                 <p>Congratulations! Your workspace for <strong>${schoolName}</strong> is now active and ready to use.</p>
-                <p>You now have 30 days of free access to explore all SchoolBase features. Let's get your school set up for success!</p>
+                <p>You now have 7 days of free access to explore all SchoolBase features. Let's get your school set up for success!</p>
 
                 <div class="info-box">
                   <p>We've designed SchoolBase to make school management simple. Whether you're managing fees, publishing results, or communicating with parents, everything is designed to save you time and reduce paperwork.</p>
@@ -380,10 +435,13 @@ export async function sendPasswordResetEmail(email: string, resetLink: string, u
       throw new Error(`Invalid email address: ${email}`);
     }
 
+    const textBody = `Reset Your SchoolBase Password\n\nHello ${userName},\n\nWe received a request to reset the password for your SchoolBase account. Use the link below to create a new password:\n${resetLink}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email or contact support@schoolbase.live.\n\nNever share your password with anyone. SchoolBase staff will never ask for your password.`;
+
     await transporter.sendMail({
       from: process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
       subject: 'Reset Your SchoolBase Password',
+      text: textBody,
       html: `
         <!DOCTYPE html>
         <html>
@@ -394,7 +452,7 @@ export async function sendPasswordResetEmail(email: string, resetLink: string, u
           <body>
             <div class="email-container">
               <div class="header">
-                <div class="logo">🔐</div>
+                <img src="https://schoolbase.live/logo.png" alt="SchoolBase Logo" class="logo" />
                 <h1>Reset Your Password</h1>
                 <p class="header-subtitle">SchoolBase Account Security</p>
               </div>
@@ -462,10 +520,16 @@ export async function sendFeeReminderEmail(
       throw new Error(`Invalid email address: ${email}`);
     }
 
+    const schoolLogoInline = await fetchInlineLogo(schoolLogo);
+    const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
+    const textBody = `School Fee Payment Reminder - ${schoolName}\n\nDear ${guardianName},\n\nThis is a friendly reminder that there is an outstanding school fee balance for ${pupilName}.\n\nStudent: ${pupilName}\nClass: ${className}\nTerm: ${termName}\n\nOutstanding Balance: ₦${outstandingAmount}\nTotal Fees: ₦${totalAmount}\nAlready Paid: ₦${paidAmount}\n\nPlease arrange payment as soon as possible to avoid disruptions. Contact the school office for payment options or visit https://schoolbase.live/parent/invoices to review the invoice.\n\nThank you,\n${schoolName} Finance Team`;
+
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
       subject: `School Fee Payment Reminder - ${schoolName}`,
+      text: textBody,
+      ...(attachments ? { attachments } : {}),
       html: `
         <!DOCTYPE html>
         <html>
@@ -476,7 +540,7 @@ export async function sendFeeReminderEmail(
           <body>
             <div class="email-container">
               <div class="header">
-                ${schoolLogo ? `<img src="${schoolLogo}" alt="${schoolName}" class="logo" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">` : `<div style="font-size: 40px; margin-bottom: 12px;">🏫</div>`}
+                ${schoolLogoInline ? `<img src="${schoolLogoInline.src}" alt="${schoolName}" class="logo" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">` : `<img src="${DEFAULT_EMAIL_LOGO}" alt="SchoolBase Logo" class="logo" />`}
                 <h1>${schoolName}</h1>
                 <p class="header-subtitle">School Fee Payment Reminder</p>
               </div>
@@ -548,10 +612,16 @@ export async function sendTeacherWelcomeEmail(
       throw new Error(`Invalid email address: ${email}`);
     }
 
+    const schoolLogoInline = await fetchInlineLogo(schoolLogo);
+    const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
+    const textBody = `Welcome to ${schoolName} on SchoolBase\n\nHello ${teacherName},\n\nWelcome to the ${schoolName} teacher portal on SchoolBase! Your account has been created and you're ready to get started.\n\nEmail: ${email}${temporaryPassword ? `\nTemporary Password: ${temporaryPassword}` : ''}\n\nPlease change your temporary password immediately after your first login. Login at ${loginUrl}.\n\nWhat you can do on SchoolBase:\n- View your class roster and student list\n- Record attendance quickly\n- Enter marks and auto-calculate grades\n- Publish results to parents\n- Write comments and observations\n- View class broadsheet\n\nNeed help? Visit https://schoolbase.live/teacher-guide or https://schoolbase.live/help.\n\nBest regards,\nThe SchoolBase Team`;
+
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
       subject: `Welcome to ${schoolName} on SchoolBase`,
+      text: textBody,
+      ...(attachments ? { attachments } : {}),
       html: `
         <!DOCTYPE html>
         <html>
@@ -562,9 +632,9 @@ export async function sendTeacherWelcomeEmail(
           <body>
             <div class="email-container">
               <div class="header">
-                ${schoolLogo ? `<img src="${schoolLogo}" alt="${schoolName}" class="logo" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">` : `<div style="font-size: 40px; margin-bottom: 12px;">🎓</div>`}
-                <h1>Welcome to SchoolBase!</h1>
-                <p class="header-subtitle">Your Teacher Portal is Ready</p>
+                ${schoolLogoInline ? `<img src="${schoolLogoInline.src}" alt="${schoolName}" class="logo" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">` : `<img src="${DEFAULT_EMAIL_LOGO}" alt="SchoolBase Logo" class="logo" />`}
+                <h1>${schoolName}</h1>
+                <p class="header-subtitle">Welcome to your teacher portal</p>
               </div>
               <div class="content">
                 <p>Hello ${teacherName},</p>
@@ -647,12 +717,19 @@ export async function sendAttendanceNotificationEmail(
       late: { bg: '#FFF3E0', text: BRAND.warning, label: 'LATE ⏰' },
     };
 
-    const statusColor = statusColors[status];
+    const statusColor = statusColors[status] || statusColors.present;
+
+    const schoolLogoInline = await fetchInlineLogo(schoolLogo);
+    const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
+
+    const textBody = `Attendance Update - ${pupilName}\n\nHello ${guardianName},\n\nHere's the latest attendance update for ${pupilName}:\nStatus: ${statusColor.label}\nClass: ${className}\nDate: ${date}\n\n${customMessage ? `Note from teacher: ${customMessage}\n\n` : ''}View the full attendance record at https://schoolbase.live/parent/attendance.\n\nBest regards,\n${schoolName} Administration`;
 
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
       subject: `Attendance Update - ${pupilName}`,
+      text: textBody,
+      ...(attachments ? { attachments } : {}),
       html: `
         <!DOCTYPE html>
         <html>
@@ -663,7 +740,7 @@ export async function sendAttendanceNotificationEmail(
           <body>
             <div class="email-container">
               <div class="header">
-                ${schoolLogo ? `<img src="${schoolLogo}" alt="${schoolName}" class="logo" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">` : `<div style="font-size: 40px; margin-bottom: 12px;">📋</div>`}
+                ${schoolLogoInline ? `<img src="${schoolLogoInline.src}" alt="${schoolName}" class="logo" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">` : `<img src="${DEFAULT_EMAIL_LOGO}" alt="SchoolBase Logo" class="logo" />`}
                 <h1>${schoolName}</h1>
                 <p class="header-subtitle">Attendance Update</p>
               </div>
@@ -711,8 +788,83 @@ export async function sendAttendanceNotificationEmail(
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TEMPLATE 7: SETUP COMPLETION REMINDER EMAIL
+// ═══════════════════════════════════════════════════════════════════════
+// TEMPLATE 7: STUDENT ADMISSION NOTIFICATION EMAIL
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function sendAdmissionNotificationEmail(
+  email: string,
+  guardianName: string,
+  pupilName: string,
+  className: string,
+  admissionNo: string,
+  schoolName: string,
+  schoolLogo?: string,
+) {
+  try {
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
+    const schoolLogoInline = await fetchInlineLogo(schoolLogo);
+    const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
+    const textBody = `Student Registration\n${pupilName} has been registered for ${className} at ${schoolName}.\nAdmission Number: ${admissionNo}\n\nHello ${guardianName},\n\nYour child has been successfully registered. Visit the parent portal at https://schoolbase.live/parent/login for details.`;
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: `${pupilName} has been registered at ${schoolName}`,
+      text: textBody,
+      ...(attachments ? { attachments } : {}),
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>${EMAIL_STYLES}</style>
+          </head>
+          <body>
+            <div class="email-container">
+              <div class="header">
+                ${schoolLogoInline ? `<img src="${schoolLogoInline.src}" alt="${schoolName}" class="logo" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">` : ''}
+                <h1>${schoolName}</h1>
+                <p class="header-subtitle">Student Registration</p>
+              </div>
+              <div class="content">
+                <p>Hello ${guardianName},</p>
+                <p>We’re pleased to let you know that <strong>${pupilName}</strong> has been successfully registered for <strong>${className}</strong> at <strong>${schoolName}</strong>.</p>
+                <div class="info-box">
+                  <p><strong>Student Name:</strong> ${pupilName}</p>
+                  <p><strong>Admission Number:</strong> ${admissionNo}</p>
+                  <p><strong>Class:</strong> ${className}</p>
+                </div>
+                <p>If you have any questions or need assistance with your child’s school profile, please contact the school office or visit the parent portal.</p>
+                <div class="button-container">
+                  <a href="https://schoolbase.live/parent/login" class="button">Visit Parent Portal</a>
+                </div>
+                <p>Thank you for choosing SchoolBase to support your child’s education.</p>
+                <p>Warm regards,<br><strong>The ${schoolName} Team</strong></p>
+              </div>
+              <div class="footer">
+                <p class="footer-text">&copy; 2026 SchoolBase. All rights reserved.</p>
+                <p class="footer-text"><a href="https://schoolbase.live/help">Help Center</a> | <a href="mailto:support@schoolbase.live">Contact Support</a></p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    console.log('Admission notification email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('Failed to send admission notification email:', error);
+    throw error;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// TEMPLATE 8: SETUP COMPLETION REMINDER EMAIL
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function sendSetupReminderEmail(
@@ -762,7 +914,7 @@ export async function sendSetupReminderEmail(
           <body>
             <div class="email-container">
               <div class="header">
-                <div class="logo">🚀</div>
+                <img src="https://schoolbase.live/logo.png" alt="SchoolBase Logo" class="logo" />
                 <h1>SchoolBase Setup Reminder</h1>
                 <p class="header-subtitle">You're Close to Getting Everything Live</p>
               </div>
@@ -788,7 +940,7 @@ export async function sendSetupReminderEmail(
                 <div class="list-item">Email support</div>
 
                 <div class="warning-box">
-                  <p><strong>Your 30-day free trial is counting down.</strong> Let's get you live! 🎓</p>
+                  <p><strong>Your 7-day free trial is counting down.</strong> Let's get you live! 🎓</p>
                 </div>
 
                 <p style="margin-top: 32px;">Warm regards,<br><strong>The SchoolBase Team</strong></p>

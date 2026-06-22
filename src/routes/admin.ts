@@ -6,7 +6,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail } from '../services/email.js';
+import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail } from '../services/email.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -128,6 +128,11 @@ async function resolveSchoolId(req: Request) {
 
   console.log('[resolveSchoolId] No schoolId found anywhere');
   return null;
+}
+
+function truncateNotificationBody(body: string, maxLength = 180) {
+  if (!body) return body;
+  return body.length <= maxLength ? body : `${body.slice(0, maxLength - 3)}...`;
 }
 
 // POST /api/admin/verify - Verify staff session from cookie
@@ -1103,7 +1108,7 @@ router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) =>
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
-      select: { name: true },
+      select: { name: true, logoUrl: true },
     });
 
     let createdCount = 0;
@@ -1188,7 +1193,7 @@ router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) =>
                     guardianId: guardian.id,
                     type: 'ISSUE_BILLS',
                     title: 'Fee Invoice Issued',
-                    body: message,
+                    body: truncateNotificationBody(message),
                     channel: 'WHATSAPP',
                     status: 'SENT',
                     sentAt: new Date(),
@@ -1206,7 +1211,7 @@ router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) =>
                     guardianId: guardian.id,
                     type: 'ISSUE_BILLS',
                     title: 'Fee Invoice Issued',
-                    body: message,
+                    body: truncateNotificationBody(message),
                     channel: 'WHATSAPP',
                     status: 'FAILED',
                     failureReason: err instanceof Error ? err.message : String(err),
@@ -1231,6 +1236,7 @@ router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) =>
                   '0.00',
                   amount,
                   school?.name || 'School',
+                  school?.logoUrl ?? undefined,
                 );
 
                 await prisma.notification.create({
@@ -1239,7 +1245,7 @@ router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) =>
                     guardianId: guardian.id,
                     type: 'ISSUE_BILLS',
                     title: 'Fee Invoice Issued',
-                    body: message,
+                    body: truncateNotificationBody(message),
                     channel: 'EMAIL',
                     status: 'SENT',
                     sentAt: new Date(),
@@ -1257,7 +1263,7 @@ router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) =>
                     guardianId: guardian.id,
                     type: 'ISSUE_BILLS',
                     title: 'Fee Invoice Issued',
-                    body: message,
+                    body: truncateNotificationBody(message),
                     channel: 'EMAIL',
                     status: 'FAILED',
                     failureReason: err instanceof Error ? err.message : String(err),
@@ -1316,6 +1322,7 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
       where: { id: schoolId },
       select: {
         name: true,
+        logoUrl: true,
         waCloudAccessTokenEncrypted: true,
         waCloudPhoneNumberIdEncrypted: true,
         currency: true,
@@ -1352,7 +1359,7 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
                 guardianId: guardian.id,
                 type: 'SEND_REMINDER',
                 title: 'Fee Payment Reminder',
-                body: message,
+                body: truncateNotificationBody(message),
                 channel: 'WHATSAPP',
                 status: 'SENT',
                 sentAt: new Date(),
@@ -1369,7 +1376,7 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
                 guardianId: guardian.id,
                 type: 'SEND_REMINDER',
                 title: 'Fee Payment Reminder',
-                body: message,
+                body: truncateNotificationBody(message),
                 channel: 'WHATSAPP',
                 status: 'FAILED',
                 failureReason: err instanceof Error ? err.message : String(err),
@@ -1395,6 +1402,7 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
               paidAmount,
               outstanding.toFixed(2),
               school.name,
+              school.logoUrl ?? undefined,
             );
             
             await prisma.notification.create({
@@ -1403,7 +1411,7 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
                 guardianId: guardian.id,
                 type: 'SEND_REMINDER',
                 title: 'Fee Payment Reminder',
-                body: message,
+                body: truncateNotificationBody(message),
                 channel: 'EMAIL',
                 status: 'SENT',
                 sentAt: new Date(),
@@ -1420,7 +1428,7 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
                 guardianId: guardian.id,
                 type: 'SEND_REMINDER',
                 title: 'Fee Payment Reminder',
-                body: message,
+                body: truncateNotificationBody(message),
                 channel: 'EMAIL',
                 status: 'FAILED',
                 failureReason: err instanceof Error ? err.message : String(err),
@@ -1441,8 +1449,9 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     console.error('Error sending reminders:', error);
-    res.status(500).json({ error: 'Failed to send reminders' });
+    res.status(500).json({ error: message || 'Failed to send reminders' });
   }
 });
 
@@ -2083,6 +2092,28 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
           relation: guardianRelationship || 'Parent',
         },
       });
+
+      if (guardian.email) {
+        try {
+          const className = pupil.class?.name || 'your class';
+          const school = schoolId
+            ? await prisma.school.findUnique({ where: { id: schoolId }, select: { name: true, logoUrl: true } })
+            : null;
+
+          await sendAdmissionNotificationEmail(
+            guardian.email,
+            `${guardian.firstName}`,
+            `${pupil.firstName} ${pupil.lastName}`,
+            className,
+            String(pupil.admissionNo || 'N/A'),
+            school?.name || 'SchoolBase',
+            school?.logoUrl ?? undefined,
+          );
+          console.log(`✅ Admission notification email sent to ${guardian.email}`);
+        } catch (emailError) {
+          console.warn('⚠️ Failed to send admission notification email:', emailError);
+        }
+      }
     }
 
     // Fetch updated pupil with guardians
@@ -3219,7 +3250,7 @@ router.post('/teachers', async (req: Request, res: Response) => {
     try {
       const school = await prisma.school.findUnique({
         where: { id: schoolId },
-        select: { name: true },
+        select: { name: true, logoUrl: true },
       });
 
       if (school) {
@@ -3228,8 +3259,9 @@ router.post('/teachers', async (req: Request, res: Response) => {
           email,
           name,
           school.name,
+          password,
           'https://www.schoolbase.live/login',
-          password // Send temporary password that teacher should change
+          school.logoUrl ?? undefined,
         );
         console.log(`✅ Teacher welcome email sent to ${email}`);
       }
@@ -4634,7 +4666,7 @@ router.post('/attendance/notify', async (req: Request, res: Response) => {
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
-      select: { name: true, waCloudAccessTokenEncrypted: true },
+      select: { name: true, logoUrl: true, waCloudAccessTokenEncrypted: true },
     });
 
     let sentCount = 0;
@@ -4682,7 +4714,8 @@ router.post('/attendance/notify', async (req: Request, res: Response) => {
               date,
               status,
               school?.name || 'School',
-              message
+              message,
+              school?.logoUrl ?? undefined,
             );
             sentCount++;
           } catch (err) {
