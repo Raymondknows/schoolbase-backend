@@ -1301,11 +1301,11 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    // Find invoices with OVERDUE or PART_PAID status
+    // Find invoices that may need reminders: sent, part-paid, or overdue
     const invoices = await prisma.invoice.findMany({
       where: {
         schoolId,
-        status: { in: ['OVERDUE', 'PART_PAID'] },
+        status: { in: ['SENT', 'OVERDUE', 'PART_PAID'] },
       },
       include: {
         pupil: {
@@ -1334,6 +1334,8 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
     }
 
     let sentCount = 0;
+    let skippedCount = 0;
+    let processedGuardians = 0;
     const errors: string[] = [];
 
     // Send reminders to guardians
@@ -1343,12 +1345,25 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
       const amount = (invoice.amountDue / 100).toFixed(2);
       const outstanding = Math.max(0, invoice.amountDue - invoice.amountPaid) / 100;
 
+      if (outstanding <= 0) {
+        continue;
+      }
+
       for (const guardianPupil of invoice.pupil.guardians) {
+        processedGuardians++;
         const guardian = guardianPupil.guardian;
         const message = `Dear ${guardian.firstName}, this is a reminder that fee payment of ${school.currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${school.currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
 
+        const canSendWhatsApp = Boolean(guardian.whatsapp && school.waCloudAccessTokenEncrypted);
+        const canSendEmail = Boolean(guardian.email);
+
+        if (!canSendWhatsApp && !canSendEmail) {
+          skippedCount++;
+          continue;
+        }
+
         // Send via WhatsApp if available
-        if (guardian.whatsapp && school.waCloudAccessTokenEncrypted) {
+        if (canSendWhatsApp) {
           try {
             // TODO: Decrypt token and send via WhatsApp
             console.log(`WhatsApp reminder to ${guardian.whatsapp}: ${message}`);
@@ -1445,7 +1460,9 @@ router.post('/fees/invoices/send-reminders', async (req: Request, res: Response)
       success: true,
       message: `Sent ${sentCount} reminders`,
       sent: sentCount,
-      total: invoices.length,
+      skipped: skippedCount,
+      totalInvoices: invoices.length,
+      totalGuardians: processedGuardians,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
