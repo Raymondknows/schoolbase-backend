@@ -2701,22 +2701,8 @@ router.get('/analytics/data', async (req: Request, res: Response) => {
     const termId = req.query.termId as string | undefined;
     const phaseQuery = req.query.phase as string | undefined;
     
-    // Only include phase in where clause if it's valid and not 'ALL'
-    const classWhere: any = { schoolId };
-    if (phaseQuery && phaseQuery !== 'ALL') {
-      classWhere.phase = phaseQuery;
-    }
-
-    const classes = await prisma.class.findMany({
-      where: classWhere,
-      orderBy: { name: 'asc' },
-    });
-
-    const subjects = await prisma.subject.findMany({
-      where: { schoolId },
-      orderBy: { name: 'asc' },
-    });
-
+    console.log('[ANALYTICS] Received termId:', termId, 'phase:', phaseQuery);
+    
     // Build filter for assessments
     const assessmentWhere: any = {
       schoolId,
@@ -2731,13 +2717,40 @@ router.get('/analytics/data', async (req: Request, res: Response) => {
       assessmentWhere.termId = termId;
     }
 
+    console.log('[ANALYTICS] assessmentWhere filter:', JSON.stringify(assessmentWhere));
+
     // Fetch published assessments for the selected term and phase
     const assessments = await prisma.assessment.findMany({
       where: assessmentWhere,
-      select: { id: true },
+      select: { id: true, classId: true },
     });
+    
+    console.log('[ANALYTICS] Found assessments:', assessments.length);
 
     const assessmentIds = assessments.map((a) => a.id);
+    const classIds = [...new Set(assessments.map((a) => a.classId).filter(Boolean))] as string[];
+
+    // Only fetch classes that have assessments in this term
+    // If no assessments, return empty array (not all classes)
+    const classes = classIds.length > 0 
+      ? await prisma.class.findMany({
+          where: {
+            schoolId,
+            id: { in: classIds },
+          },
+          select: {
+            id: true,
+            name: true,
+            phase: true,
+          },
+          orderBy: { name: 'asc' },
+        })
+      : [];
+
+    const subjects = await prisma.subject.findMany({
+      where: { schoolId },
+      orderBy: { name: 'asc' },
+    });
 
     // Fetch results for these assessments
     const results = await prisma.result.findMany({
