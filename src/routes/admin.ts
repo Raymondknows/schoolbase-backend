@@ -7,6 +7,9 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail } from '../services/email.js';
+import requireActiveSubscription from '../middleware/subscriptionGuard.js';
+import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
+import type { NextFunction } from 'express';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -130,6 +133,33 @@ async function resolveSchoolId(req: Request) {
   return null;
 }
 
+// Apply subscription guard to school-scoped routes, excluding a small set of public endpoints
+router.use((req: Request, res: Response, next: any) => {
+  const allowlist = [
+    '/verify',
+    '/settings',
+    '/settings/status',
+    '/settings/data',
+    '/logo/presign',
+    '/school-logo',
+    '/school-stamp',
+    '/school-signature',
+    '/school/',
+    '/subscribe',
+    '/paystack',
+    '/platform',
+  ];
+
+  // Allow exact or prefix matches for the allowlist
+  for (const prefix of allowlist) {
+    if (req.path === prefix || req.path.startsWith(prefix + '/') || req.path.startsWith(prefix)) {
+      return next();
+    }
+  }
+
+  return requireActiveSubscription(req as any, res as any, next);
+});
+
 function truncateNotificationBody(body: string, maxLength = 180) {
   if (!body) return body;
   return body.length <= maxLength ? body : `${body.slice(0, maxLength - 3)}...`;
@@ -147,9 +177,16 @@ router.post('/verify', async (req: Request, res: Response) => {
 
     const { payload } = await jwtVerify(token, secret());
     
+    // Add subscription status if school ID is available
+    let subscriptionCheck = null;
+    if ((payload as any).schoolId) {
+      subscriptionCheck = await checkSubscription((payload as any).schoolId);
+    }
+    
     res.json({
       authenticated: true,
       session: payload,
+      subscription: subscriptionCheck, // Added: subscription state (non-breaking)
     });
   } catch (error) {
     res.status(401).json({ authenticated: false });
@@ -1081,7 +1118,7 @@ router.delete('/fees/schedules/:id', async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/fees/invoices/issue-bills - Create invoices for a term
-router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) => {
+router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Request, res: Response) => {
   try {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) {
@@ -1294,7 +1331,7 @@ router.post('/fees/invoices/issue-bills', async (req: Request, res: Response) =>
 });
 
 // POST /api/admin/fees/invoices/send-reminders - Send reminders for outstanding invoices
-router.post('/fees/invoices/send-reminders', async (req: Request, res: Response) => {
+router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Request, res: Response) => {
   try {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) {
@@ -1786,7 +1823,7 @@ router.get('/invoices/:id/pdf', async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/fees/payments/record - Record a payment against an invoice
-router.post('/fees/payments/record', async (req: Request, res: Response) => {
+router.post('/fees/payments/record', requireSubscription, async (req: Request, res: Response) => {
   try {
     console.log('[/fees/payments/record] Request received');
     console.log('[/fees/payments/record] Cookies:', Object.keys(req.cookies || {}));
@@ -2973,7 +3010,7 @@ router.get('/results/:id', async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/assessments - Create new assessment
-router.post('/assessments', async (req: Request, res: Response) => {
+router.post('/assessments', requireSubscription, async (req: Request, res: Response) => {
   try {
     const { name, termId, phase } = req.body;
     const schoolId = await resolveSchoolId(req);
@@ -3010,7 +3047,7 @@ router.post('/assessments', async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/results - Enter/update scores for students
-router.post('/results', async (req: Request, res: Response) => {
+router.post('/results', requireSubscription, async (req: Request, res: Response) => {
   try {
     const { assessmentId, entries, subject } = req.body;
     const schoolId = await resolveSchoolId(req);
@@ -3109,7 +3146,7 @@ router.post('/assessments/:id/approve', async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/assessments/{id}/publish - Publish results
-router.post('/assessments/:id/publish', async (req: Request, res: Response) => {
+router.post('/assessments/:id/publish', requireSubscription, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const schoolId = await resolveSchoolId(req);
@@ -4519,7 +4556,7 @@ router.get('/attendance/data', async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/attendance/mark - Mark attendance for students
-router.post('/attendance/mark', async (req: Request, res: Response) => {
+router.post('/attendance/mark', requireSubscription, async (req: Request, res: Response) => {
   try {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
@@ -4651,7 +4688,7 @@ router.get('/attendance/summary', async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/attendance/notify - Send attendance notifications
-router.post('/attendance/notify', async (req: Request, res: Response) => {
+router.post('/attendance/notify', requireSubscription, async (req: Request, res: Response) => {
   try {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
@@ -4795,7 +4832,7 @@ router.get('/guardians', async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/whatsapp/send-message - Send WhatsApp message to guardian
-router.post('/whatsapp/send-message', async (req: Request, res: Response) => {
+router.post('/whatsapp/send-message', requireSubscription, async (req: Request, res: Response) => {
   try {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });

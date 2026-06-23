@@ -239,11 +239,28 @@ router.post('/verify', async (req: Request, res: Response) => {
     }
 
     const { payload } = await jwtVerify(token, secret());
-    
-    res.json({
-      authenticated: true,
-      user: payload,
-    });
+      // Include basic school subscription state when available to help frontend gating
+      let schoolInfo = null;
+      try {
+        if (payload && typeof payload === 'object' && (payload as any).schoolId) {
+          const schoolId = String((payload as any).schoolId);
+          const school = await prisma.school.findUnique({
+            where: { id: schoolId },
+            select: { id: true, plan: true, status: true, trialEndsAt: true, subscriptionExpiresAt: true },
+          });
+          if (school) {
+            schoolInfo = school;
+          }
+        }
+      } catch (err) {
+        console.error('[AUTH] Failed to fetch school info for verify:', err);
+      }
+
+      res.json({
+        authenticated: true,
+        user: payload,
+        school: schoolInfo,
+      });
   } catch (error) {
     console.error('[AUTH] Verify error:', error);
     res.status(401).json({ 
