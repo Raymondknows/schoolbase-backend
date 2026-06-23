@@ -6,7 +6,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail } from '../services/email.js';
+import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendSubscriptionPaymentSuccessEmail } from '../services/email.js';
 import requireActiveSubscription from '../middleware/subscriptionGuard.js';
 import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
 import type { NextFunction } from 'express';
@@ -146,6 +146,7 @@ router.use((req: Request, res: Response, next: any) => {
     '/school-signature',
     '/school/',
     '/subscribe',
+    '/subscription/status',
     '/paystack',
     '/platform',
   ];
@@ -4995,6 +4996,200 @@ router.get('/subjects', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching subjects:', error);
     res.status(500).json({ error: 'Failed to fetch subjects' });
+  }
+});
+
+// GET /api/admin/subscription/status - Get subscription status and details
+router.get('/subscription/status', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        plan: true,
+        trialEndsAt: true,
+        subscriptionExpiresAt: true,
+      },
+    });
+
+    if (!school) {
+      return res.status(404).json({ error: 'School not found' });
+    }
+
+    // Determine subscription status
+    const now = new Date();
+    let subscriptionStatus = 'UNKNOWN';
+    let daysRemaining = 0;
+    let message = '';
+
+    if (school.status === 'ACTIVE') {
+      if (school.subscriptionExpiresAt) {
+        const expiryDate = new Date(school.subscriptionExpiresAt);
+        daysRemaining = Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+
+        if (daysRemaining > 0) {
+          subscriptionStatus = 'ACTIVE';
+          message = `Your ${school.plan} plan is active`;
+        } else {
+          subscriptionStatus = 'EXPIRED';
+          message = 'Your subscription has expired';
+        }
+      } else {
+        subscriptionStatus = 'ACTIVE';
+        message = `Your ${school.plan} plan is active`;
+      }
+    } else if (school.status === 'TRIAL') {
+      if (school.trialEndsAt) {
+        const trialEndDate = new Date(school.trialEndsAt);
+        daysRemaining = Math.ceil((trialEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+
+        if (daysRemaining > 0) {
+          subscriptionStatus = 'TRIAL';
+          message = `Free trial in progress - ${daysRemaining} days remaining`;
+        } else {
+          subscriptionStatus = 'TRIAL_EXPIRED';
+          message = 'Your free trial has expired';
+        }
+      } else {
+        subscriptionStatus = 'TRIAL';
+        message = 'Free trial in progress';
+      }
+    } else if (school.status === 'SUSPENDED') {
+      subscriptionStatus = 'SUSPENDED';
+      message = 'Your subscription has been suspended';
+    } else if (school.status === 'CANCELLED') {
+      subscriptionStatus = 'CANCELLED';
+      message = 'Your subscription has been cancelled';
+    } else if (school.status === 'PENDING') {
+      subscriptionStatus = 'PENDING';
+      message = 'Your subscription is pending approval';
+    }
+
+    res.json({
+      subscriptionStatus,
+      schoolName: school.name,
+      currentPlan: school.plan,
+      status: school.status,
+      trialEndsAt: school.trialEndsAt,
+      subscriptionExpiresAt: school.subscriptionExpiresAt,
+      daysRemaining,
+      message,
+      canRenew: ['EXPIRED', 'TRIAL_EXPIRED', 'CANCELLED'].includes(subscriptionStatus),
+      canUpgrade: subscriptionStatus === 'ACTIVE' && ['STARTER', 'GROWTH'].includes(school.plan),
+    });
+  } catch (error) {
+    console.error('Error fetching subscription status:', error);
+    res.status(500).json({ error: 'Failed to fetch subscription status' });
+  }
+});
+
+// POST /api/admin/send-trial-emails - Send subscription emails to all trial accounts
+router.post('/send-trial-emails', async (req: Request, res: Response) => {
+  try {
+    console.log('[Trial Emails] Starting to send subscription emails to trial accounts...');
+
+    // Find all TRIAL schools
+    const trialSchools = await prisma.school.findMany({
+      where: {
+        status: 'TRIAL',
+      },
+      select: {
+        id: true,
+        name: true,
+        plan: true,
+        trialEndsAt: true,
+      },
+    });
+
+    console.log(`[Trial Emails] Found ${trialSchools.length} trial schools`);
+
+    const results = {
+      total: trialSchools.length,
+      sent: 0,
+      failed: 0,
+      details: [] as Array<{ schoolName: string; adminEmail: string; status: string; error?: string }>,
+    };
+
+    for (const school of trialSchools) {
+      try {
+        // Find the admin user for this school
+        const admin = await prisma.user.findFirst({
+          where: {
+            schoolId: school.id,
+            role: 'SCHOOL_ADMIN',
+          },
+          select: { email: true, name: true },
+        });
+
+        if (!admin?.email) {
+          console.warn(`[Trial Emails] No admin email found for school: ${school.name}`);
+          results.failed++;
+          results.details.push({
+            schoolName: school.name,
+            adminEmail: 'N/A',
+            status: 'failed',
+            error: 'No admin email found',
+          });
+          continue;
+        }
+
+        // Format the trial end date
+        const trialEndDate = school.trialEndsAt
+          ? new Date(school.trialEndsAt).toLocaleDateString('en-NG', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+            })
+          : 'N/A';
+
+        // Send subscription email
+        await sendSubscriptionPaymentSuccessEmail(
+          admin.email,
+          school.name,
+          admin.name || 'Admin',
+          school.plan || 'STARTER',
+          'Trial Access',
+          trialEndDate
+        );
+
+        console.log(`[Trial Emails] Email sent successfully to ${admin.email} for school: ${school.name}`);
+        results.sent++;
+        results.details.push({
+          schoolName: school.name,
+          adminEmail: admin.email,
+          status: 'sent',
+        });
+      } catch (emailError) {
+        console.error(`[Trial Emails] Error sending email for school ${school.name}:`, emailError);
+        results.failed++;
+        results.details.push({
+          schoolName: school.name,
+          adminEmail: 'unknown',
+          status: 'failed',
+          error: emailError instanceof Error ? emailError.message : 'Unknown error',
+        });
+      }
+    }
+
+    console.log('[Trial Emails] Completed. Summary:', results);
+    res.json({
+      success: true,
+      message: `Sent subscription emails to ${results.sent} trial accounts (${results.failed} failed)`,
+      results,
+    });
+  } catch (error) {
+    console.error('[Trial Emails] Error in send-trial-emails endpoint:', error);
+    res.status(500).json({
+      error: 'Failed to send trial account emails',
+      details: error instanceof Error ? error.message : 'Unknown error',
+    });
   }
 });
 

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import axios from 'axios';
 import { PrismaClient } from '@prisma/client';
 import crypto from 'crypto';
+import { sendPaymentSuccessEmail } from '../jobs/subscriptionEmails.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -125,6 +126,43 @@ router.post('/verify-subscription', async (req: Request, res: Response) => {
         subscriptionExpiresAt: true,
       },
     });
+
+    // Send payment success email
+    try {
+      const admin = await prisma.user.findFirst({
+        where: {
+          schoolId: school.id,
+          role: 'SCHOOL_ADMIN',
+        },
+        select: { email: true, name: true },
+      });
+
+      if (admin?.email) {
+        const amountFormatted = (amountMinor / 100).toLocaleString('en-NG', {
+          style: 'currency',
+          currency: 'NGN',
+          minimumFractionDigits: 2,
+        });
+
+        const expiryDate = subscriptionExpiresAt.toLocaleDateString('en-NG', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        });
+
+        await sendPaymentSuccessEmail(
+          admin.email,
+          updatedSchool.name,
+          admin.name,
+          nextPlan,
+          amountFormatted,
+          expiryDate
+        );
+      }
+    } catch (emailError) {
+      console.error('Error sending payment success email:', emailError);
+      // Don't fail the subscription verification if email fails
+    }
 
     res.json({
       success: true,

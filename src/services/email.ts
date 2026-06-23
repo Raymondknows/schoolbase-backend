@@ -1031,3 +1031,179 @@ export async function sendPlatformCommunicationEmail(
     throw error;
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUBSCRIPTION EMAIL TEMPLATES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Send subscription payment success email
+ */
+export async function sendSubscriptionPaymentSuccessEmail(
+  email: string,
+  schoolName: string,
+  adminName: string,
+  plan: string,
+  amount: string,
+  expiryDate: string
+) {
+  try {
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
+    const body = `Thank you for subscribing to SchoolBase! Your payment has been successfully processed and your subscription is now active.
+
+Subscription Details
+School: ${schoolName}
+Plan: ${plan}
+Amount Paid: ${amount}
+Expires: ${expiryDate}
+
+Your school now has full access to all SchoolBase features including Admissions, Student Records, Attendance, Fees, Payments, Results, Report Cards, Staff Management, and WhatsApp Communication.
+
+Next Steps
+1. Log into your SchoolBase dashboard to get started
+2. Configure your school settings and branding
+3. Add your staff and students
+4. Set up fee schedules and publish results
+5. Invite parents to the portal
+
+Our support team is here to help. If you have any questions or need assistance, just reply to this email.`;
+
+    const paragraphs = body.split('\n\n').filter(p => p.trim());
+    const bodyHtml = paragraphs
+      .map(p => `<p style="margin: 16px 0; line-height: 1.6;">${p.replace(/\n/g, '<br>')}</p>`)
+      .join('');
+
+    const textBody = `${body}\n\nBest regards,\nThe SchoolBase Team`;
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: `Payment Confirmed – Your SchoolBase subscription is active`,
+      text: textBody,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>${EMAIL_STYLES}</style>
+          </head>
+          <body>
+            <div class="email-container">
+              <div class="header">
+                <div style="width: 70px; height: 70px; background-color: ${BRAND.surface}; border-radius: 50%; margin: 0 auto 12px; display: flex; align-items: center; justify-content: center;">
+                  <img src="https://schoolbase.live/logo.png" alt="SchoolBase Logo" style="width: 50px; height: 50px; display: block; margin: auto;">
+                </div>
+                <h1 style="font-size: 24px; color: ${BRAND.surface};">SchoolBase</h1>
+                <p class="header-subtitle">Payment Confirmed – Your subscription is active</p>
+              </div>
+              <div class="content">
+                <p>Hello ${adminName},</p>
+                <p style="font-size: 14px; color: ${BRAND.textMuted};">For: <strong>${schoolName}</strong></p>
+                ${bodyHtml}
+                <div style="margin-top: 32px; border-top: 1px solid ${BRAND.border}; padding-top: 16px;">
+                  <p>Best regards,<br><strong>The SchoolBase Team</strong></p>
+                  <p style="font-size: 12px; color: ${BRAND.textMuted}; margin-top: 12px;"><a href="https://schoolbase.live" style="color: ${BRAND.primary}; text-decoration: none;">Visit SchoolBase</a></p>
+                </div>
+              </div>
+              <div class="footer">
+                <p class="footer-text">&copy; 2026 SchoolBase. All rights reserved.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    console.log('Subscription payment success email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('Failed to send subscription payment success email:', error);
+    throw error;
+  }
+}
+
+/**
+ * Send subscription expiry warning email
+ */
+export async function sendSubscriptionExpiryWarningEmail(
+  email: string,
+  schoolName: string,
+  adminName: string,
+  daysRemaining: number,
+  expiryDate: string,
+  plan: string
+) {
+  try {
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
+    const subject = daysRemaining === 1 
+      ? `Urgent: Your SchoolBase subscription expires tomorrow`
+      : `Reminder: Your SchoolBase subscription expires in ${daysRemaining} days`;
+
+    const body = `This is a reminder that your SchoolBase ${plan} subscription for ${schoolName} will expire on ${expiryDate} (${daysRemaining} day${daysRemaining === 1 ? '' : 's'} remaining).
+
+To ensure uninterrupted access to all SchoolBase features, please renew your subscription immediately at https://schoolbase.live/admin/subscription
+
+About Renewal
+Renewing takes less than 2 minutes. Your access will continue immediately after payment. After renewal, your subscription will be extended for another month.
+
+If you need assistance or have questions, our support team is available 24/7. Reply to this email or contact support@schoolbase.live`;
+
+    const paragraphs = body.split('\n\n').filter(p => p.trim());
+    const bodyHtml = paragraphs
+      .map(p => `<p style="margin: 16px 0; line-height: 1.6;">${p.replace(/\n/g, '<br>')}</p>`)
+      .join('');
+
+    const textBody = `${body}\n\nBest regards,\nThe SchoolBase Team`;
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: subject,
+      text: textBody,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>${EMAIL_STYLES}</style>
+          </head>
+          <body>
+            <div class="email-container">
+              <div class="header">
+                <div style="width: 70px; height: 70px; background-color: ${BRAND.surface}; border-radius: 50%; margin: 0 auto 12px; display: flex; align-items: center; justify-content: center;">
+                  <img src="https://schoolbase.live/logo.png" alt="SchoolBase Logo" style="width: 50px; height: 50px; display: block; margin: auto;">
+                </div>
+                <h1 style="font-size: 24px; color: ${BRAND.surface};">SchoolBase</h1>
+                <p class="header-subtitle">${subject}</p>
+              </div>
+              <div class="content">
+                <p>Hello ${adminName},</p>
+                <p style="font-size: 14px; color: ${BRAND.textMuted};">For: <strong>${schoolName}</strong></p>
+                ${bodyHtml}
+                <div style="margin-top: 32px; border-top: 1px solid ${BRAND.border}; padding-top: 16px;">
+                  <p>Best regards,<br><strong>The SchoolBase Team</strong></p>
+                  <p style="font-size: 12px; color: ${BRAND.textMuted}; margin-top: 12px;"><a href="https://schoolbase.live" style="color: ${BRAND.primary}; text-decoration: none;">Visit SchoolBase</a></p>
+                </div>
+              </div>
+              <div class="footer">
+                <p class="footer-text">&copy; 2026 SchoolBase. All rights reserved.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    console.log(`Subscription expiry warning email sent to ${email} (${daysRemaining} days remaining)`);
+    return true;
+  } catch (error) {
+    console.error('Failed to send subscription expiry warning email:', error);
+    throw error;
+  }
+}

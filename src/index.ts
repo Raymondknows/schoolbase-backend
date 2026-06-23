@@ -4,12 +4,16 @@ import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import path from 'path';
 import { PrismaClient } from '@prisma/client';
+import { initializeSubscriptionExpiryJob, stopSubscriptionExpiryJob } from './jobs/checkSubscriptionExpiry.js';
+import { initializeSubscriptionEmailJob, stopSubscriptionEmailJob } from './jobs/subscriptionEmails.js';
 
 dotenv.config();
 
 const prisma = new PrismaClient();
 const app = express();
 const PORT = process.env.API_PORT || 3006;
+let subscriptionExpiryTask: any = null;
+let subscriptionEmailTask: any = null;
 
 // Middleware
 const allowedOrigins = [
@@ -134,6 +138,21 @@ async function start() {
   try {
     await loadRoutes();
     
+    // Initialize background jobs
+    try {
+      subscriptionExpiryTask = initializeSubscriptionExpiryJob();
+    } catch (error) {
+      console.error('Warning: Failed to initialize subscription expiry job:', error);
+      // Don't fail startup if job initialization fails - system can still operate
+    }
+
+    try {
+      subscriptionEmailTask = initializeSubscriptionEmailJob();
+    } catch (error) {
+      console.error('Warning: Failed to initialize subscription email job:', error);
+      // Don't fail startup if job initialization fails - system can still operate
+    }
+    
     // Error handling middleware (after routes)
     app.use((err: any, req: Request, res: Response, next: NextFunction) => {
       console.error(err);
@@ -164,6 +183,12 @@ start();
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully...');
+  if (subscriptionExpiryTask) {
+    stopSubscriptionExpiryJob(subscriptionExpiryTask);
+  }
+  if (subscriptionEmailTask) {
+    stopSubscriptionEmailJob(subscriptionEmailTask);
+  }
   await prisma.$disconnect();
   process.exit(0);
 });
