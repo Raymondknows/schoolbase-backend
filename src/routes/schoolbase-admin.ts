@@ -579,6 +579,19 @@ router.patch('/schools', async (req: Request, res: Response) => {
         updateData.status = 'ACTIVE';
         auditDetails = `Upgraded ${school.name} from ${currentPlan} to ${nextPlan}`;
         break;
+      case 'setPlan':
+        const validPlans = ['FREE', 'STARTER', 'GROWTH', 'ENTERPRISE'];
+        if (!plan || !validPlans.includes(plan)) {
+          return res.status(400).json({ message: 'A valid plan is required.' });
+        }
+        updateData.plan = plan;
+        if (school.status === 'PENDING') {
+          updateData.status = 'ACTIVE';
+          auditDetails = `Approved subscription and set plan for ${school.name} to ${plan}`;
+        } else {
+          auditDetails = `Set plan for ${school.name} to ${plan}`;
+        }
+        break;
       case 'extendTrial':
         if (!days) {
           return res.status(400).json({ message: 'Days are required to extend trial.' });
