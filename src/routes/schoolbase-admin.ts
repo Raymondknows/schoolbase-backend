@@ -685,46 +685,59 @@ router.get('/support', async (req: Request, res: Response) => {
   try {
     const supportRequests = await prisma.supportRequest.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { 
+      include: {
+        messages: { orderBy: { createdAt: 'asc' } },
         school: { select: { id: true, name: true, country: true } }
       },
     });
 
     res.json({ 
-      supportRequests: (supportRequests as any[]).map((request) => ({
-        id: request.id,
-        subject: request.subject,
-        message: request.message,
-        response: request.response,
-        status: request.status,
-        priority: request.priority,
-        createdAt: request.createdAt.toISOString(),
-        updatedAt: request.updatedAt.toISOString(),
-        // Create a messages array from the initial message and response
-        messages: [
-          {
-            id: `${request.id}-initial`,
-            senderRole: 'SCHOOL',
-            senderName: request.school?.name || 'School',
-            senderEmail: null,
-            body: request.message,
-            createdAt: request.createdAt.toISOString(),
-          },
-          ...(request.response ? [{
+      supportRequests: (supportRequests as any[]).map((request) => {
+        const messages = ((request as any).messages || []).map((message: any) => {
+          const isSchoolMessage = message.senderRole === 'SCHOOL';
+          const normalizedSenderName = typeof message.senderName === 'string' ? message.senderName.trim() : '';
+          const senderName = isSchoolMessage
+            ? (request.school?.name || normalizedSenderName || 'School')
+            : 'SchoolBase Support';
+
+          return {
+            id: message.id,
+            senderRole: message.senderRole,
+            senderName,
+            senderEmail: message.senderEmail,
+            body: message.body,
+            createdAt: message.createdAt.toISOString(),
+          };
+        });
+
+        if (request.response && !messages.some((message: any) => message.body === request.response)) {
+          messages.push({
             id: `${request.id}-response`,
             senderRole: 'PLATFORM_ADMIN',
             senderName: 'SchoolBase Support',
             senderEmail: null,
             body: request.response,
             createdAt: request.updatedAt.toISOString(),
-          }] : []),
-        ],
-        school: request.school ? {
-          id: request.school.id,
-          name: request.school.name,
-          country: request.school.country,
-        } : null,
-      })),
+          });
+        }
+
+        return {
+          id: request.id,
+          subject: request.subject,
+          message: request.message,
+          response: request.response,
+          status: request.status,
+          priority: request.priority,
+          createdAt: request.createdAt.toISOString(),
+          updatedAt: request.updatedAt.toISOString(),
+          messages,
+          school: request.school ? {
+            id: request.school.id,
+            name: request.school.name,
+            country: request.school.country,
+          } : null,
+        };
+      }),
     });
   } catch (error) {
     console.error('Error fetching support requests:', error);
@@ -758,11 +771,60 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
       updateData.status = status;
     }
 
-    const updated = await prisma.supportRequest.update({
-      where: { id: requestId },
-      data: updateData,
-      include: { school: { select: { id: true, name: true, country: true } } },
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.supportRequest.update({
+        where: { id: requestId },
+        data: updateData,
+      });
+
+      if (responseText) {
+        await tx.supportRequestMessage.create({
+          data: {
+            supportRequestId: requestId,
+            senderRole: 'PLATFORM_ADMIN',
+            senderName: 'SchoolBase Support',
+            senderEmail: null,
+            body: responseText,
+          },
+        });
+      }
+
+      return tx.supportRequest.findUniqueOrThrow({
+        where: { id: requestId },
+        include: {
+          messages: { orderBy: { createdAt: 'asc' } },
+          school: { select: { id: true, name: true, country: true } },
+        },
+      });
     });
+
+    const messages = ((updated as any).messages || []).map((message: any) => {
+      const isSchoolMessage = message.senderRole === 'SCHOOL';
+      const normalizedSenderName = typeof message.senderName === 'string' ? message.senderName.trim() : '';
+      const senderName = isSchoolMessage
+        ? (updated.school?.name || normalizedSenderName || 'School')
+        : 'SchoolBase Support';
+
+      return {
+        id: message.id,
+        senderRole: message.senderRole,
+        senderName,
+        senderEmail: message.senderEmail,
+        body: message.body,
+        createdAt: message.createdAt.toISOString(),
+      };
+    });
+
+    if (updated.response && !messages.some((message: any) => message.body === updated.response)) {
+      messages.push({
+        id: `${updated.id}-response`,
+        senderRole: 'PLATFORM_ADMIN',
+        senderName: 'SchoolBase Support',
+        senderEmail: null,
+        body: updated.response,
+        createdAt: updated.updatedAt.toISOString(),
+      });
+    }
 
     // Return in the same format as the GET endpoint
     res.json({ 
@@ -776,24 +838,7 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
         priority: updated.priority,
         createdAt: updated.createdAt.toISOString(),
         updatedAt: updated.updatedAt.toISOString(),
-        messages: [
-          {
-            id: `${updated.id}-initial`,
-            senderRole: 'SCHOOL',
-            senderName: updated.school?.name || 'School',
-            senderEmail: null,
-            body: updated.message,
-            createdAt: updated.createdAt.toISOString(),
-          },
-          ...(updated.response ? [{
-            id: `${updated.id}-response`,
-            senderRole: 'PLATFORM_ADMIN',
-            senderName: 'SchoolBase Support',
-            senderEmail: null,
-            body: updated.response,
-            createdAt: updated.updatedAt.toISOString(),
-          }] : []),
-        ],
+        messages,
         school: updated.school,
       }
     });

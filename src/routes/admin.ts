@@ -2498,29 +2498,52 @@ router.get('/support/data', async (req: Request, res: Response) => {
     const school = await prisma.school.findUnique({ where: { id: schoolId } });
 
     res.json({ 
-      supportRequests: (supportRequests as any[]).map((request) => ({
-        id: request.id,
-        subject: request.subject,
-        message: request.message,
-        response: request.response,
-        status: request.status,
-        priority: request.priority,
-        createdAt: request.createdAt.toISOString(),
-        updatedAt: request.updatedAt.toISOString(),
-        messages: (request as any).messages.map((message: any) => ({
-          id: message.id,
-          senderRole: message.senderRole,
-          senderName: message.senderName,
-          senderEmail: message.senderEmail,
-          body: message.body,
-          createdAt: message.createdAt.toISOString(),
-        })),
-        school: {
-          id: schoolId,
-          name: school?.name,
-          country: school?.country,
-        },
-      })),
+      supportRequests: (supportRequests as any[]).map((request) => {
+        const messages = ((request as any).messages || []).map((message: any) => {
+          const isSchoolMessage = message.senderRole === 'SCHOOL';
+          const normalizedSenderName = typeof message.senderName === 'string' ? message.senderName.trim() : '';
+          const senderName = isSchoolMessage
+            ? (school?.name || normalizedSenderName || 'School')
+            : 'SchoolBase Support';
+
+          return {
+            id: message.id,
+            senderRole: message.senderRole,
+            senderName,
+            senderEmail: message.senderEmail,
+            body: message.body,
+            createdAt: message.createdAt.toISOString(),
+          };
+        });
+
+        if (request.response && !messages.some((message: any) => message.body === request.response)) {
+          messages.push({
+            id: `${request.id}-response`,
+            senderRole: 'PLATFORM_ADMIN',
+            senderName: 'SchoolBase Support',
+            senderEmail: null,
+            body: request.response,
+            createdAt: request.updatedAt.toISOString(),
+          });
+        }
+
+        return {
+          id: request.id,
+          subject: request.subject,
+          message: request.message,
+          response: request.response,
+          status: request.status,
+          priority: request.priority,
+          createdAt: request.createdAt.toISOString(),
+          updatedAt: request.updatedAt.toISOString(),
+          messages,
+          school: {
+            id: schoolId,
+            name: school?.name,
+            country: school?.country,
+          },
+        };
+      }),
     });
   } catch (error) {
     console.error('Error fetching support data:', error);
@@ -2540,14 +2563,30 @@ router.post('/support', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Subject and message are required' });
     }
 
-    const supportRequest = await prisma.supportRequest.create({
-      data: {
-        schoolId,
-        subject,
-        message,
-        priority,
-        status: 'OPEN',
-      },
+    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { id: true, name: true, country: true } });
+
+    const supportRequest = await prisma.$transaction(async (tx) => {
+      const createdRequest = await tx.supportRequest.create({
+        data: {
+          schoolId,
+          subject,
+          message,
+          priority,
+          status: 'OPEN',
+        },
+      });
+
+      await tx.supportRequestMessage.create({
+        data: {
+          supportRequestId: createdRequest.id,
+          senderRole: 'SCHOOL',
+          senderName: school?.name || 'School',
+          senderEmail: null,
+          body: createdRequest.message,
+        },
+      });
+
+      return createdRequest;
     });
 
     res.status(201).json({ 
@@ -2563,12 +2602,16 @@ router.post('/support', async (req: Request, res: Response) => {
         messages: [{
           id: `${supportRequest.id}-initial`,
           senderRole: 'SCHOOL',
-          senderName: 'Your School',
+          senderName: school?.name || 'School',
           senderEmail: null,
           body: supportRequest.message,
           createdAt: supportRequest.createdAt.toISOString(),
         }],
-        school: null,
+        school: school ? {
+          id: school.id,
+          name: school.name,
+          country: school.country,
+        } : null,
       },
       message: 'Support request created successfully'
     });
@@ -2590,6 +2633,11 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Request ID and response are required' });
     }
 
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { id: true, name: true, country: true },
+    });
+
     // Verify the support request belongs to this school
     const supportRequest = await prisma.supportRequest.findFirst({
       where: { id: requestId, schoolId },
@@ -2599,15 +2647,48 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Support request not found' });
     }
 
-    const updated = await prisma.supportRequest.update({
-      where: { id: requestId },
-      data: { 
-        response: responseText,
-        status: 'IN_PROGRESS',
-        updatedAt: new Date(),
-      },
-      include: { messages: { orderBy: { createdAt: 'asc' } } } as any,
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.supportRequest.update({
+        where: { id: requestId },
+        data: {
+          response: responseText,
+          status: 'IN_PROGRESS',
+          updatedAt: new Date(),
+        },
+      });
+
+      await tx.supportRequestMessage.create({
+        data: {
+          supportRequestId: requestId,
+          senderRole: 'SCHOOL',
+          senderName: school?.name || 'School',
+          senderEmail: null,
+          body: responseText,
+        },
+      });
+
+      return tx.supportRequest.findUniqueOrThrow({
+        where: { id: requestId },
+        include: { messages: { orderBy: { createdAt: 'asc' } } } as any,
+      });
     });
+
+    const messages = ((updated.messages || []).map((message: any) => {
+      const isSchoolMessage = message.senderRole === 'SCHOOL';
+      const normalizedSenderName = typeof message.senderName === 'string' ? message.senderName.trim() : '';
+      const senderName = isSchoolMessage
+        ? (school?.name || normalizedSenderName || 'School')
+        : 'SchoolBase Support';
+
+      return {
+        id: message.id,
+        senderRole: message.senderRole,
+        senderName,
+        senderEmail: message.senderEmail,
+        body: message.body,
+        createdAt: message.createdAt.toISOString(),
+      };
+    }));
 
     res.json({ 
       supportRequest: {
@@ -2619,24 +2700,7 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
         priority: updated.priority,
         createdAt: updated.createdAt.toISOString(),
         updatedAt: updated.updatedAt.toISOString(),
-        messages: [
-          {
-            id: `${updated.id}-initial`,
-            senderRole: 'SCHOOL',
-            senderName: 'Your School',
-            senderEmail: null,
-            body: updated.message,
-            createdAt: updated.createdAt.toISOString(),
-          },
-          ...(updated.response ? [{
-            id: `${updated.id}-response`,
-            senderRole: 'SUPPORT',
-            senderName: 'Support Team',
-            senderEmail: null,
-            body: updated.response,
-            createdAt: updated.updatedAt.toISOString(),
-          }] : []),
-        ],
+        messages,
         school: null,
       },
       message: 'Reply sent successfully'
