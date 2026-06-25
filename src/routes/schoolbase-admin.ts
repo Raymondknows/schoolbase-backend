@@ -873,6 +873,26 @@ router.get('/videos', async (req: Request, res: Response) => {
   }
 });
 
+// GET /schoolbase-admin/api/videos/:videoId - Get a specific video tutorial
+router.get('/videos/:videoId', async (req: Request, res: Response) => {
+  try {
+    const { videoId } = req.params;
+
+    const video = await prisma.videoTutorial.findUnique({
+      where: { id: videoId },
+    });
+
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+
+    res.json({ video });
+  } catch (error) {
+    console.error('Error fetching video:', error);
+    res.status(500).json({ message: 'Failed to fetch video' });
+  }
+});
+
 // POST /schoolbase-admin/api/videos - Create new video tutorial
 router.post('/videos', async (req: Request, res: Response) => {
   try {

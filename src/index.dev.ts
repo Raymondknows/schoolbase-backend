@@ -34,6 +34,8 @@ async function loadRoutes() {
     console.log('✓ Loaded admin routes');
     const { default: countryRoutes } = await import('./routes/country.js');
     console.log('✓ Loaded country routes');
+    const { default: publicRoutes } = await import('./routes/public.js');
+    console.log('✓ Loaded public routes');
     const { default: paystackRoutes } = await import('./routes/paystack.js');
     console.log('✓ Loaded paystack routes');
     const { default: trialRoutes } = await import('./routes/trial.js');
@@ -71,6 +73,7 @@ async function loadRoutes() {
     app.use('/api/report-cards', reportCardRoutes);
     app.use('/api/pdf-reports', pdfReportsRoutes);
     app.use('/api/country', countryRoutes);
+    app.use('/api', publicRoutes);
     app.use('/api/paystack', paystackRoutes);
     app.use('/api/trial', trialRoutes);
     app.use('/api/whatsapp', whatsappRoutes);
