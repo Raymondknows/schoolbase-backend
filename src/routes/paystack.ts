@@ -18,8 +18,18 @@ router.post('/init', async (req: Request, res: Response) => {
     const normalizedAmount = typeof amount === 'number' ? amount : typeof amountMinor === 'number' ? amountMinor / 100 : null;
 
     if (!email || normalizedAmount === null) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      return res.status(400).json({ error: 'Missing required fields: email and amountMinor/amount' });
     }
+
+    // Build metadata for Paystack
+    const paystackMetadata = {
+      custom_fields: [
+        { display_name: 'Plan', variable_name: 'plan', value: metadata?.plan || '' },
+        { display_name: 'School Name', variable_name: 'school_name', value: metadata?.schoolName || '' },
+        { display_name: 'Contact Name', variable_name: 'contact_name', value: metadata?.name || '' },
+        { display_name: 'Contact Phone', variable_name: 'contact_phone', value: metadata?.phone || '' },
+      ],
+    };
 
     // Initialize transaction with Paystack
     const response = await axios.post(
@@ -28,7 +38,7 @@ router.post('/init', async (req: Request, res: Response) => {
         email,
         amount: Math.round(normalizedAmount * 100), // Convert to kobo (smallest unit)
         reference: `TXN-${Date.now()}-${crypto.randomUUID()}`,
-        metadata,
+        metadata: paystackMetadata,
         callback_url,
       },
       {
