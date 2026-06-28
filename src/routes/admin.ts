@@ -147,6 +147,8 @@ router.use((req: Request, res: Response, next: any) => {
     '/school/',
     '/subscribe',
     '/subscription/status',
+    '/request-password-reset',
+    '/reset-password',
     '/paystack',
     '/platform',
   ];
