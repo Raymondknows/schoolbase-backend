@@ -133,6 +133,22 @@ async function resolveSchoolId(req: Request) {
   return null;
 }
 
+async function resolveUserName(req: Request): Promise<string | null> {
+  const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
+  if (!token) return null;
+
+  try {
+    const { payload } = await jwtVerify(token, secret());
+    if (payload && typeof payload === 'object' && 'name' in payload) {
+      return String((payload as any).name);
+    }
+  } catch (err) {
+    console.error('[resolveUserName] JWT verification failed:', (err as Error).message);
+  }
+
+  return null;
+}
+
 // Apply subscription guard to school-scoped routes, excluding a small set of public endpoints
 router.use((req: Request, res: Response, next: any) => {
   const allowlist = [
@@ -2358,6 +2374,209 @@ router.get('/classes/data', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching classes data:', error);
     res.status(500).json({ error: 'Failed to fetch classes data' });
+  }
+});
+
+// GET /api/admin/promotions/preview - Preview promotion decisions for a class
+router.get('/promotions/preview', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { academicYearId, termId, classId } = req.query;
+    if (!academicYearId || !termId || !classId) {
+      return res.status(400).json({ error: 'academicYearId, termId, and classId are required' });
+    }
+
+    const currentClass = await prisma.class.findFirst({ where: { id: String(classId), schoolId } });
+    if (!currentClass) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    const pupils = await prisma.pupil.findMany({
+      where: { schoolId, classId: String(classId), isActive: true },
+      include: { class: true },
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
+    });
+
+    const classes = await prisma.class.findMany({
+      where: { schoolId },
+      orderBy: [{ phase: 'asc' }, { name: 'asc' }],
+    });
+
+    res.json({
+      academicYearId: String(academicYearId),
+      termId: String(termId),
+      classId: String(classId),
+      class: currentClass,
+      pupils: pupils.map((pupil) => ({
+        id: pupil.id,
+        firstName: pupil.firstName,
+        lastName: pupil.lastName,
+        admissionNo: pupil.admissionNo,
+        currentClassId: pupil.classId,
+        currentClassName: pupil.class?.name || null,
+        promotionDecision: null,
+        promotionToClassId: null,
+        rationale: null,
+      })),
+      classes,
+    });
+  } catch (error) {
+    console.error('Error previewing promotions:', error);
+    res.status(500).json({ error: 'Failed to preview promotions' });
+  }
+});
+
+// POST /api/admin/promotions/apply - Apply promotion decisions for pupils
+router.post('/promotions/apply', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { academicYearId, termId, fromClassId, decisions } = req.body;
+    if (!academicYearId || !termId || !fromClassId || !Array.isArray(decisions) || decisions.length === 0) {
+      return res.status(400).json({ error: 'academicYearId, termId, fromClassId and decisions are required' });
+    }
+
+    const currentClass = await prisma.class.findFirst({ where: { id: String(fromClassId), schoolId } });
+    if (!currentClass) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    const pupilIds = decisions.map((item: any) => String(item.pupilId));
+    const pupils = await prisma.pupil.findMany({ where: { id: { in: pupilIds }, schoolId } });
+    const pupilsById = Object.fromEntries(pupils.map((p) => [p.id, p]));
+
+    if (pupils.length !== pupilIds.length) {
+      return res.status(400).json({ error: 'One or more pupils were not found' });
+    }
+
+    const validClassIds = decisions
+      .map((item: any) => item.toClassId)
+      .filter(Boolean)
+      .map(String);
+
+    const targetClasses = validClassIds.length
+      ? await prisma.class.findMany({ where: { id: { in: validClassIds }, schoolId } })
+      : [];
+    const targetClassIds = new Set(targetClasses.map((c) => c.id));
+
+    for (const decision of decisions) {
+      if (!['PROMOTED', 'REPEATED', 'TRANSFERRED', 'GRADUATED'].includes(decision.decision)) {
+        return res.status(400).json({ error: `Invalid decision: ${decision.decision}` });
+      }
+      if (['PROMOTED', 'TRANSFERRED'].includes(decision.decision) && !decision.toClassId) {
+        return res.status(400).json({ error: 'toClassId is required for promoted or transferred pupils' });
+      }
+      if (decision.toClassId && !targetClassIds.has(String(decision.toClassId))) {
+        return res.status(400).json({ error: `Invalid toClassId: ${decision.toClassId}` });
+      }
+    }
+
+    const decidedBy = (await resolveUserName(req)) || 'Unknown';
+    const decidedAt = new Date();
+
+    await prisma.$transaction(async (tx) => {
+      await Promise.all(decisions.map(async (decision: any) => {
+        const pupil = pupilsById[decision.pupilId];
+        const toClassId = decision.toClassId ? String(decision.toClassId) : null;
+        let nextClassId: string | null = pupil.classId;
+
+        if (decision.decision === 'PROMOTED' || decision.decision === 'TRANSFERRED') {
+          nextClassId = toClassId;
+        } else if (decision.decision === 'GRADUATED') {
+          nextClassId = null;
+        }
+
+        await tx.pupil.update({
+          where: { id: pupil.id },
+          data: { classId: nextClassId },
+        });
+
+        await tx.promotionRecord.create({
+          data: {
+            schoolId,
+            pupilId: pupil.id,
+            fromClassId: String(fromClassId),
+            toClassId,
+            academicYearId: String(academicYearId),
+            termId: String(termId),
+            decision: decision.decision,
+            rationale: decision.rationale || null,
+            decidedBy,
+            decidedAt,
+          },
+        });
+
+        await tx.studentTermSummary.updateMany({
+          where: { pupilId: pupil.id, termId: String(termId) },
+          data: {
+            promotionDecision: decision.decision,
+            promotionToClass: toClassId,
+            promotionDecidedBy: decidedBy,
+            promotionDecidedAt: decidedAt,
+          },
+        });
+      }));
+    });
+
+    res.json({ success: true, appliedCount: decisions.length });
+  } catch (error) {
+    console.error('Error applying promotions:', error);
+    res.status(500).json({ error: 'Failed to apply promotions' });
+  }
+});
+
+// GET /api/admin/promotions/history - Get promotion history records
+router.get('/promotions/history', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { academicYearId, termId, classId, pupilId } = req.query;
+    const where: any = { schoolId };
+    if (academicYearId) where.academicYearId = String(academicYearId);
+    if (termId) where.termId = String(termId);
+    if (pupilId) where.pupilId = String(pupilId);
+    if (classId) where.fromClassId = String(classId);
+
+    const records = await prisma.promotionRecord.findMany({
+      where,
+      orderBy: { decidedAt: 'desc' },
+    });
+
+    const pupilIds = [...new Set(records.map((record) => record.pupilId))];
+    const classIds = [...new Set(
+      records.flatMap((record) => [record.fromClassId, record.toClassId]).filter((id): id is string => typeof id === 'string')
+    )];
+
+    const [pupils, classes] = await Promise.all([
+      prisma.pupil.findMany({ where: { id: { in: pupilIds } } }),
+      prisma.class.findMany({ where: { id: { in: classIds } } }),
+    ]);
+
+    const pupilsById = Object.fromEntries(pupils.map((p) => [p.id, p]));
+    const classesById = Object.fromEntries(classes.map((c) => [c.id, c]));
+
+    res.json({
+      records: records.map((record) => ({
+        id: record.id,
+        pupilId: record.pupilId,
+        pupilName: `${pupilsById[record.pupilId]?.firstName || ''} ${pupilsById[record.pupilId]?.lastName || ''}`.trim(),
+        fromClassId: record.fromClassId,
+        fromClassName: classesById[record.fromClassId]?.name || null,
+        toClassId: record.toClassId,
+        toClassName: record.toClassId ? classesById[record.toClassId]?.name || null : null,
+        decision: record.decision,
+        rationale: record.rationale,
+        decidedBy: record.decidedBy,
+        decidedAt: record.decidedAt,
+      })),
+    });
+  } catch (error) {
+    console.error('Error fetching promotion history:', error);
+    res.status(500).json({ error: 'Failed to fetch promotion history' });
   }
 });
 
