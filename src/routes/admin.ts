@@ -8,7 +8,6 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendFeePaymentReceiptEmail, sendAnnouncementEmail, sendPlatformCommunicationEmail, sendSubscriptionPaymentSuccessEmail } from '../services/email.js';
 import { CommunicationService, RulesEngine, TemplateEngine, RecipientResolver, DeliveryQueue, DriverManager, EmailDriver, WhatsAppDriver } from '../communications/index.js';
-import whatsappSessionManager from '../communications/whatsapp.js';
 import baileysSessionManager from '../communications/whatsapp-baileys.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
 import requireActiveSubscription from '../middleware/subscriptionGuard.js';
@@ -3397,7 +3396,7 @@ router.get('/whatsapp/data', async (req: Request, res: Response) => {
       deliveries: [],
       successCount: 0,
       failureCount: 0,
-      session: whatsappSessionManager.getStatus(schoolId),
+      session: baileysSessionManager.getStatus(schoolId),
       queue: sharedDeliveryQueue.getQueueSummary(),
     });
   } catch (error) {
@@ -3412,7 +3411,7 @@ router.post('/whatsapp/connect', requireSubscription, async (req: Request, res: 
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
-    const status = await whatsappSessionManager.connect(schoolId);
+    const status = await baileysSessionManager.connect(schoolId);
     res.json({ success: true, session: status });
   } catch (error) {
     console.error('Error connecting whatsapp:', error);
@@ -3466,7 +3465,7 @@ router.post('/whatsapp/disconnect', requireSubscription, async (req: Request, re
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
-    const status = await whatsappSessionManager.disconnect(schoolId);
+    const status = await baileysSessionManager.disconnect(schoolId);
     res.json({ success: true, session: status });
   } catch (error) {
     console.error('Error disconnecting whatsapp:', error);
@@ -5599,7 +5598,7 @@ router.post('/attendance/notify', requireSubscription, async (req: Request, res:
         // Try WhatsApp if available
         if (guardian.whatsapp) {
           try {
-            const result = await whatsappSessionManager.sendTextMessage(schoolId, guardian.whatsapp, message);
+            const result = await baileysSessionManager.sendTextMessage(schoolId, guardian.whatsapp, message);
             if (result.success) {
               sentCount++;
             } else {
@@ -5695,7 +5694,7 @@ router.post('/whatsapp/send-message', requireSubscription, async (req: Request, 
       return res.status(400).json({ error: 'phoneNumber and message required' });
     }
 
-    const result = await whatsappSessionManager.sendTextMessage(schoolId, phoneNumber, message);
+    const result = await baileysSessionManager.sendTextMessage(schoolId, phoneNumber, message);
 
     res.json({
       success: result.success,

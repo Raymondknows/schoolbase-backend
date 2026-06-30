@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeWhatsappRecipient, sanitizeSchoolId } from '../whatsapp.js';
+import { normalizeWhatsappRecipient, sanitizeSchoolId } from '../whatsapp-utils.js';
 
 test('normalizeWhatsappRecipient converts numbers into the expected recipient format', () => {
   assert.equal(normalizeWhatsappRecipient('+2348123456789'), '2348123456789@c.us');

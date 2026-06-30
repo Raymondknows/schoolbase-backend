@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync } from 'fs';
-import { normalizeWhatsappRecipient, readWhatsAppSessionSnapshotFromDisk, resolveWhatsAppSessionDirectory, resolveWhatsAppStateFile, shouldClearWhatsAppSession, writeWhatsAppSessionSnapshotToDisk } from '../whatsapp.js';
+import { normalizeWhatsappRecipient, readWhatsAppSessionSnapshotFromDisk, resolveWhatsAppSessionDirectory, resolveWhatsAppStateFile, shouldClearWhatsAppSession, writeWhatsAppSessionSnapshotToDisk } from '../whatsapp-utils.js';
 
 test('builds a per-school session directory', () => {
   const directory = resolveWhatsAppSessionDirectory('school-123');
