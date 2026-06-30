@@ -1,0 +1,326 @@
+2026/06/30-13:35:33.157 bc1cb7 Reusing MANIFEST /Applications/SchoolBase/backend/.whatsapp-sessions/cmpnf2cqg0003ttzwus9htvbg/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/06/30-13:35:33.157 bc1cb7 Recovering log #252
+2026/06/30-13:35:33.213 bc1cb7 Reusing old log /Applications/SchoolBase/backend/.whatsapp-sessions/cmpnf2cqg0003ttzwus9htvbg/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/000252.log 
+2026/06/30-13:35:48.009 bc1cac Level-0 table #259: started
+2026/06/30-13:35:48.046 bc1cac Level-0 table #259: 1171567 bytes OK
+2026/06/30-13:35:48.060 bc1cac Delete type=0 #252
+2026/06/30-13:35:49.763 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:35:49.876 bc1cac Generated table #260@1: 39858 keys, 2198599 bytes
+2026/06/30-13:35:50.056 bc1cac Generated table #261@1: 57874 keys, 2220577 bytes
+2026/06/30-13:35:50.140 bc1cac Generated table #262@1: 24708 keys, 2183948 bytes
+2026/06/30-13:35:50.252 bc1cac Generated table #263@1: 25668 keys, 2205368 bytes
+2026/06/30-13:35:50.336 bc1cac Generated table #264@1: 55107 keys, 2200301 bytes
+2026/06/30-13:35:50.367 bc1cac Generated table #265@1: 22134 keys, 642943 bytes
+2026/06/30-13:35:50.367 bc1cac Compacted 1@1 + 6@2 files => 11651736 bytes
+2026/06/30-13:35:50.382 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:35:50.383 bc1cac Delete type=2 #249
+2026/06/30-13:35:50.383 bc1cac Delete type=2 #259
+2026/06/30-13:35:50.383 bc1cac Delete type=2 #255
+2026/06/30-13:35:50.383 bc1cac Delete type=2 #254
+2026/06/30-13:35:50.383 bc1cac Delete type=2 #256
+2026/06/30-13:35:50.383 bc1cac Delete type=2 #250
+2026/06/30-13:35:50.383 bc1cac Delete type=2 #251
+2026/06/30-13:35:50.586 bc1cac Level-0 table #267: started
+2026/06/30-13:35:50.627 bc1cac Level-0 table #267: 1228265 bytes OK
+2026/06/30-13:35:50.643 bc1cac Delete type=0 #258
+2026/06/30-13:35:50.648 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:35:50.731 bc1cac Generated table #268@1: 44631 keys, 2203231 bytes
+2026/06/30-13:35:50.837 bc1cac Generated table #269@1: 48825 keys, 2206726 bytes
+2026/06/30-13:35:50.929 bc1cac Generated table #270@1: 42257 keys, 2206964 bytes
+2026/06/30-13:35:51.000 bc1cac Generated table #271@1: 15407 keys, 2186216 bytes
+2026/06/30-13:35:51.125 bc1cac Generated table #272@1: 34896 keys, 2188786 bytes
+2026/06/30-13:35:51.403 bc1cac Generated table #273@1: 53334 keys, 1360824 bytes
+2026/06/30-13:35:51.403 bc1cac Compacted 1@1 + 6@2 files => 12352747 bytes
+2026/06/30-13:35:51.415 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:37:13.452 bc1cb7 Level-0 table #275: started
+2026/06/30-13:37:13.503 bc1cb7 Level-0 table #275: 1147339 bytes OK
+2026/06/30-13:37:13.520 bc1cb7 Delete type=2 #260
+2026/06/30-13:37:13.520 bc1cb7 Delete type=2 #261
+2026/06/30-13:37:13.521 bc1cb7 Delete type=2 #263
+2026/06/30-13:37:13.521 bc1cb7 Delete type=2 #262
+2026/06/30-13:37:13.521 bc1cb7 Delete type=2 #267
+2026/06/30-13:37:13.521 bc1cb7 Delete type=2 #265
+2026/06/30-13:37:13.521 bc1cb7 Delete type=2 #264
+2026/06/30-13:37:13.521 bc1cb7 Delete type=0 #266
+2026/06/30-13:37:13.544 bc1caa Compacting 1@1 + 6@2 files
+2026/06/30-13:37:13.663 bc1caa Generated table #276@1: 38699 keys, 2199837 bytes
+2026/06/30-13:37:13.821 bc1caa Generated table #277@1: 57525 keys, 2219800 bytes
+2026/06/30-13:37:14.039 bc1caa Generated table #278@1: 28615 keys, 2192137 bytes
+2026/06/30-13:37:14.190 bc1caa Generated table #279@1: 23057 keys, 2198411 bytes
+2026/06/30-13:37:14.280 bc1caa Generated table #280@1: 49186 keys, 2197150 bytes
+2026/06/30-13:37:14.372 bc1caa Generated table #281@1: 30955 keys, 840940 bytes
+2026/06/30-13:37:14.372 bc1caa Compacted 1@1 + 6@2 files => 11848275 bytes
+2026/06/30-13:37:14.387 bc1caa compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:37:14.389 bc1caa Delete type=2 #275
+2026/06/30-13:37:14.390 bc1caa Delete type=2 #272
+2026/06/30-13:37:14.390 bc1caa Delete type=2 #273
+2026/06/30-13:37:14.390 bc1caa Delete type=2 #271
+2026/06/30-13:37:14.391 bc1caa Delete type=2 #270
+2026/06/30-13:37:14.392 bc1caa Delete type=2 #269
+2026/06/30-13:37:14.392 bc1caa Delete type=2 #268
+2026/06/30-13:37:15.610 bc1cac Level-0 table #283: started
+2026/06/30-13:37:15.647 bc1cac Level-0 table #283: 1074049 bytes OK
+2026/06/30-13:37:15.659 bc1cac Delete type=0 #274
+2026/06/30-13:37:15.667 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:37:15.769 bc1cac Generated table #284@1: 39197 keys, 2200915 bytes
+2026/06/30-13:37:15.869 bc1cac Generated table #285@1: 56836 keys, 2219007 bytes
+2026/06/30-13:37:15.939 bc1cac Generated table #286@1: 30259 keys, 2192755 bytes
+2026/06/30-13:37:16.014 bc1cac Generated table #287@1: 22177 keys, 2196809 bytes
+2026/06/30-13:37:16.083 bc1cac Generated table #288@1: 46493 keys, 2197135 bytes
+2026/06/30-13:37:16.119 bc1cac Generated table #289@1: 34674 keys, 930127 bytes
+2026/06/30-13:37:16.119 bc1cac Compacted 1@1 + 6@2 files => 11936748 bytes
+2026/06/30-13:37:16.135 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:37:16.136 bc1cac Delete type=2 #277
+2026/06/30-13:37:16.136 bc1cac Delete type=2 #276
+2026/06/30-13:37:16.136 bc1cac Delete type=2 #283
+2026/06/30-13:37:16.136 bc1cac Delete type=2 #281
+2026/06/30-13:37:16.136 bc1cac Delete type=2 #280
+2026/06/30-13:37:16.136 bc1cac Delete type=2 #278
+2026/06/30-13:37:16.136 bc1cac Delete type=2 #279
+2026/06/30-13:37:39.244 bc1cac Level-0 table #291: started
+2026/06/30-13:37:39.289 bc1cac Level-0 table #291: 1081786 bytes OK
+2026/06/30-13:37:39.300 bc1cac Delete type=0 #282
+2026/06/30-13:37:39.309 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:37:39.417 bc1cac Generated table #292@1: 38758 keys, 2199871 bytes
+2026/06/30-13:37:39.522 bc1cac Generated table #293@1: 57168 keys, 2219664 bytes
+2026/06/30-13:37:39.734 bc1cac Generated table #294@1: 30154 keys, 2191983 bytes
+2026/06/30-13:37:39.867 bc1cac Generated table #295@1: 22197 keys, 2196986 bytes
+2026/06/30-13:37:39.936 bc1cac Generated table #296@1: 46405 keys, 2196519 bytes
+2026/06/30-13:37:39.979 bc1cac Generated table #297@1: 34961 keys, 938980 bytes
+2026/06/30-13:37:39.979 bc1cac Compacted 1@1 + 6@2 files => 11944003 bytes
+2026/06/30-13:37:39.990 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:37:39.991 bc1cac Delete type=2 #288
+2026/06/30-13:37:39.991 bc1cac Delete type=2 #289
+2026/06/30-13:37:39.991 bc1cac Delete type=2 #284
+2026/06/30-13:37:39.991 bc1cac Delete type=2 #291
+2026/06/30-13:37:39.991 bc1cac Delete type=2 #285
+2026/06/30-13:37:39.991 bc1cac Delete type=2 #287
+2026/06/30-13:37:39.991 bc1cac Delete type=2 #286
+2026/06/30-13:38:02.458 bc1cb7 Level-0 table #299: started
+2026/06/30-13:38:02.514 bc1cb7 Level-0 table #299: 1090632 bytes OK
+2026/06/30-13:38:02.525 bc1cb7 Delete type=0 #290
+2026/06/30-13:38:02.664 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:38:02.773 bc1cac Generated table #300@1: 38410 keys, 2200380 bytes
+2026/06/30-13:38:02.891 bc1cac Generated table #301@1: 57404 keys, 2219866 bytes
+2026/06/30-13:38:02.970 bc1cac Generated table #302@1: 30280 keys, 2193279 bytes
+2026/06/30-13:38:03.050 bc1cac Generated table #303@1: 22106 keys, 2195345 bytes
+2026/06/30-13:38:03.123 bc1cac Generated table #304@1: 45728 keys, 2195621 bytes
+2026/06/30-13:38:03.165 bc1cac Generated table #305@1: 35990 keys, 964599 bytes
+2026/06/30-13:38:03.165 bc1cac Compacted 1@1 + 6@2 files => 11969090 bytes
+2026/06/30-13:38:03.179 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:38:03.179 bc1cac Delete type=2 #299
+2026/06/30-13:38:03.179 bc1cac Delete type=2 #296
+2026/06/30-13:38:03.179 bc1cac Delete type=2 #297
+2026/06/30-13:38:03.180 bc1cac Delete type=2 #295
+2026/06/30-13:38:03.180 bc1cac Delete type=2 #294
+2026/06/30-13:38:03.180 bc1cac Delete type=2 #293
+2026/06/30-13:38:03.180 bc1cac Delete type=2 #292
+2026/06/30-13:38:27.792 bc1cb7 Level-0 table #307: started
+2026/06/30-13:38:27.856 bc1cb7 Level-0 table #307: 1154207 bytes OK
+2026/06/30-13:38:27.877 bc1cb7 Delete type=0 #298
+2026/06/30-13:38:27.903 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:38:28.048 bc1cac Generated table #308@1: 38592 keys, 2199525 bytes
+2026/06/30-13:38:28.243 bc1cac Generated table #309@1: 56383 keys, 2217630 bytes
+2026/06/30-13:38:28.338 bc1cac Generated table #310@1: 32917 keys, 2197088 bytes
+2026/06/30-13:38:28.437 bc1cac Generated table #311@1: 19619 keys, 2191355 bytes
+2026/06/30-13:38:28.529 bc1cac Generated table #312@1: 42612 keys, 2194027 bytes
+2026/06/30-13:38:28.598 bc1cac Generated table #313@1: 41949 keys, 1104621 bytes
+2026/06/30-13:38:28.598 bc1cac Compacted 1@1 + 6@2 files => 12104246 bytes
+2026/06/30-13:38:28.611 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:38:28.612 bc1cac Delete type=2 #300
+2026/06/30-13:38:28.612 bc1cac Delete type=2 #301
+2026/06/30-13:38:28.612 bc1cac Delete type=2 #303
+2026/06/30-13:38:28.612 bc1cac Delete type=2 #302
+2026/06/30-13:38:28.612 bc1cac Delete type=2 #307
+2026/06/30-13:38:28.612 bc1cac Delete type=2 #305
+2026/06/30-13:38:28.612 bc1cac Delete type=2 #304
+2026/06/30-13:38:53.082 bc1cb7 Level-0 table #315: started
+2026/06/30-13:38:53.129 bc1cb7 Level-0 table #315: 1101892 bytes OK
+2026/06/30-13:38:53.141 bc1cb7 Delete type=0 #306
+2026/06/30-13:38:53.185 bc1caa Compacting 1@1 + 6@2 files
+2026/06/30-13:38:53.349 bc1caa Generated table #316@1: 38217 keys, 2199083 bytes
+2026/06/30-13:38:53.494 bc1caa Generated table #317@1: 57452 keys, 2219070 bytes
+2026/06/30-13:38:53.600 bc1caa Generated table #318@1: 31490 keys, 2194647 bytes
+2026/06/30-13:38:53.697 bc1caa Generated table #319@1: 21159 keys, 2193881 bytes
+2026/06/30-13:38:53.794 bc1caa Generated table #320@1: 43676 keys, 2194480 bytes
+2026/06/30-13:38:53.844 bc1caa Generated table #321@1: 39531 keys, 1050502 bytes
+2026/06/30-13:38:53.845 bc1caa Compacted 1@1 + 6@2 files => 12051663 bytes
+2026/06/30-13:38:53.861 bc1caa compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:38:53.861 bc1caa Delete type=2 #315
+2026/06/30-13:38:53.861 bc1caa Delete type=2 #312
+2026/06/30-13:38:53.861 bc1caa Delete type=2 #313
+2026/06/30-13:38:53.861 bc1caa Delete type=2 #311
+2026/06/30-13:38:53.861 bc1caa Delete type=2 #310
+2026/06/30-13:38:53.861 bc1caa Delete type=2 #309
+2026/06/30-13:38:53.861 bc1caa Delete type=2 #308
+2026/06/30-13:39:16.141 bc1caa Level-0 table #323: started
+2026/06/30-13:39:16.473 bc1caa Level-0 table #323: 1065940 bytes OK
+2026/06/30-13:39:16.499 bc1caa Delete type=0 #314
+2026/06/30-13:39:17.023 bc1cb7 Compacting 1@1 + 5@2 files
+2026/06/30-13:39:17.156 bc1cb7 Generated table #324@1: 38201 keys, 2199266 bytes
+2026/06/30-13:39:17.366 bc1cb7 Generated table #325@1: 57601 keys, 2220076 bytes
+2026/06/30-13:39:17.524 bc1cb7 Generated table #326@1: 31931 keys, 2197418 bytes
+2026/06/30-13:39:17.784 bc1cb7 Generated table #327@1: 20759 keys, 2192388 bytes
+2026/06/30-13:39:18.083 bc1cb7 Generated table #328@1: 43058 keys, 2195621 bytes
+2026/06/30-13:39:18.094 bc1cb7 Generated table #329@1: 1052 keys, 25201 bytes
+2026/06/30-13:39:18.094 bc1cb7 Compacted 1@1 + 5@2 files => 11029970 bytes
+2026/06/30-13:39:18.115 bc1cb7 compacted to: files[ 0 0 7 0 0 0 0 ]
+2026/06/30-13:39:18.115 bc1cb7 Delete type=2 #317
+2026/06/30-13:39:18.115 bc1cb7 Delete type=2 #316
+2026/06/30-13:39:18.115 bc1cb7 Delete type=2 #320
+2026/06/30-13:39:18.115 bc1cb7 Delete type=2 #323
+2026/06/30-13:39:18.115 bc1cb7 Delete type=2 #318
+2026/06/30-13:39:18.116 bc1cb7 Delete type=2 #319
+2026/06/30-13:39:20.722 bc1cac Level-0 table #331: started
+2026/06/30-13:39:20.778 bc1cac Level-0 table #331: 1085934 bytes OK
+2026/06/30-13:39:20.851 bc1cac Delete type=0 #322
+2026/06/30-13:39:21.132 bc1cac Compacting 1@1 + 7@2 files
+2026/06/30-13:39:21.309 bc1cac Generated table #332@1: 38879 keys, 2200900 bytes
+2026/06/30-13:39:21.436 bc1cac Generated table #333@1: 54198 keys, 2213977 bytes
+2026/06/30-13:39:21.519 bc1cac Generated table #334@1: 37441 keys, 2201376 bytes
+2026/06/30-13:39:21.589 bc1cac Generated table #335@1: 15791 keys, 2186178 bytes
+2026/06/30-13:39:21.690 bc1cac Generated table #336@1: 38689 keys, 2191967 bytes
+2026/06/30-13:39:21.898 bc1cac Generated table #337@1: 50416 keys, 1306216 bytes
+2026/06/30-13:39:21.899 bc1cac Compacted 1@1 + 7@2 files => 12300614 bytes
+2026/06/30-13:39:21.921 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:39:21.928 bc1cac Delete type=2 #328
+2026/06/30-13:39:21.928 bc1cac Delete type=2 #329
+2026/06/30-13:39:21.928 bc1cac Delete type=2 #321
+2026/06/30-13:39:21.929 bc1cac Delete type=2 #327
+2026/06/30-13:39:21.929 bc1cac Delete type=2 #326
+2026/06/30-13:39:21.929 bc1cac Delete type=2 #324
+2026/06/30-13:39:21.929 bc1cac Delete type=2 #331
+2026/06/30-13:39:21.929 bc1cac Delete type=2 #325
+2026/06/30-13:39:47.971 bc1cac Level-0 table #339: started
+2026/06/30-13:39:48.015 bc1cac Level-0 table #339: 1192546 bytes OK
+2026/06/30-13:39:48.028 bc1cac Delete type=0 #330
+2026/06/30-13:39:48.030 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:39:48.214 bc1cac Generated table #340@1: 38520 keys, 2200565 bytes
+2026/06/30-13:39:48.397 bc1cac Generated table #341@1: 55632 keys, 2216989 bytes
+2026/06/30-13:39:48.508 bc1cac Generated table #342@1: 35738 keys, 2198843 bytes
+2026/06/30-13:39:48.580 bc1cac Generated table #343@1: 16003 keys, 2186699 bytes
+2026/06/30-13:39:48.651 bc1cac Generated table #344@1: 40444 keys, 2194602 bytes
+2026/06/30-13:39:48.710 bc1cac Generated table #345@1: 48602 keys, 1266338 bytes
+2026/06/30-13:39:48.710 bc1cac Compacted 1@1 + 6@2 files => 12264036 bytes
+2026/06/30-13:39:48.728 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:39:48.729 bc1cac Delete type=2 #339
+2026/06/30-13:39:48.729 bc1cac Delete type=2 #335
+2026/06/30-13:39:48.729 bc1cac Delete type=2 #334
+2026/06/30-13:39:48.729 bc1cac Delete type=2 #336
+2026/06/30-13:39:48.729 bc1cac Delete type=2 #337
+2026/06/30-13:39:48.729 bc1cac Delete type=2 #333
+2026/06/30-13:39:48.729 bc1cac Delete type=2 #332
+2026/06/30-13:40:15.320 bc1cac Level-0 table #347: started
+2026/06/30-13:40:15.472 bc1cac Level-0 table #347: 1219999 bytes OK
+2026/06/30-13:40:15.491 bc1cac Delete type=0 #338
+2026/06/30-13:40:15.748 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:40:15.969 bc1cac Generated table #348@1: 38495 keys, 2200209 bytes
+2026/06/30-13:40:16.913 bc1cac Generated table #349@1: 55349 keys, 2216102 bytes
+2026/06/30-13:40:17.442 bc1cac Generated table #350@1: 36630 keys, 2200756 bytes
+2026/06/30-13:40:17.791 bc1cac Generated table #351@1: 15878 keys, 2187259 bytes
+2026/06/30-13:40:18.187 bc1cac Generated table #352@1: 38961 keys, 2193967 bytes
+2026/06/30-13:40:18.557 bc1cac Generated table #353@1: 50542 keys, 1313309 bytes
+2026/06/30-13:40:18.558 bc1cac Compacted 1@1 + 6@2 files => 12311602 bytes
+2026/06/30-13:40:18.569 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:40:18.571 bc1cac Delete type=2 #342
+2026/06/30-13:40:18.571 bc1cac Delete type=2 #343
+2026/06/30-13:40:18.571 bc1cac Delete type=2 #341
+2026/06/30-13:40:18.571 bc1cac Delete type=2 #340
+2026/06/30-13:40:18.571 bc1cac Delete type=2 #344
+2026/06/30-13:40:18.571 bc1cac Delete type=2 #345
+2026/06/30-13:40:18.571 bc1cac Delete type=2 #347
+2026/06/30-13:40:41.772 bc1cac Level-0 table #355: started
+2026/06/30-13:40:41.873 bc1cac Level-0 table #355: 1197677 bytes OK
+2026/06/30-13:40:41.888 bc1cac Delete type=0 #346
+2026/06/30-13:40:41.902 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:40:42.006 bc1cac Generated table #356@1: 38439 keys, 2200734 bytes
+2026/06/30-13:40:42.157 bc1cac Generated table #357@1: 55054 keys, 2215887 bytes
+2026/06/30-13:40:42.309 bc1cac Generated table #358@1: 37475 keys, 2201167 bytes
+2026/06/30-13:40:42.579 bc1cac Generated table #359@1: 15727 keys, 2186348 bytes
+2026/06/30-13:40:42.688 bc1cac Generated table #360@1: 37233 keys, 2191477 bytes
+2026/06/30-13:40:42.758 bc1cac Generated table #361@1: 52709 keys, 1365939 bytes
+2026/06/30-13:40:42.758 bc1cac Compacted 1@1 + 6@2 files => 12361552 bytes
+2026/06/30-13:40:42.772 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:40:42.773 bc1cac Delete type=2 #348
+2026/06/30-13:40:42.776 bc1cac Delete type=2 #349
+2026/06/30-13:40:42.776 bc1cac Delete type=2 #355
+2026/06/30-13:40:42.776 bc1cac Delete type=2 #350
+2026/06/30-13:40:42.776 bc1cac Delete type=2 #351
+2026/06/30-13:40:42.776 bc1cac Delete type=2 #353
+2026/06/30-13:40:42.776 bc1cac Delete type=2 #352
+2026/06/30-13:41:06.006 bc1cac Level-0 table #363: started
+2026/06/30-13:41:06.055 bc1cac Level-0 table #363: 1089105 bytes OK
+2026/06/30-13:41:06.066 bc1cac Delete type=0 #354
+2026/06/30-13:41:06.092 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:41:06.215 bc1cac Generated table #364@1: 38033 keys, 2199409 bytes
+2026/06/30-13:41:06.409 bc1cac Generated table #365@1: 56858 keys, 2218981 bytes
+2026/06/30-13:41:06.570 bc1cac Generated table #366@1: 35203 keys, 2198262 bytes
+2026/06/30-13:41:06.667 bc1cac Generated table #367@1: 16088 keys, 2186194 bytes
+2026/06/30-13:41:06.758 bc1cac Generated table #368@1: 39984 keys, 2192868 bytes
+2026/06/30-13:41:06.855 bc1cac Generated table #369@1: 49661 keys, 1295698 bytes
+2026/06/30-13:41:06.855 bc1cac Compacted 1@1 + 6@2 files => 12291412 bytes
+2026/06/30-13:41:06.869 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:41:06.870 bc1cac Delete type=2 #363
+2026/06/30-13:41:06.870 bc1cac Delete type=2 #360
+2026/06/30-13:41:06.870 bc1cac Delete type=2 #361
+2026/06/30-13:41:06.870 bc1cac Delete type=2 #359
+2026/06/30-13:41:06.870 bc1cac Delete type=2 #358
+2026/06/30-13:41:06.870 bc1cac Delete type=2 #356
+2026/06/30-13:41:06.870 bc1cac Delete type=2 #357
+2026/06/30-13:41:30.973 bc1cac Level-0 table #371: started
+2026/06/30-13:41:31.020 bc1cac Level-0 table #371: 1167730 bytes OK
+2026/06/30-13:41:31.034 bc1cac Delete type=0 #362
+2026/06/30-13:41:31.277 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:41:31.418 bc1cac Generated table #372@1: 38515 keys, 2200240 bytes
+2026/06/30-13:41:31.606 bc1cac Generated table #373@1: 53838 keys, 2213403 bytes
+2026/06/30-13:41:31.747 bc1cac Generated table #374@1: 40096 keys, 2206210 bytes
+2026/06/30-13:41:31.809 bc1cac Generated table #375@1: 15447 keys, 2187749 bytes
+2026/06/30-13:41:31.887 bc1cac Generated table #376@1: 33309 keys, 2186684 bytes
+2026/06/30-13:41:31.952 bc1cac Generated table #377@1: 57379 keys, 1477273 bytes
+2026/06/30-13:41:31.952 bc1cac Compacted 1@1 + 6@2 files => 12471559 bytes
+2026/06/30-13:41:31.969 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:41:31.969 bc1cac Delete type=2 #371
+2026/06/30-13:41:31.970 bc1cac Delete type=2 #365
+2026/06/30-13:41:31.970 bc1cac Delete type=2 #364
+2026/06/30-13:41:31.970 bc1cac Delete type=2 #366
+2026/06/30-13:41:31.970 bc1cac Delete type=2 #367
+2026/06/30-13:41:31.970 bc1cac Delete type=2 #369
+2026/06/30-13:41:31.970 bc1cac Delete type=2 #368
+2026/06/30-13:41:54.577 bc1cac Level-0 table #379: started
+2026/06/30-13:41:54.625 bc1cac Level-0 table #379: 1087521 bytes OK
+2026/06/30-13:41:54.639 bc1cac Delete type=0 #370
+2026/06/30-13:41:54.714 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:41:54.820 bc1cac Generated table #380@1: 37967 keys, 2199169 bytes
+2026/06/30-13:41:54.926 bc1cac Generated table #381@1: 56350 keys, 2218220 bytes
+2026/06/30-13:41:55.018 bc1cac Generated table #382@1: 36846 keys, 2200692 bytes
+2026/06/30-13:41:55.091 bc1cac Generated table #383@1: 15785 keys, 2186705 bytes
+2026/06/30-13:41:55.183 bc1cac Generated table #384@1: 37201 keys, 2191046 bytes
+2026/06/30-13:41:55.241 bc1cac Generated table #385@1: 53188 keys, 1381232 bytes
+2026/06/30-13:41:55.241 bc1cac Compacted 1@1 + 6@2 files => 12377064 bytes
+2026/06/30-13:41:55.252 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:41:55.253 bc1cac Delete type=2 #377
+2026/06/30-13:41:55.253 bc1cac Delete type=2 #376
+2026/06/30-13:41:55.253 bc1cac Delete type=2 #374
+2026/06/30-13:41:55.253 bc1cac Delete type=2 #375
+2026/06/30-13:41:55.253 bc1cac Delete type=2 #372
+2026/06/30-13:41:55.253 bc1cac Delete type=2 #373
+2026/06/30-13:41:55.253 bc1cac Delete type=2 #379
+2026/06/30-13:43:13.148 bc1cac Level-0 table #387: started
+2026/06/30-13:43:13.212 bc1cac Level-0 table #387: 1129082 bytes OK
+2026/06/30-13:43:13.235 bc1cac Delete type=0 #378
+2026/06/30-13:43:28.971 bc1cac Compacting 1@1 + 6@2 files
+2026/06/30-13:43:29.094 bc1cac Generated table #388@1: 37980 keys, 2199500 bytes
+2026/06/30-13:43:29.216 bc1cac Generated table #389@1: 56391 keys, 2217997 bytes
+2026/06/30-13:43:29.311 bc1cac Generated table #390@1: 37025 keys, 2204371 bytes
+2026/06/30-13:43:29.387 bc1cac Generated table #391@1: 15723 keys, 2186784 bytes
+2026/06/30-13:43:29.475 bc1cac Generated table #392@1: 36451 keys, 2188785 bytes
+2026/06/30-13:43:29.542 bc1cac Generated table #393@1: 54016 keys, 1400840 bytes
+2026/06/30-13:43:29.543 bc1cac Compacted 1@1 + 6@2 files => 12398277 bytes
+2026/06/30-13:43:29.554 bc1cac compacted to: files[ 0 0 6 0 0 0 0 ]
+2026/06/30-13:43:29.555 bc1cac Delete type=2 #381
+2026/06/30-13:43:29.555 bc1cac Delete type=2 #380
+2026/06/30-13:43:29.556 bc1cac Delete type=2 #382
+2026/06/30-13:43:29.556 bc1cac Delete type=2 #383
+2026/06/30-13:43:29.556 bc1cac Delete type=2 #387
+2026/06/30-13:43:29.556 bc1cac Delete type=2 #384
+2026/06/30-13:43:29.556 bc1cac Delete type=2 #385

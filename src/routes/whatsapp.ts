@@ -11,7 +11,7 @@ router.post('/retry', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // In a real implementation, this would retry sending the message via WhatsApp Cloud API
+    // In a real implementation, this would retry sending the message via WhatsApp
     res.json({
       success: true,
       message: 'Message retry initiated',

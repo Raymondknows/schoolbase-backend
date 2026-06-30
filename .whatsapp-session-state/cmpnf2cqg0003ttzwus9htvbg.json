@@ -1,0 +1,18 @@
+{
+  "schoolId": "cmpnf2cqg0003ttzwus9htvbg",
+  "status": "error",
+  "statusMessage": "WhatsApp connected, but phone device sync failed. Reconnect the session.",
+  "debugEvents": [
+    "1:35:38 PM Waiting for QR scan to complete.",
+    "1:35:38 PM Connected successfully. Verifying phone device…",
+    "1:35:38 PM Phone device not properly synced. Device returned: 1. Waiting for sync…",
+    "1:35:42 PM Phone device not properly synced. Device returned: 1. Waiting for sync…",
+    "1:35:44 PM Phone device not properly synced. Device returned: 1. Waiting for sync…",
+    "1:35:45 PM WhatsApp status changed: inChat",
+    "1:35:47 PM Phone device not properly synced. Device returned: 1. Waiting for sync…",
+    "1:35:49 PM Phone device not properly synced. Device returned: 1. Waiting for sync…",
+    "1:35:51 PM Phone device not properly synced. Device returned: 1. Waiting for sync…",
+    "1:35:51 PM Phone device sync did not complete in time. Marking WhatsApp as error."
+  ],
+  "lastError": "Phone device did not sync in time. Reconnect to restore WhatsApp delivery."
+}

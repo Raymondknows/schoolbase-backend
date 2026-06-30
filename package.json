@@ -14,8 +14,14 @@
     "db:migrate": "prisma migrate dev"
   },
   "dependencies": {
+    "@adiwajshing/baileys": "^5.0.0",
+    "@adiwajshing/keyed-db": "^0.2.4",
     "@schoolbase/database": "file:../packages/database",
     "@types/archiver": "^8.0.0",
+    "@types/node-cache": "^4.2.5",
+    "@types/ws": "^8.18.1",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "@wppconnect-team/wppconnect": "^2.2.1",
     "archiver": "^8.0.0",
     "axios": "^1.6.2",
     "bcryptjs": "^2.4.3",
@@ -30,7 +36,8 @@
     "nodemailer": "^6.9.7",
     "pdf-lib": "^1.17.1",
     "puppeteer-core": "^23.11.1",
-    "sharp": "^0.32.6"
+    "sharp": "^0.32.6",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

@@ -6,13 +6,140 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendSubscriptionPaymentSuccessEmail } from '../services/email.js';
+import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendFeePaymentReceiptEmail, sendAnnouncementEmail, sendPlatformCommunicationEmail, sendSubscriptionPaymentSuccessEmail } from '../services/email.js';
+import { CommunicationService, RulesEngine, TemplateEngine, RecipientResolver, DeliveryQueue, DriverManager, EmailDriver, WhatsAppDriver } from '../communications/index.js';
+import whatsappSessionManager from '../communications/whatsapp.js';
+import baileysSessionManager from '../communications/whatsapp-baileys.js';
+import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
 import requireActiveSubscription from '../middleware/subscriptionGuard.js';
 import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
 import type { NextFunction } from 'express';
 
 const router = Router();
 const prisma = new PrismaClient();
+const communicationRulesRegistry = new CommunicationRulesRegistry(DEFAULT_COMMUNICATION_RULES);
+
+const sharedDriverManager = new DriverManager({
+  EMAIL: new EmailDriver(async ({ recipient, request }) => {
+    const metadata = { ...(request.metadata ?? {}), ...(request.data ?? {}) } as Record<string, unknown>;
+    const studentName = String(metadata.studentName ?? 'Student');
+    const className = String(metadata.className ?? 'Unknown Class');
+    const termName = String(metadata.termName ?? 'Current Term');
+    const amount = String(metadata.amount ?? '0.00');
+    const paidAmount = String(metadata.paidAmount ?? '0.00');
+    const outstanding = String(metadata.outstanding ?? '0.00');
+    const schoolName = String(metadata.schoolName ?? 'School');
+    const logoUrl = typeof metadata.logoUrl === 'string' ? metadata.logoUrl : undefined;
+
+    if (request.event === 'AdmissionCreated') {
+      await sendAdmissionNotificationEmail(
+        recipient.address,
+        recipient.name ?? 'Guardian',
+        studentName,
+        className,
+        String(metadata.admissionNo ?? 'N/A'),
+        schoolName,
+        logoUrl,
+      );
+    } else if (request.event === 'FeePaymentReceived') {
+      await sendFeePaymentReceiptEmail(
+        recipient.address,
+        recipient.name ?? 'Guardian',
+        studentName,
+        className,
+        amount,
+        paidAmount,
+        outstanding,
+        schoolName,
+        logoUrl,
+      );
+    } else if (request.event === 'AnnouncementCreated') {
+      await sendAnnouncementEmail(
+        recipient.address,
+        recipient.name ?? 'Guardian',
+        String(metadata.title ?? request.subject ?? 'School Announcement'),
+        String(metadata.message ?? request.body ?? ''),
+        schoolName,
+        logoUrl,
+      );
+    } else if (request.event === 'FeeInvoiceCreated') {
+      await sendPlatformCommunicationEmail(
+        recipient.address,
+        recipient.name ?? 'Guardian',
+        schoolName,
+        'Fee Invoice',
+        request.subject ?? 'Fee Invoice',
+        request.body ?? '',
+      );
+    } else if (request.event === 'AttendanceMarked') {
+      await sendAttendanceNotificationEmail(
+        recipient.address,
+        recipient.name ?? 'Guardian',
+        studentName,
+        className,
+        String(metadata.date ?? ''),
+        String(metadata.status ?? 'present') as 'present' | 'absent' | 'late',
+        schoolName,
+        String(metadata.customMessage ?? ''),
+        logoUrl,
+      );
+    } else {
+      await sendFeeReminderEmail(
+        recipient.address,
+        recipient.name ?? 'Guardian',
+        studentName,
+        className,
+        termName,
+        amount,
+        paidAmount,
+        outstanding,
+        schoolName,
+        logoUrl,
+      );
+    }
+
+    return {
+      channel: 'EMAIL',
+      recipient: recipient.address,
+      status: 'SENT',
+      provider: 'email-service',
+    } as const;
+  }),
+  WHATSAPP: new WhatsAppDriver(async ({ recipient, request, content }) => {
+    const schoolId = request.schoolId ?? '';
+    const result = await baileysSessionManager.sendTextMessage(schoolId, recipient.address, content.body) as { success: boolean; messageId?: string; error?: string };
+
+    if (!result.success) {
+      return {
+        channel: 'WHATSAPP',
+        recipient: recipient.address,
+        status: 'FAILED',
+        provider: 'baileys',
+        error: result.error,
+      } as const;
+    }
+
+    return {
+      channel: 'WHATSAPP',
+      recipient: recipient.address,
+      status: 'SENT',
+      provider: 'baileys',
+      messageId: result.messageId,
+    } as const;
+  }),
+});
+
+const sharedDeliveryQueue = new DeliveryQueue(sharedDriverManager.send.bind(sharedDriverManager));
+
+function createCommunicationService() {
+  return new CommunicationService({
+    rulesEngine: new RulesEngine(communicationRulesRegistry),
+    templateEngine: new TemplateEngine(),
+    recipientResolver: new RecipientResolver(),
+    deliveryQueue: sharedDeliveryQueue,
+    driverManager: sharedDriverManager,
+  });
+}
 
 // Setup multer for file uploads
 const uploadDir = path.join(process.cwd(), 'uploads', 'photos');
@@ -373,8 +500,6 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentBankName: true,
         paystackPublicEncrypted: true,
         paystackSecretEncrypted: true,
-        waCloudAccessTokenEncrypted: true,
-        waCloudPhoneNumberIdEncrypted: true,
       },
     });
 
@@ -403,8 +528,6 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentBankName: school.manualPaymentBankName,
         hasPaystackPublic: Boolean(school.paystackPublicEncrypted),
         hasPaystackSecret: Boolean(school.paystackSecretEncrypted),
-        hasWaCloudAccessToken: Boolean(school.waCloudAccessTokenEncrypted),
-        hasWaCloudPhoneNumberId: Boolean(school.waCloudPhoneNumberIdEncrypted),
       },
     });
   } catch (error) {
@@ -437,8 +560,6 @@ router.post('/settings', async (req: Request, res: Response) => {
       logoUrl,
       paystackPublic,
       paystackSecret,
-      waCloudAccessToken,
-      waCloudPhoneNumberId,
     } = req.body;
 
     const school = await prisma.school.update({
@@ -459,8 +580,6 @@ router.post('/settings', async (req: Request, res: Response) => {
         logoUrl,
         paystackPublicEncrypted: paystackPublic || null,
         paystackSecretEncrypted: paystackSecret || null,
-        waCloudAccessTokenEncrypted: waCloudAccessToken || null,
-        waCloudPhoneNumberIdEncrypted: waCloudPhoneNumberId || null,
       },
     });
 
@@ -535,8 +654,6 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         manualPaymentBankName: true,
         paystackPublicEncrypted: true,
         paystackSecretEncrypted: true,
-        waCloudAccessTokenEncrypted: true,
-        waCloudPhoneNumberIdEncrypted: true,
         enabledPhases: true,
       },
     });
@@ -577,8 +694,6 @@ router.get('/settings/data', async (req: Request, res: Response) => {
           null,
         hasPaystackPublic: Boolean(school.paystackPublicEncrypted),
         hasPaystackSecret: Boolean(school.paystackSecretEncrypted),
-        hasWaCloudAccessToken: Boolean(school.waCloudAccessTokenEncrypted),
-        hasWaCloudPhoneNumberId: Boolean(school.waCloudPhoneNumberIdEncrypted),
         enabledPhases: school.enabledPhases,
       },
       staff,
@@ -1167,6 +1282,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       select: { name: true, logoUrl: true },
     });
 
+    const communicationService = createCommunicationService();
     let createdCount = 0;
     let notificationsCount = 0;
     const errors: string[] = [];
@@ -1236,13 +1352,70 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
           for (const guardianPupil of pupil.guardians) {
             const guardian = guardianPupil.guardian;
             const message = `Dear ${guardian.firstName}, this is to inform you that an invoice for ${school?.name || 'School'} fees has been issued for ${pupilName} (${className}). Amount: NGN ${amount}. Please contact the school for payment details.`;
+            const whatsappAddress = guardian.whatsapp || guardian.phone;
 
-            // Create and send WhatsApp notification
-            if (guardian.whatsapp) {
+            const recipients = [
+              ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
+              ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
+            ];
+
+            if (recipients.length > 0) {
               try {
-                // TODO: Implement WhatsApp Cloud API call
-                console.log(`WhatsApp to ${guardian.whatsapp}: ${message}`);
-                
+                const dispatchResult = await communicationService.dispatch({
+                  event: 'FeeInvoiceCreated',
+                  schoolId,
+                  recipients,
+                  template: 'Invoice',
+                  body: message,
+                  subject: 'Fee Invoice Issued',
+                  data: {
+                    studentName: pupilName,
+                    className,
+                    amount,
+                    balance: amount,
+                    schoolName: school?.name || 'School',
+                    recipientName: guardian.firstName,
+                  },
+                  metadata: {
+                    studentName: pupilName,
+                    className,
+                    amount,
+                    balance: amount,
+                    schoolName: school?.name || 'School',
+                    termName: schedule.term?.name || 'Current Term',
+                    paidAmount: '0.00',
+                    outstanding: amount,
+                    logoUrl: school?.logoUrl ?? undefined,
+                    invoiceId: invoice.id,
+                    invoiceNo,
+                    guardianId: guardian.id,
+                  },
+                });
+
+                for (const delivery of dispatchResult.deliveries) {
+                  const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
+                  await prisma.notification.create({
+                    data: {
+                      schoolId,
+                      guardianId: guardian.id,
+                      type: 'ISSUE_BILLS',
+                      title: 'Fee Invoice Issued',
+                      body: truncateNotificationBody(message),
+                      channel: delivery.channel,
+                      status,
+                      sentAt: delivery.status === 'SENT' || delivery.status === 'QUEUED' ? new Date() : undefined,
+                      failureReason: delivery.error,
+                      relatedId: invoice.id,
+                      reference: invoiceNo,
+                    },
+                  });
+
+                  if (status !== 'FAILED') {
+                    notificationsCount++;
+                  }
+                }
+              } catch (err) {
+                errors.push(`Failed to dispatch communication for guardian ${guardian.id}`);
                 await prisma.notification.create({
                   data: {
                     schoolId,
@@ -1251,76 +1424,6 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
                     title: 'Fee Invoice Issued',
                     body: truncateNotificationBody(message),
                     channel: 'WHATSAPP',
-                    status: 'SENT',
-                    sentAt: new Date(),
-                    relatedId: invoice.id,
-                    reference: invoiceNo,
-                  },
-                });
-                notificationsCount++;
-              } catch (err) {
-                errors.push(`Failed to send WhatsApp to ${guardian.whatsapp}`);
-                // Still create notification record with FAILED status
-                await prisma.notification.create({
-                  data: {
-                    schoolId,
-                    guardianId: guardian.id,
-                    type: 'ISSUE_BILLS',
-                    title: 'Fee Invoice Issued',
-                    body: truncateNotificationBody(message),
-                    channel: 'WHATSAPP',
-                    status: 'FAILED',
-                    failureReason: err instanceof Error ? err.message : String(err),
-                    relatedId: invoice.id,
-                    reference: invoiceNo,
-                  },
-                });
-              }
-            }
-
-            // Create and send Email notification
-            if (guardian.email) {
-              try {
-                const termName = schedule.term?.name || 'Current Term';
-                await sendFeeReminderEmail(
-                  guardian.email,
-                  guardian.firstName,
-                  pupilName,
-                  className,
-                  termName,
-                  amount,
-                  '0.00',
-                  amount,
-                  school?.name || 'School',
-                  school?.logoUrl ?? undefined,
-                );
-
-                await prisma.notification.create({
-                  data: {
-                    schoolId,
-                    guardianId: guardian.id,
-                    type: 'ISSUE_BILLS',
-                    title: 'Fee Invoice Issued',
-                    body: truncateNotificationBody(message),
-                    channel: 'EMAIL',
-                    status: 'SENT',
-                    sentAt: new Date(),
-                    relatedId: invoice.id,
-                    reference: invoiceNo,
-                  },
-                });
-                notificationsCount++;
-              } catch (err) {
-                errors.push(`Failed to send email to ${guardian.email}`);
-                // Still create notification record with FAILED status
-                await prisma.notification.create({
-                  data: {
-                    schoolId,
-                    guardianId: guardian.id,
-                    type: 'ISSUE_BILLS',
-                    title: 'Fee Invoice Issued',
-                    body: truncateNotificationBody(message),
-                    channel: 'EMAIL',
                     status: 'FAILED',
                     failureReason: err instanceof Error ? err.message : String(err),
                     relatedId: invoice.id,
@@ -1379,11 +1482,11 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
       select: {
         name: true,
         logoUrl: true,
-        waCloudAccessTokenEncrypted: true,
-        waCloudPhoneNumberIdEncrypted: true,
         currency: true,
       },
     });
+
+    const communicationService = createCommunicationService();
 
     if (!school) {
       return res.status(404).json({ error: 'School not found' });
@@ -1409,8 +1512,8 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
         processedGuardians++;
         const guardian = guardianPupil.guardian;
         const message = `Dear ${guardian.firstName}, this is a reminder that fee payment of ${school.currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${school.currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
-
-        const canSendWhatsApp = Boolean(guardian.whatsapp && school.waCloudAccessTokenEncrypted);
+        const whatsappAddress = guardian.whatsapp || guardian.phone;
+        const canSendWhatsApp = Boolean(whatsappAddress);
         const canSendEmail = Boolean(guardian.email);
 
         if (!canSendWhatsApp && !canSendEmail) {
@@ -1418,81 +1521,68 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
           continue;
         }
 
-        // Send via WhatsApp if available
-        if (canSendWhatsApp) {
-          try {
-            // TODO: Decrypt token and send via WhatsApp
-            console.log(`WhatsApp reminder to ${guardian.whatsapp}: ${message}`);
-            
-            await prisma.notification.create({
-              data: {
-                schoolId,
-                guardianId: guardian.id,
-                type: 'SEND_REMINDER',
-                title: 'Fee Payment Reminder',
-                body: truncateNotificationBody(message),
-                channel: 'WHATSAPP',
-                status: 'SENT',
-                sentAt: new Date(),
-                relatedId: invoice.id,
-                reference: invoice.invoiceNo,
-              },
-            });
-            sentCount++;
-          } catch (err) {
-            errors.push(`Failed to send WhatsApp to ${guardian.whatsapp}`);
-            await prisma.notification.create({
-              data: {
-                schoolId,
-                guardianId: guardian.id,
-                type: 'SEND_REMINDER',
-                title: 'Fee Payment Reminder',
-                body: truncateNotificationBody(message),
-                channel: 'WHATSAPP',
-                status: 'FAILED',
-                failureReason: err instanceof Error ? err.message : String(err),
-                relatedId: invoice.id,
-                reference: invoice.invoiceNo,
-              },
-            });
-          }
-        }
+        const recipients = [
+          ...(canSendWhatsApp ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress!, name: guardian.firstName }] : []),
+          ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
+        ];
 
-        // Send via Email
-        if (guardian.email) {
+        if (recipients.length > 0) {
           try {
-            const termName = invoice.feeSchedule?.term?.name || 'Current Term';
-            const paidAmount = (invoice.amountPaid / 100).toFixed(2);
-            await sendFeeReminderEmail(
-              guardian.email,
-              guardian.firstName,
-              pupilName,
-              className,
-              termName,
-              amount,
-              paidAmount,
-              outstanding.toFixed(2),
-              school.name,
-              school.logoUrl ?? undefined,
-            );
-            
-            await prisma.notification.create({
+            const dispatchResult = await communicationService.dispatch({
+              event: 'FeeInvoiceCreated',
+              schoolId,
+              recipients,
+              template: 'FeeReminder',
+              body: message,
+              subject: 'Fee Payment Reminder',
               data: {
-                schoolId,
+                studentName: pupilName,
+                className,
+                amount,
+                balance: outstanding.toFixed(2),
+                schoolName: school.name,
+                recipientName: guardian.firstName,
+              },
+              metadata: {
+                studentName: pupilName,
+                className,
+                amount,
+                balance: outstanding.toFixed(2),
+                schoolName: school.name,
+                termName: invoice.feeSchedule?.term?.name || 'Current Term',
+                paidAmount: (invoice.amountPaid / 100).toFixed(2),
+                outstanding: outstanding.toFixed(2),
+                logoUrl: school.logoUrl ?? undefined,
+                invoiceId: invoice.id,
+                invoiceNo: invoice.invoiceNo,
                 guardianId: guardian.id,
-                type: 'SEND_REMINDER',
-                title: 'Fee Payment Reminder',
-                body: truncateNotificationBody(message),
-                channel: 'EMAIL',
-                status: 'SENT',
-                sentAt: new Date(),
-                relatedId: invoice.id,
-                reference: invoice.invoiceNo,
               },
             });
-            sentCount++;
+
+            for (const delivery of dispatchResult.deliveries) {
+              const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
+              await prisma.notification.create({
+                data: {
+                  schoolId,
+                  guardianId: guardian.id,
+                  type: 'SEND_REMINDER',
+                  title: 'Fee Payment Reminder',
+                  body: truncateNotificationBody(message),
+                  channel: delivery.channel,
+                  status,
+                  sentAt: delivery.status === 'SENT' || delivery.status === 'QUEUED' ? new Date() : undefined,
+                  failureReason: delivery.error,
+                  relatedId: invoice.id,
+                  reference: invoice.invoiceNo,
+                },
+              });
+
+              if (status !== 'FAILED') {
+                sentCount++;
+              }
+            }
           } catch (err) {
-            errors.push(`Failed to send email to ${guardian.email}`);
+            errors.push(`Failed to dispatch reminder communication for guardian ${guardian.id}`);
             await prisma.notification.create({
               data: {
                 schoolId,
@@ -1500,7 +1590,7 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
                 type: 'SEND_REMINDER',
                 title: 'Fee Payment Reminder',
                 body: truncateNotificationBody(message),
-                channel: 'EMAIL',
+                channel: 'WHATSAPP',
                 status: 'FAILED',
                 failureReason: err instanceof Error ? err.message : String(err),
                 relatedId: invoice.id,
@@ -1866,9 +1956,17 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
     // Fetch the invoice
     const invoice = await prisma.invoice.findFirst({
       where: { id: invoiceId, schoolId },
+      include: {
+        pupil: {
+          include: {
+            class: true,
+            guardians: { include: { guardian: true } },
+          },
+        },
+      },
     });
 
-    if (!invoice) {
+    if (!invoice || !invoice.pupil) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
@@ -1906,6 +2004,100 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
         status: newStatus,
       },
     });
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { name: true, currency: true, logoUrl: true },
+    });
+    const communicationService = createCommunicationService();
+    const guardians = invoice.pupil.guardians || [];
+    const pupilName = `${invoice.pupil.firstName} ${invoice.pupil.lastName}`;
+    const className = invoice.pupil.class?.name || 'Unknown Class';
+    const amountPaidFormatted = (amountInCents / 100).toFixed(2);
+    const newPaidAmountFormatted = (newAmountPaid / 100).toFixed(2);
+    const balanceAmount = Math.max(0, updatedInvoice.amountDue - updatedInvoice.amountPaid) / 100;
+    const balance = balanceAmount.toFixed(2);
+    const paymentMessage = `Dear guardian, we have received payment of ${school?.currency ?? 'NGN'} ${amountPaidFormatted} for ${pupilName} (${className}). Your updated balance is ${school?.currency ?? 'NGN'} ${balance}. Thank you.`;
+
+    for (const guardianPupil of guardians) {
+      const guardian = guardianPupil.guardian;
+      const whatsappAddress = guardian.whatsapp || guardian.phone;
+      const recipients = [
+        ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
+        ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
+      ];
+
+      if (recipients.length === 0) {
+        continue;
+      }
+
+      try {
+        const dispatchResult = await communicationService.dispatch({
+          event: 'FeePaymentReceived',
+          schoolId,
+          recipients,
+          template: 'Receipt',
+          subject: 'Payment Received',
+          body: paymentMessage,
+          data: {
+            studentName: pupilName,
+            className,
+            amount: amountPaidFormatted,
+            paidAmount: newPaidAmountFormatted,
+            balance,
+            schoolName: school?.name || 'SchoolBase',
+            recipientName: guardian.firstName,
+          },
+          metadata: {
+            studentName: pupilName,
+            className,
+            amount: amountPaidFormatted,
+            paidAmount: newPaidAmountFormatted,
+            outstanding: balance,
+            schoolName: school?.name || 'SchoolBase',
+            logoUrl: school?.logoUrl ?? undefined,
+            invoiceId: updatedInvoice.id,
+            paymentId: payment.id,
+            guardianId: guardian.id,
+          },
+        });
+
+        for (const delivery of dispatchResult.deliveries) {
+          const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
+          await prisma.notification.create({
+            data: {
+              schoolId,
+              guardianId: guardian.id,
+              type: 'RECEIPT',
+              title: 'Payment Receipt',
+              body: truncateNotificationBody(paymentMessage),
+              channel: delivery.channel,
+              status,
+              sentAt: delivery.status === 'SENT' || delivery.status === 'QUEUED' ? new Date() : undefined,
+              failureReason: delivery.error,
+              relatedId: updatedInvoice.id,
+              reference: String(payment.id),
+            },
+          });
+        }
+      } catch (dispatchError) {
+        console.warn('⚠️ Failed to dispatch payment receipt:', dispatchError);
+        await prisma.notification.create({
+          data: {
+            schoolId,
+            guardianId: guardian.id,
+            type: 'RECEIPT',
+            title: 'Payment Receipt',
+            body: truncateNotificationBody(paymentMessage),
+            channel: guardian.whatsapp ? 'WHATSAPP' : 'EMAIL',
+            status: 'FAILED',
+            failureReason: dispatchError instanceof Error ? dispatchError.message : String(dispatchError),
+            relatedId: updatedInvoice.id,
+            reference: String(payment.id),
+          },
+        });
+      }
+    }
 
     res.json({
       success: true,
@@ -2166,25 +2358,78 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
         },
       });
 
-      if (guardian.email) {
-        try {
-          const className = pupil.class?.name || 'your class';
-          const school = schoolId
-            ? await prisma.school.findUnique({ where: { id: schoolId }, select: { name: true, logoUrl: true } })
-            : null;
+      const whatsappAddress = guardian.whatsapp || guardian.phone;
+      const recipients = [
+        ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
+        ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
+      ];
 
-          await sendAdmissionNotificationEmail(
-            guardian.email,
-            `${guardian.firstName}`,
-            `${pupil.firstName} ${pupil.lastName}`,
-            className,
-            String(pupil.admissionNo || 'N/A'),
-            school?.name || 'SchoolBase',
-            school?.logoUrl ?? undefined,
-          );
-          console.log(`✅ Admission notification email sent to ${guardian.email}`);
-        } catch (emailError) {
-          console.warn('⚠️ Failed to send admission notification email:', emailError);
+      if (recipients.length > 0) {
+        const className = pupil.class?.name || 'your class';
+        const school = schoolId
+          ? await prisma.school.findUnique({ where: { id: schoolId }, select: { name: true, logoUrl: true } })
+          : null;
+        const communicationService = createCommunicationService();
+        const message = `Dear ${guardian.firstName}, ${pupil.firstName} ${pupil.lastName} has been successfully registered for ${className} at ${school?.name || 'your school'}. Admission Number: ${pupil.admissionNo || 'N/A'}. Please visit the parent portal for more details.`;
+
+        try {
+          const dispatchResult = await communicationService.dispatch({
+            event: 'AdmissionCreated',
+            schoolId,
+            recipients,
+            template: 'Admission',
+            subject: 'Student Admission Completed',
+            body: message,
+            data: {
+              studentName: `${pupil.firstName} ${pupil.lastName}`,
+              className,
+              admissionNo: String(pupil.admissionNo || 'N/A'),
+              schoolName: school?.name || 'SchoolBase',
+              recipientName: guardian.firstName,
+            },
+            metadata: {
+              studentName: `${pupil.firstName} ${pupil.lastName}`,
+              className,
+              admissionNo: String(pupil.admissionNo || 'N/A'),
+              schoolName: school?.name || 'SchoolBase',
+              logoUrl: school?.logoUrl ?? undefined,
+            },
+          });
+
+          for (const delivery of dispatchResult.deliveries) {
+            const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
+            await prisma.notification.create({
+              data: {
+                schoolId,
+                guardianId: guardian.id,
+                type: 'ADMISSION',
+                title: 'Admission Notification',
+                body: truncateNotificationBody(message),
+                channel: delivery.channel,
+                status,
+                sentAt: delivery.status === 'SENT' || delivery.status === 'QUEUED' ? new Date() : undefined,
+                failureReason: delivery.error,
+                relatedId: pupil.id,
+                reference: String(pupil.admissionNo || 'N/A'),
+              },
+            });
+          }
+        } catch (dispatchError) {
+          console.warn('⚠️ Failed to dispatch admission notification:', dispatchError);
+          await prisma.notification.create({
+            data: {
+              schoolId,
+              guardianId: guardian.id,
+              type: 'ADMISSION',
+              title: 'Admission Notification',
+              body: truncateNotificationBody(message),
+              channel: guardian.whatsapp ? 'WHATSAPP' : 'EMAIL',
+              status: 'FAILED',
+              failureReason: dispatchError instanceof Error ? dispatchError.message : String(dispatchError),
+              relatedId: pupil.id,
+              reference: String(pupil.admissionNo || 'N/A'),
+            },
+          });
         }
       }
     }
@@ -3107,21 +3352,223 @@ router.get('/analytics/data', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/admin/communications/rules - Get communication rules for the current school
+router.get('/communications/rules', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    res.json({
+      success: true,
+      rules: communicationRulesRegistry.getRules(schoolId),
+    });
+  } catch (error) {
+    console.error('Error fetching communication rules:', error);
+    res.status(500).json({ error: 'Failed to fetch communication rules' });
+  }
+});
+
+// PUT /api/admin/communications/rules - Update communication rules for the current school
+router.put('/communications/rules', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { event, enabled } = req.body as { event?: string; enabled?: boolean };
+    if (!event || typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'event and enabled are required' });
+    }
+
+    communicationRulesRegistry.setRuleEnabled(schoolId, event, enabled);
+    res.json({ success: true, rules: communicationRulesRegistry.getRules(schoolId) });
+  } catch (error) {
+    console.error('Error updating communication rules:', error);
+    res.status(500).json({ error: 'Failed to update communication rules' });
+  }
+});
+
 // GET /api/admin/whatsapp/data - Get WhatsApp delivery status
 router.get('/whatsapp/data', async (req: Request, res: Response) => {
   try {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
-    // Return empty deliveries for now (file reading removed for static export)
     res.json({
       deliveries: [],
       successCount: 0,
       failureCount: 0,
+      session: whatsappSessionManager.getStatus(schoolId),
+      queue: sharedDeliveryQueue.getQueueSummary(),
     });
   } catch (error) {
     console.error('Error fetching whatsapp data:', error);
     res.status(500).json({ error: 'Failed to fetch whatsapp data' });
+  }
+});
+
+// POST /api/admin/whatsapp/connect - Establish a WPPConnect session for the current school
+router.post('/whatsapp/connect', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const status = await whatsappSessionManager.connect(schoolId);
+    res.json({ success: true, session: status });
+  } catch (error) {
+    console.error('Error connecting whatsapp:', error);
+    res.status(500).json({ error: 'Failed to connect WhatsApp' });
+  }
+});
+
+// GET /api/admin/whatsapp/queue - Get pending WhatsApp delivery retry queue
+router.get('/whatsapp/queue', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    res.json({ success: true, queue: sharedDeliveryQueue.getQueueSummary() });
+  } catch (error) {
+    console.error('Error fetching whatsapp queue:', error);
+    res.status(500).json({ error: 'Failed to fetch WhatsApp queue' });
+  }
+});
+
+// POST /api/admin/whatsapp/retry - Retry a manual WhatsApp message or queued item
+router.post('/whatsapp/retry', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { phoneNumber, message, recipientName = 'Guardian' } = req.body;
+    if (!phoneNumber || !message) {
+      return res.status(400).json({ error: 'phoneNumber and message required' });
+    }
+
+    const communicationService = createCommunicationService();
+    const dispatchResult = await communicationService.dispatch({
+      event: 'WhatsAppRetry',
+      schoolId,
+      recipients: [{ channel: 'WHATSAPP', address: phoneNumber, name: recipientName }],
+      body: message,
+      data: { recipientName, schoolName: 'SchoolBase' },
+    });
+
+    res.json({
+      success: dispatchResult.success,
+      result: dispatchResult,
+    });
+  } catch (error) {
+    console.error('Error retrying WhatsApp message:', error);
+    res.status(500).json({ error: 'Failed to retry WhatsApp message' });
+  }
+});
+
+// POST /api/admin/whatsapp/disconnect - End the WPPConnect session for the current school
+router.post('/whatsapp/disconnect', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const status = await whatsappSessionManager.disconnect(schoolId);
+    res.json({ success: true, session: status });
+  } catch (error) {
+    console.error('Error disconnecting whatsapp:', error);
+    res.status(500).json({ error: 'Failed to disconnect WhatsApp' });
+  }
+});
+
+// GET /api/admin/whatsapp-baileys/status - Get Baileys WhatsApp session status for the current school
+router.get('/whatsapp-baileys/status', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    console.log('[Baileys Status] Getting status...');
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+    const status = baileysSessionManager.getStatus(schoolId);
+    console.log('[Baileys Status] Status retrieved for', schoolId, status);
+    res.json({ success: true, session: status });
+  } catch (error) {
+    console.error('Error fetching Baileys whatsapp status:', error);
+    res.status(500).json({ error: 'Failed to fetch Baileys WhatsApp status' });
+  }
+});
+
+// POST /api/admin/whatsapp-baileys/connect - Start a minimal Baileys session
+router.post('/whatsapp-baileys/connect', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const pairingPhoneNumber = typeof req.body?.phoneNumber === 'string' ? req.body.phoneNumber : undefined;
+    const usePairingCode = Boolean(req.body?.usePairingCode);
+    console.log('[Baileys Connect] Starting connection...', { pairingPhoneNumber, usePairingCode });
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+    const status = await baileysSessionManager.connect(schoolId, pairingPhoneNumber, usePairingCode);
+    console.log('[Baileys Connect] Connection status for', schoolId, status);
+    res.json({ success: true, session: status });
+  } catch (error) {
+    console.error('Error connecting Baileys whatsapp:', error);
+    res.status(500).json({ error: 'Failed to connect Baileys WhatsApp' });
+  }
+});
+
+// POST /api/admin/whatsapp-baileys/debug - Run a one-off Baileys diagnostic probe
+router.post('/whatsapp-baileys/debug', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const result = await baileysSessionManager.runDeepDebugProbe();
+    res.json({ success: true, result });
+  } catch (error) {
+    console.error('Error running Baileys debug probe:', error);
+    res.status(500).json({ error: 'Failed to run Baileys debug probe' });
+  }
+});
+
+// POST /api/admin/whatsapp-baileys/send-message - Send a test message using Baileys
+router.post('/whatsapp-baileys/send-message', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const { phoneNumber, phoneNumbers, message } = req.body;
+    const recipients = Array.isArray(phoneNumbers) ? phoneNumbers : phoneNumber ? [phoneNumber] : [];
+
+    if (!recipients.length || !message) {
+      return res.status(400).json({ error: 'phoneNumber(s) and message required' });
+    }
+
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    // Append school signature/details automatically for admin-sent test messages
+    let finalMessage = message;
+    try {
+      const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { name: true, phone: true, email: true } });
+      if (school) {
+        const parts = [] as string[];
+        if (school.name) parts.push(String(school.name));
+        if (school.phone) parts.push(String(school.phone));
+        if (school.email) parts.push(String(school.email));
+        if (parts.length > 0 && !String(message || '').includes(parts[0])) {
+          finalMessage = `${String(message || '')}\n\n— ${parts.join(' | ')}`;
+        }
+      }
+    } catch (e) {
+      console.warn('[Baileys Send] Failed to load school details for signature', e);
+    }
+
+    const result = await baileysSessionManager.sendTextMessages(schoolId, recipients, finalMessage);
+    if (!result.success) {
+      return res.status(400).json({ success: false, error: 'One or more recipients failed', results: result.results });
+    }
+
+    res.json({ success: true, results: result.results });
+  } catch (error) {
+    console.error('Error sending Baileys whatsapp message:', error);
+    res.status(500).json({ error: 'Failed to send Baileys WhatsApp message' });
+  }
+});
+
+// POST /api/admin/whatsapp-baileys/disconnect - Disconnect Baileys session
+router.post('/whatsapp-baileys/disconnect', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+    const status = await baileysSessionManager.disconnect(schoolId);
+    res.json({ success: true, session: status });
+  } catch (error) {
+    console.error('Error disconnecting Baileys whatsapp:', error);
+    res.status(500).json({ error: 'Failed to disconnect Baileys WhatsApp' });
   }
 });
 
@@ -4327,9 +4774,113 @@ router.post('/announcements', async (req: Request, res: Response) => {
       },
     });
 
+    let sentCount = 0;
+    const errors: string[] = [];
+
+    if (announcement.published) {
+      const guardians = await prisma.guardian.findMany({
+        where: {
+          pupils: { some: { pupil: { schoolId } } },
+        },
+        select: {
+          id: true,
+          firstName: true,
+          whatsapp: true,
+          phone: true,
+          email: true,
+        },
+        orderBy: { lastName: 'asc' },
+      });
+
+      const school = await prisma.school.findUnique({
+        where: { id: schoolId },
+        select: { name: true, logoUrl: true },
+      });
+      const communicationService = createCommunicationService();
+      const message = `Dear parent, a new school announcement has been published: ${title}. ${body}`;
+
+      for (const guardian of guardians) {
+        const whatsappAddress = guardian.whatsapp || guardian.phone;
+        const recipients = [
+          ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
+          ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
+        ];
+
+        if (recipients.length === 0) {
+          continue;
+        }
+
+        try {
+          const dispatchResult = await communicationService.dispatch({
+            event: 'AnnouncementCreated',
+            schoolId,
+            recipients,
+            template: 'Announcement',
+            subject: `School Announcement: ${title}`,
+            body: message,
+            data: {
+              title,
+              message: body,
+              schoolName: school?.name || 'SchoolBase',
+              recipientName: guardian.firstName,
+            },
+            metadata: {
+              title,
+              message: body,
+              schoolName: school?.name || 'SchoolBase',
+              logoUrl: school?.logoUrl ?? undefined,
+              announcementId: announcement.id,
+              guardianId: guardian.id,
+            },
+          });
+
+          for (const delivery of dispatchResult.deliveries) {
+            const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
+            await prisma.notification.create({
+              data: {
+                schoolId,
+                guardianId: guardian.id,
+                type: 'ANNOUNCEMENT',
+                title: `School Announcement: ${title}`,
+                body: truncateNotificationBody(message),
+                channel: delivery.channel,
+                status,
+                sentAt: delivery.status === 'SENT' || delivery.status === 'QUEUED' ? new Date() : undefined,
+                failureReason: delivery.error,
+                relatedId: announcement.id,
+                reference: String(announcement.id),
+              },
+            });
+
+            if (status !== 'FAILED') {
+              sentCount++;
+            }
+          }
+        } catch (err) {
+          errors.push(`Failed to dispatch announcement for guardian ${guardian.id}`);
+          await prisma.notification.create({
+            data: {
+              schoolId,
+              guardianId: guardian.id,
+              type: 'ANNOUNCEMENT',
+              title: `School Announcement: ${title}`,
+              body: truncateNotificationBody(message),
+              channel: whatsappAddress ? 'WHATSAPP' : 'EMAIL',
+              status: 'FAILED',
+              failureReason: err instanceof Error ? err.message : String(err),
+              relatedId: announcement.id,
+              reference: String(announcement.id),
+            },
+          });
+        }
+      }
+    }
+
     res.status(201).json({ 
       success: true, 
       announcement,
+      sentCount,
+      errors: errors.length > 0 ? errors : undefined,
       message: 'Announcement created successfully' 
     });
   } catch (error) {
@@ -5019,7 +5570,7 @@ router.post('/attendance/notify', requireSubscription, async (req: Request, res:
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
-      select: { name: true, logoUrl: true, waCloudAccessTokenEncrypted: true },
+      select: { name: true, logoUrl: true, currency: true },
     });
 
     let sentCount = 0;
@@ -5046,11 +5597,14 @@ router.post('/attendance/notify', requireSubscription, async (req: Request, res:
         const guardian = guardianPupil.guardian;
 
         // Try WhatsApp if available
-        if (guardian.whatsapp && school?.waCloudAccessTokenEncrypted) {
+        if (guardian.whatsapp) {
           try {
-            // TODO: Implement WhatsApp Cloud API call
-            console.log(`WhatsApp to ${guardian.whatsapp}: ${message}`);
-            sentCount++;
+            const result = await whatsappSessionManager.sendTextMessage(schoolId, guardian.whatsapp, message);
+            if (result.success) {
+              sentCount++;
+            } else {
+              errors.push(`WhatsApp failed for ${guardian.whatsapp}: ${result.error}`);
+            }
           } catch (err) {
             errors.push(`WhatsApp failed for ${guardian.whatsapp}`);
           }
@@ -5141,31 +5695,21 @@ router.post('/whatsapp/send-message', requireSubscription, async (req: Request, 
       return res.status(400).json({ error: 'phoneNumber and message required' });
     }
 
-    const school = await prisma.school.findUnique({
-      where: { id: schoolId },
-      select: {
-        name: true,
-        waCloudAccessTokenEncrypted: true,
-        waCloudPhoneNumberIdEncrypted: true,
-      },
-    });
-
-    if (!school?.waCloudAccessTokenEncrypted || !school?.waCloudPhoneNumberIdEncrypted) {
-      return res.status(400).json({ error: 'WhatsApp credentials not configured' });
-    }
-
-    // TODO: Decrypt credentials and send via WhatsApp Cloud API
-    // For now, log the message
-    console.log(`WhatsApp to ${phoneNumber}: ${message}`);
+    const result = await whatsappSessionManager.sendTextMessage(schoolId, phoneNumber, message);
 
     res.json({
-      success: true,
-      message: `Message queued for ${recipientName}`,
-      status: 'pending',
+      success: result.success,
+      message: result.success ? `Message sent to ${recipientName}` : `Message failed for ${recipientName}`,
+      status: result.success ? 'sent' : 'failed',
+      error: result.error,
     });
   } catch (error) {
     console.error('Error sending WhatsApp message:', error);
-    res.status(500).json({ error: 'Failed to send message' });
+    if (error instanceof Error) {
+      res.status(500).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: 'Failed to send message' });
+    }
   }
 });
 

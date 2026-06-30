@@ -14,8 +14,12 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-
-    "types": ["node"]
+    
+    "types": ["node"],
+    "baseUrl": "./",
+    "paths": {
+      "node-cache": ["src/types/node-cache"]
+    }
   },
   "include": ["src"],
   "exclude": ["node_modules"]

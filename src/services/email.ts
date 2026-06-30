@@ -596,6 +596,83 @@ export async function sendFeeReminderEmail(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TEMPLATE 5: FEE PAYMENT RECEIPT EMAIL
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function sendFeePaymentReceiptEmail(
+  email: string,
+  guardianName: string,
+  pupilName: string,
+  className: string,
+  amountPaid: string,
+  totalPaid: string,
+  balance: string,
+  schoolName: string,
+  schoolLogo?: string,
+) {
+  try {
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
+    const schoolLogoInline = await fetchInlineLogo(schoolLogo);
+    const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
+    const textBody = `School Fee Payment Receipt - ${schoolName}\n\nHello ${guardianName},\n\nWe have received a payment of ₦${amountPaid} for ${pupilName}.\n\nStudent: ${pupilName}\nClass: ${className}\nAmount Paid: ₦${amountPaid}\nTotal Paid: ₦${totalPaid}\nBalance: ₦${balance}\n\nThank you for your prompt payment. If you have questions, please contact the school office.`;
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: `Payment Receipt - ${schoolName}`,
+      text: textBody,
+      ...(attachments ? { attachments } : {}),
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>${EMAIL_STYLES}</style>
+          </head>
+          <body>
+            <div class="email-container">
+              <div class="header">
+                ${schoolLogoInline ? `<img src="${schoolLogoInline.src}" alt="${schoolName}" class="logo" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">` : `<img src="${DEFAULT_EMAIL_LOGO}" alt="SchoolBase Logo" class="logo" />`}
+                <h1>${schoolName}</h1>
+                <p class="header-subtitle">Payment Receipt</p>
+              </div>
+              <div class="content">
+                <p>Hello ${guardianName},</p>
+                <p>Thank you! We have received your payment for <strong>${pupilName}</strong>.</p>
+                <div class="info-box">
+                  <p><strong>Student:</strong> ${pupilName}</p>
+                  <p><strong>Class:</strong> ${className}</p>
+                  <p><strong>Amount Paid:</strong> ₦${amountPaid}</p>
+                  <p><strong>Total Paid:</strong> ₦${totalPaid}</p>
+                  <p><strong>Balance:</strong> ₦${balance}</p>
+                </div>
+                <p>If you have any questions about this payment, please contact the school office.</p>
+                <div class="button-container">
+                  <a href="https://schoolbase.live/parent/invoices" class="button">View Invoice Details</a>
+                </div>
+                <p>Best regards,<br><strong>${schoolName} Finance Team</strong></p>
+              </div>
+              <div class="footer">
+                <p class="footer-text">&copy; 2026 ${schoolName}. All rights reserved.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    console.log('Fee payment receipt email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('Failed to send fee payment receipt email:', error);
+    throw error;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TEMPLATE 5: TEACHER WELCOME EMAIL
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -791,6 +868,73 @@ export async function sendAttendanceNotificationEmail(
 // ═══════════════════════════════════════════════════════════════════════
 // TEMPLATE 7: STUDENT ADMISSION NOTIFICATION EMAIL
 // ═══════════════════════════════════════════════════════════════════════
+
+export async function sendAnnouncementEmail(
+  email: string,
+  guardianName: string,
+  announcementTitle: string,
+  announcementBody: string,
+  schoolName: string,
+  schoolLogo?: string,
+) {
+  try {
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
+    const schoolLogoInline = await fetchInlineLogo(schoolLogo);
+    const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
+
+    const textBody = `${announcementTitle}\n\nHello ${guardianName},\n\n${announcementBody}\n\nVisit the parent portal for more information and updates.\n\nBest regards,\n${schoolName} Administration`;
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: announcementTitle,
+      text: textBody,
+      ...(attachments ? { attachments } : {}),
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>${EMAIL_STYLES}</style>
+          </head>
+          <body>
+            <div class="email-container">
+              <div class="header">
+                ${schoolLogoInline ? `<img src="${schoolLogoInline.src}" alt="${schoolName}" class="logo" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">` : `<img src="${DEFAULT_EMAIL_LOGO}" alt="SchoolBase Logo" class="logo" />`}
+                <h1>${schoolName}</h1>
+                <p class="header-subtitle">School Announcement</p>
+              </div>
+              <div class="content">
+                <p>Hello ${guardianName},</p>
+                <p><strong>${announcementTitle}</strong></p>
+                <div class="info-box">
+                  <p>${announcementBody}</p>
+                </div>
+                <div class="button-container">
+                  <a href="https://schoolbase.live/parent/announcements" class="button">View Announcement</a>
+                </div>
+                <p>Best regards,<br><strong>${schoolName} Administration</strong></p>
+              </div>
+              <div class="footer">
+                <p class="footer-text">&copy; 2026 ${schoolName}. All rights reserved.</p>
+                <p class="footer-text"><a href="https://schoolbase.live">Visit SchoolBase</a></p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    console.log('Announcement email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('Failed to send announcement email:', error);
+    throw error;
+  }
+}
 
 export async function sendAdmissionNotificationEmail(
   email: string,

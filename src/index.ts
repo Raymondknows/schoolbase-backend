@@ -21,12 +21,20 @@ const allowedOrigins = [
   'http://localhost:3001',
   'http://127.0.0.1:3000',
   'http://127.0.0.1:3001',
+  'https://localhost:3000',
+  'https://localhost:3001',
+  'https://127.0.0.1:3000',
+  'https://127.0.0.1:3001',
   'https://schoolbase.live',
   'https://www.schoolbase.live',
   'https://*.vercel.app',
   'https://*.schoolbase.live',
   ...(process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',').map(url => url.trim()) : []),
 ];
+
+const isLocalhostOrigin = (origin: string) => {
+  return /^(https?:\/\/)(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+};
 
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
@@ -36,6 +44,9 @@ const corsOptions = {
     // Check exact matches
     if (allowedOrigins.includes(origin)) return callback(null, true);
     
+    // Allow localhost with any port
+    if (isLocalhostOrigin(origin)) return callback(null, true);
+
     // Check wildcard patterns
     if (origin.endsWith('.vercel.app')) return callback(null, true);
     if (origin.endsWith('.schoolbase.live')) return callback(null, true);
