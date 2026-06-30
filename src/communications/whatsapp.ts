@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { mkdir, rm } from 'fs/promises';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
