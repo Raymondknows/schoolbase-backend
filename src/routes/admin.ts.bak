@@ -194,12 +194,6 @@ function secret() {
   );
 }
 
-function normalizeField(value: any): string | null {
-  if (value === undefined || value === null) return null;
-  const normalized = String(value).trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
 async function resolveSchoolId(req: Request) {
   // Check query parameter first
   const schoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string);
@@ -711,15 +705,6 @@ router.get('/settings/data', async (req: Request, res: Response) => {
 
 // POST /api/admin/settings/upload - Upload school asset (signature, stamp, logo)
 router.post('/settings/upload', settingsUpload.single('file'), async (req: Request, res: Response) => {
-  console.log('[settings upload] contentType=', req.headers['content-type']);
-  console.log('[settings upload] body=', req.body);
-  console.log('[settings upload] file=', req.file ? {
-    originalname: req.file.originalname,
-    mimetype: req.file.mimetype,
-    size: req.file.size,
-    path: req.file.path,
-  } : null);
-
   try {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) {
@@ -2283,22 +2268,13 @@ router.get('/students/data', async (req: Request, res: Response) => {
 
 // POST /api/admin/students - Create new student with guardian
 router.post('/students', upload.single('photo'), async (req: Request, res: Response) => {
-  console.log('[create student] contentType=', req.headers['content-type']);
-  console.log('[create student] body=', req.body);
-  console.log('[create student] file=', req.file ? {
-    originalname: req.file.originalname,
-    mimetype: req.file.mimetype,
-    size: req.file.size,
-    path: req.file.path,
-  } : null);
-
   try {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
     const {
-      firstName: rawFirstName,
-      lastName: rawLastName,
+      firstName,
+      lastName,
       middleName,
       admissionNo,
       classId,
@@ -2314,8 +2290,8 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
       medicalNotes,
       previousSchool,
       previousClass,
-      guardianFirst: rawGuardianFirst,
-      guardianLast: rawGuardianLast,
+      guardianFirst,
+      guardianLast,
       guardianRelationship,
       guardianEmail,
       guardianPhone,
@@ -2323,39 +2299,10 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
       guardianOccupation,
     } = req.body;
 
-    const firstName = normalizeField(rawFirstName);
-    const lastName = normalizeField(rawLastName);
-    const guardianFirst = normalizeField(rawGuardianFirst);
-    const guardianLast = normalizeField(rawGuardianLast);
-    const normalizedStudentEmail = normalizeField(studentEmail);
-    const normalizedStudentPhone = normalizeField(studentPhone);
-    const normalizedAddress = normalizeField(address);
-    const normalizedBloodGroup = normalizeField(bloodGroup);
-    const normalizedGenotype = normalizeField(genotype);
-    const normalizedMedicalNotes = normalizeField(medicalNotes);
-    const normalizedPreviousSchool = normalizeField(previousSchool);
-    const normalizedPreviousClass = normalizeField(previousClass);
-    const normalizedGuardianEmail = normalizeField(guardianEmail);
-    const normalizedGuardianPhone = normalizeField(guardianPhone);
-    const normalizedGuardianAltPhone = normalizeField(guardianAltPhone);
-    const normalizedGuardianOccupation = normalizeField(guardianOccupation);
-
-    console.log('[create student] schoolId=%s, firstName=%s, lastName=%s, classId=%s, guardianFirst=%s, guardianLast=%s',
-      schoolId,
-      firstName,
-      lastName,
-      classId,
-      guardianFirst,
-      guardianLast,
-    );
-
     // Validate required fields
     if (!firstName || !lastName) {
       if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(400).json({
-        error: 'First name and last name are required',
-        details: { firstName, lastName, schoolId },
-      });
+      return res.status(400).json({ error: 'First name and last name are required' });
     }
 
     // Create pupil
@@ -2364,21 +2311,21 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
         schoolId,
         firstName,
         lastName,
-        middleName: normalizeField(middleName),
+        middleName: middleName || null,
         admissionNo,
         classId: classId || null,
         status: status || 'ACTIVE',
         admissionDate: admissionDate ? new Date(admissionDate) : new Date(),
-        gender: normalizeField(gender),
+        gender: gender || null,
         dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
-        studentEmail: normalizedStudentEmail,
-        studentPhone: normalizedStudentPhone,
-        address: normalizedAddress,
-        bloodGroup: normalizedBloodGroup,
-        genotype: normalizedGenotype,
-        medicalNotes: normalizedMedicalNotes,
-        previousSchool: normalizedPreviousSchool,
-        previousClass: normalizedPreviousClass,
+        studentEmail: studentEmail || null,
+        studentPhone: studentPhone || null,
+        address: address || null,
+        bloodGroup: bloodGroup || null,
+        genotype: genotype || null,
+        medicalNotes: medicalNotes || null,
+        previousSchool: previousSchool || null,
+        previousClass: previousClass || null,
         photoUrl: req.file ? `/uploads/photos/${req.file.filename}` : null,
       },
       include: {
@@ -2394,10 +2341,10 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
           schoolId,
           firstName: guardianFirst,
           lastName: guardianLast,
-          phone: normalizedGuardianPhone || '',
-          altPhone: normalizedGuardianAltPhone,
-          email: normalizedGuardianEmail,
-          occupation: normalizedGuardianOccupation,
+          phone: guardianPhone || '',
+          altPhone: guardianAltPhone || null,
+          email: guardianEmail || null,
+          occupation: guardianOccupation || null,
         },
       });
 
@@ -2551,15 +2498,6 @@ router.get('/students/:id', async (req: Request, res: Response) => {
 
 // PATCH /api/admin/students/:id - Update student data
 router.patch('/students/:id', upload.single('photo'), async (req: Request, res: Response) => {
-  console.log('[update student] contentType=', req.headers['content-type']);
-  console.log('[update student] body=', req.body);
-  console.log('[update student] file=', req.file ? {
-    originalname: req.file.originalname,
-    mimetype: req.file.mimetype,
-    size: req.file.size,
-    path: req.file.path,
-  } : null);
-
   try {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });

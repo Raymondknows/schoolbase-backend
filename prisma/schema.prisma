@@ -4,6 +4,7 @@ generator client {
 
 datasource db {
   provider = "mysql"
+  url      = env("DATABASE_URL")
 }
 
 model Partner {
@@ -1081,6 +1082,7 @@ enum EmailType {
   ONBOARDING_CHECKLIST
   PRODUCT_UPDATE
   PRICE_UPDATE
+  SUBSCRIPTION_THANK_YOU
   SUPPORT_UPDATE
   ONBOARDING_GUIDANCE
   BEST_PRACTICE_TIP

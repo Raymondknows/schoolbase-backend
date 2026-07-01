@@ -262,6 +262,7 @@ router.get('/email-logs', async (req: Request, res: Response) => {
       'ONBOARDING_CHECKLIST',
       'PRODUCT_UPDATE',
       'PRICE_UPDATE',
+      'SUBSCRIPTION_THANK_YOU',
       'SUPPORT_UPDATE',
       'ONBOARDING_GUIDANCE',
       'BEST_PRACTICE_TIP',
@@ -272,12 +273,13 @@ router.get('/email-logs', async (req: Request, res: Response) => {
 
     const where: any = {};
     if (emailType && emailType !== 'ALL') {
-      if (!validEmailTypes.includes(emailType)) {
+      const normalizedEmailType = emailType;
+      if (!validEmailTypes.includes(normalizedEmailType)) {
         return res.status(400).json({ 
           message: `Invalid email type: ${emailType}. Valid types are: ${validEmailTypes.join(', ')}`
         });
       }
-      where.emailType = emailType;
+      where.emailType = normalizedEmailType;
     }
 
     const [logs, total] = await Promise.all([
