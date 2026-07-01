@@ -168,7 +168,7 @@ class BaileysSchoolSession {
     this.debugLog = [];
     this.debugInfo = {};
     this.status = 'connecting';
-    this.statusMessage = 'Starting Baileys connection…';
+    this.statusMessage = 'Starting SchoolBase connection…';
     this.qr = undefined;
     this.pairingCode = undefined;
     this.pairingMethod = undefined;
@@ -269,8 +269,8 @@ class BaileysSchoolSession {
 
   private async doConnect(resetAuthState = true): Promise<void> {
     try {
-this.status = 'connecting';
-    this.statusMessage = 'Starting Baileys connection…';
+  this.status = 'connecting';
+    this.statusMessage = 'Starting SchoolBase connection…';
       this.qr = undefined;
       this.pairingCode = undefined;
       this.pairingMethod = undefined;
