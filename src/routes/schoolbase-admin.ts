@@ -42,6 +42,163 @@ const requirePlatformAdminSession = async (req: Request, res: Response): Promise
   }
 };
 
+// GET /schoolbase-admin/api/subscription-payments - Get platform subscription payment history
+router.get('/subscription-payments', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const limit = parseInt(req.query.limit as string) || 100;
+    const page = parseInt(req.query.page as string) || 1;
+    const skip = (page - 1) * limit;
+
+    const payments = await prisma.platformPayment.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        amount: true,
+        method: true,
+        reference: true,
+        createdAt: true,
+        recordedBy: true,
+        note: true,
+      },
+    });
+
+    const parseNote = (note: string | null) => {
+      if (!note) return null;
+      try {
+        return JSON.parse(note);
+      } catch {
+        return null;
+      }
+    };
+
+    const getSchoolNameFromNote = (noteText: string | null) => {
+      if (!noteText) return null;
+      const schoolNameMatch = noteText.match(/for\s+(.+?)\s*\(/i) || noteText.match(/for\s+(.+?)\s*—/i);
+      if (schoolNameMatch?.[1]) {
+        return schoolNameMatch[1].trim();
+      }
+      return null;
+    };
+
+    const paymentRecords = payments
+      .map((payment: any) => {
+        const parsedNote = parseNote(payment.note);
+        const noteStatus = parsedNote?.paymentStatus?.toUpperCase() || parsedNote?.status?.toUpperCase();
+        const noteText = typeof payment.note === 'string' ? payment.note : null;
+        const reference = (payment.reference || '').toUpperCase();
+        const isTrialLike =
+          reference.startsWith('TRIAL-') ||
+          /\btrial\b/i.test(noteText || '') ||
+          payment.amount === 0 ||
+          payment.method === 'OTHER';
+        const hasSuccessfulStatus = noteStatus ? ['COMPLETED', 'SUCCESSFUL', 'SUCCESS', 'PAID', 'ACTIVE'].includes(noteStatus) : false;
+        const isPaystackCheckoutEntry =
+          parsedNote?.source === 'paystack-init' ||
+          parsedNote?.source === 'paystack-verify' ||
+          (payment.amount > 0 && payment.method === 'CARD' && Boolean(payment.reference));
+        const isRelevantSubscriptionPayment = !isTrialLike && (hasSuccessfulStatus || isPaystackCheckoutEntry);
+
+        return {
+          payment,
+          parsedNote,
+          noteStatus,
+          noteText,
+          isRelevantSubscriptionPayment,
+        };
+      })
+      .filter((entry) => entry.isRelevantSubscriptionPayment);
+
+    const schoolIds = [...new Set(paymentRecords.flatMap((entry) => {
+      const ids = [] as string[];
+      if (entry.payment.recordedBy) ids.push(entry.payment.recordedBy);
+      if (entry.parsedNote?.schoolId) ids.push(entry.parsedNote.schoolId);
+      return ids;
+    }).filter(Boolean))];
+
+    const schools = schoolIds.length > 0
+      ? await prisma.school.findMany({
+          where: { id: { in: schoolIds } },
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            email: true,
+            country: true,
+            plan: true,
+            status: true,
+          },
+        })
+      : [];
+
+    const schoolMap = new Map(schools.map((school: any) => [school.id, school]));
+
+    const formattedPayments = await Promise.all(paymentRecords.map(async (entry) => {
+      const { payment, parsedNote, noteStatus, noteText } = entry;
+      let school = schoolMap.get(payment.recordedBy) || (parsedNote?.schoolId ? schoolMap.get(parsedNote.schoolId) : null);
+
+      if (!school) {
+        const schoolName = getSchoolNameFromNote(noteText);
+        if (schoolName) {
+          const schoolMatch = await prisma.school.findFirst({
+            where: {
+              OR: [
+                { name: { equals: schoolName } },
+                { slug: { equals: schoolName } },
+              ],
+            },
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              email: true,
+              country: true,
+              plan: true,
+              status: true,
+            },
+          });
+          school = schoolMatch || null;
+        }
+      }
+
+      return {
+        id: payment.id,
+        amount: payment.amount,
+        method: payment.method,
+        reference: payment.reference,
+        createdAt: payment.createdAt,
+        schoolId: payment.recordedBy || parsedNote?.schoolId || null,
+        schoolName: school?.name || parsedNote?.schoolName || getSchoolNameFromNote(noteText) || 'Unknown school',
+        schoolSlug: school?.slug || parsedNote?.schoolSlug || null,
+        schoolEmail: school?.email || parsedNote?.schoolEmail || null,
+        schoolCountry: school?.country || parsedNote?.schoolCountry || null,
+        plan: school?.plan || parsedNote?.plan || null,
+        status: school?.status || parsedNote?.status || null,
+        paymentStatus: noteStatus || 'COMPLETED',
+      };
+    }));
+
+    const total = formattedPayments.length;
+    const startIndex = (page - 1) * limit;
+    const paginatedPayments = formattedPayments.slice(startIndex, startIndex + limit);
+
+    res.json({
+      payments: formattedPayments,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching subscription payments:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to fetch subscription payments' });
+  }
+});
+
 // GET /schoolbase-admin/api/stats - Get platform dashboard statistics
 router.get('/stats', async (req: Request, res: Response) => {
   try {

@@ -23,8 +23,16 @@ router.post('/init', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing required fields: email and amountMinor/amount' });
     }
 
-    // Build metadata for Paystack
+    const reference = `TXN-${Date.now()}-${crypto.randomUUID()}`;
+
+    // Build metadata for Paystack while preserving the original values for verification.
     const paystackMetadata = {
+      plan: metadata?.plan || '',
+      schoolName: metadata?.schoolName || '',
+      schoolSlug: metadata?.schoolSlug || metadata?.slug || '',
+      name: metadata?.name || '',
+      phone: metadata?.phone || '',
+      amountMinor: normalizedAmount * 100,
       custom_fields: [
         { display_name: 'Plan', variable_name: 'plan', value: metadata?.plan || '' },
         { display_name: 'School Name', variable_name: 'school_name', value: metadata?.schoolName || '' },
@@ -33,13 +41,47 @@ router.post('/init', async (req: Request, res: Response) => {
       ],
     };
 
+    const school = metadata?.schoolSlug || metadata?.slug || metadata?.schoolName
+      ? await prisma.school.findFirst({
+          where: metadata?.schoolSlug || metadata?.slug
+            ? { slug: String(metadata.schoolSlug || metadata.slug) }
+            : { name: String(metadata.schoolName) },
+          select: { id: true, name: true, slug: true },
+        })
+      : null;
+
+    const existingPlatformPayment = await prisma.platformPayment.findFirst({
+      where: { reference },
+      select: { id: true },
+    });
+
+    if (!existingPlatformPayment) {
+      await prisma.platformPayment.create({
+        data: {
+          amount: Math.round(normalizedAmount * 100),
+          method: 'CARD',
+          reference,
+          recordedBy: school?.id || null,
+          note: JSON.stringify({
+            schoolId: school?.id || null,
+            schoolName: school?.name || metadata?.schoolName || '',
+            schoolSlug: school?.slug || metadata?.schoolSlug || metadata?.slug || '',
+            plan: metadata?.plan || '',
+            status: 'PENDING',
+            paymentStatus: 'PENDING',
+            source: 'paystack-init',
+          }),
+        },
+      });
+    }
+
     // Initialize transaction with Paystack
     const response = await axios.post(
       `${PAYSTACK_BASE_URL}/transaction/initialize`,
       {
         email,
         amount: Math.round(normalizedAmount * 100), // Convert to kobo (smallest unit)
-        reference: `TXN-${Date.now()}-${crypto.randomUUID()}`,
+        reference,
         metadata: paystackMetadata,
         callback_url,
       },
@@ -138,6 +180,49 @@ router.post('/verify-subscription', async (req: Request, res: Response) => {
         subscriptionExpiresAt: true,
       },
     });
+
+    const existingPlatformPayment = await prisma.platformPayment.findFirst({
+      where: { reference: transaction.reference },
+      select: { id: true, note: true },
+    });
+
+    if (existingPlatformPayment) {
+      await prisma.platformPayment.update({
+        where: { id: existingPlatformPayment.id },
+        data: {
+          amount: amountMinor,
+          method: 'CARD',
+          recordedBy: school.id,
+          note: JSON.stringify({
+            schoolId: school.id,
+            schoolName: updatedSchool.name,
+            schoolSlug: updatedSchool.slug,
+            plan: nextPlan,
+            status: 'ACTIVE',
+            paymentStatus: 'COMPLETED',
+            source: 'paystack-verify',
+          }),
+        },
+      });
+    } else {
+      await prisma.platformPayment.create({
+        data: {
+          amount: amountMinor,
+          method: 'CARD',
+          reference: transaction.reference,
+          recordedBy: school.id,
+          note: JSON.stringify({
+            schoolId: school.id,
+            schoolName: updatedSchool.name,
+            schoolSlug: updatedSchool.slug,
+            plan: nextPlan,
+            status: 'ACTIVE',
+            paymentStatus: 'COMPLETED',
+            source: 'paystack-verify',
+          }),
+        },
+      });
+    }
 
     // Send payment success email
     try {
