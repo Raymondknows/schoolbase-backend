@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { jwtVerify } from 'jose';
+import { jwtVerify, SignJWT } from 'jose';
 import axios from 'axios';
 import { sendSetupReminderEmail } from '../services/email.js';
+import { getPlatformSettings, serializePlatformSettingValue, parsePlatformSettingValue, platformSettingDefaults } from '../services/platform-settings.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -201,6 +202,9 @@ router.get('/subscription-payments', async (req: Request, res: Response) => {
 
 // GET /schoolbase-admin/api/stats - Get platform dashboard statistics
 router.get('/stats', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const [totalSchools, activeSchools, totalUsers, supportRequests, trialSchools] = await Promise.all([
       prisma.school.count(),
@@ -226,6 +230,9 @@ router.get('/stats', async (req: Request, res: Response) => {
 
 // GET /schoolbase-admin/api/profile - Get current platform admin profile
 router.get('/profile', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     // Get the platform admin user (there should be one with role PLATFORM_ADMIN and no schoolId)
     const admin = await prisma.user.findFirst({
@@ -255,6 +262,9 @@ router.get('/profile', async (req: Request, res: Response) => {
 
 // PATCH /schoolbase-admin/api/profile - Update current platform admin profile
 router.patch('/profile', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const { name, email } = req.body;
 
@@ -297,17 +307,120 @@ router.patch('/profile', async (req: Request, res: Response) => {
   }
 });
 
-// GET /schoolbase-admin/api/schools - Get all schools with pagination
+// GET /schoolbase-admin/api/settings - Get platform settings
+router.get('/settings', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const settings = await getPlatformSettings(prisma);
+    res.json({
+      settings,
+      defaults: platformSettingDefaults,
+    });
+  } catch (error) {
+    console.error('Error fetching platform settings:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to fetch settings' });
+  }
+});
+
+// PATCH /schoolbase-admin/api/settings - Update platform settings
+router.patch('/settings', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const { settings } = req.body ?? {};
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      return res.status(400).json({ message: 'A settings object is required.' });
+    }
+
+    const entries = Object.entries(settings as Record<string, unknown>);
+    await prisma.$transaction(
+      entries.map(([key, value]) =>
+        prisma.platformSetting.upsert({
+          where: { key },
+          create: { key, value: serializePlatformSettingValue(value) },
+          update: { value: serializePlatformSettingValue(value) },
+        })
+      )
+    );
+
+    await prisma.platformAuditLog.create({
+      data: {
+        userId: session,
+        event: 'PLATFORM_SETTINGS_UPDATED',
+        details: `Updated settings: ${entries.map(([key]) => key).join(', ')}`,
+      },
+    });
+
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('Error updating platform settings:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to update settings' });
+  }
+});
+
+// GET /schoolbase-admin/api/audit-logs - Get recent platform activity
+router.get('/audit-logs', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const logs = await prisma.platformAuditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      select: {
+        id: true,
+        event: true,
+        details: true,
+        createdAt: true,
+        user: {
+          select: {
+            name: true,
+            email: true,
+          },
+        },
+        school: {
+          select: {
+            name: true,
+          },
+        },
+      },
+    });
+
+    res.json({ logs });
+  } catch (error) {
+    console.error('Error fetching audit logs:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to fetch activity' });
+  }
+});
+
+// GET /schoolbase-admin/api/schools - Get all schools with pagination and optional filtering
 router.get('/schools', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
     const status = req.query.status as string;
+    const search = (req.query.search as string) || '';
     const skip = (page - 1) * limit;
 
     const where: any = {};
     if (status && ['ACTIVE', 'SUSPENDED', 'TRIAL', 'CANCELLED'].includes(status)) {
       where.status = status;
+    }
+
+    if (search.trim()) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } },
+        { phone: { contains: search, mode: 'insensitive' } },
+        { country: { contains: search, mode: 'insensitive' } },
+        { plan: { contains: search, mode: 'insensitive' } },
+      ];
     }
 
     const [schools, total] = await Promise.all([
@@ -395,8 +508,53 @@ router.get('/schools', async (req: Request, res: Response) => {
   }
 });
 
+// GET /schoolbase-admin/api/schools/:schoolId - Get single school detail
+router.get('/schools/:schoolId', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const { schoolId } = req.params;
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        logoUrl: true,
+        country: true,
+        email: true,
+        phone: true,
+        tagline: true,
+        address: true,
+        plan: true,
+        status: true,
+        trialEndsAt: true,
+        createdAt: true,
+        principalName: true,
+        principalComment: true,
+        stampUrl: true,
+        principalSignatureUrl: true,
+      },
+    });
+
+    if (!school) {
+      return res.status(404).json({ message: 'School not found.' });
+    }
+
+    res.json(school);
+  } catch (error) {
+    console.error('Error fetching school detail:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to fetch school detail' });
+  }
+});
+
 // GET /schoolbase-admin/api/email-logs - Get email logs with filtering
 router.get('/email-logs', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const emailType = req.query.emailType as string;
     const limit = parseInt(req.query.limit as string) || 50;
@@ -481,6 +639,9 @@ router.get('/email-logs', async (req: Request, res: Response) => {
 
 // POST /schoolbase-admin/api/reminders/send-bulk - Send setup reminders to all incomplete schools
 router.post('/reminders/send-bulk', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     console.log('📧 Sending bulk setup completion reminders...');
     
@@ -586,6 +747,9 @@ router.post('/reminders/send-bulk', async (req: Request, res: Response) => {
 
 // POST /schoolbase-admin/api/reminders/send-single - Send setup reminder to specific school
 router.post('/reminders/send-single', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const { schoolId } = req.body;
 
@@ -807,13 +971,15 @@ router.post('/impersonate', async (req: Request, res: Response) => {
     }
 
     // Create impersonation token (valid for 1 hour)
-    const impersonationToken = Buffer.from(
-      JSON.stringify({
-        schoolId,
-        adminId: 'platform-admin',
-        expiresAt: Date.now() + 60 * 60 * 1000,
-      })
-    ).toString('base64');
+    const impersonationToken = await new SignJWT({
+      schoolId,
+      adminId: session,
+      purpose: 'IMPERSONATION',
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime('1h')
+      .sign(secret());
 
     // Record audit log
     try {
@@ -822,6 +988,7 @@ router.post('/impersonate', async (req: Request, res: Response) => {
           action: 'IMPERSONATE',
           details: `Impersonated school ${school.name}`,
           schoolId,
+          userId: session,
         },
       });
     } catch (err) {
@@ -839,8 +1006,51 @@ router.post('/impersonate', async (req: Request, res: Response) => {
   }
 });
 
+// POST /schoolbase-admin/api/impersonate/exchange - Exchange impersonation token for a school session token
+router.post('/impersonate/exchange', async (req: Request, res: Response) => {
+  try {
+    const { token } = req.body as { token: string };
+    if (!token) {
+      return res.status(400).json({ message: 'Impersonation token is required.' });
+    }
+
+    const { payload } = await jwtVerify(token, secret());
+    const schoolId = (payload as any).schoolId;
+    const purpose = (payload as any).purpose;
+    const adminId = (payload as any).adminId ?? 'platform-admin';
+
+    if (!schoolId || purpose !== 'IMPERSONATION') {
+      return res.status(400).json({ message: 'Invalid impersonation token.' });
+    }
+
+    const sessionToken = await new SignJWT({
+      userId: adminId,
+      role: 'SCHOOL_ADMIN',
+      email: `impersonation@schoolbase.local`,
+      name: 'Platform Admin Impersonator',
+      schoolId,
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime('7d')
+      .sign(secret());
+
+    res.json({
+      message: 'Impersonation session created.',
+      token: sessionToken,
+      schoolId,
+    });
+  } catch (error) {
+    console.error('Impersonation exchange error:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to exchange impersonation token.' });
+  }
+});
+
 // GET /schoolbase-admin/api/support - Get all support requests from all schools
 router.get('/support', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const supportRequests = await prisma.supportRequest.findMany({
       orderBy: { createdAt: 'desc' },
@@ -906,6 +1116,9 @@ router.get('/support', async (req: Request, res: Response) => {
 
 // PATCH /schoolbase-admin/api/support/reply - Send support replies
 router.patch('/support/reply', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const { requestId, response: responseText, status } = req.body as {
       requestId: string;
@@ -1009,6 +1222,9 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
 
 // GET /schoolbase-admin/api/videos - Get all video tutorials
 router.get('/videos', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const videos = await prisma.videoTutorial.findMany({
       orderBy: [{ featured: 'desc' }, { createdAt: 'desc' }],
@@ -1034,6 +1250,9 @@ router.get('/videos', async (req: Request, res: Response) => {
 
 // GET /schoolbase-admin/api/videos/:videoId - Get a specific video tutorial
 router.get('/videos/:videoId', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const { videoId } = req.params;
 
@@ -1054,6 +1273,9 @@ router.get('/videos/:videoId', async (req: Request, res: Response) => {
 
 // POST /schoolbase-admin/api/videos - Create new video tutorial
 router.post('/videos', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const { title, description, videoUrl, category, featured } = req.body;
 
@@ -1083,6 +1305,9 @@ router.post('/videos', async (req: Request, res: Response) => {
 
 // PATCH /schoolbase-admin/api/videos/:videoId - Update video tutorial
 router.patch('/videos/:videoId', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const { videoId } = req.params;
     const { title, description, videoUrl, category, featured } = req.body;
@@ -1111,6 +1336,9 @@ router.patch('/videos/:videoId', async (req: Request, res: Response) => {
 
 // DELETE /schoolbase-admin/api/videos/:videoId - Delete video tutorial
 router.delete('/videos/:videoId', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const { videoId } = req.params;
 
@@ -1131,6 +1359,9 @@ router.delete('/videos/:videoId', async (req: Request, res: Response) => {
 
 // POST /schoolbase-admin/api/emails/send - Send platform communication emails
 router.post('/emails/send', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
   try {
     const { targetType, selectedSchoolId, selectedSegment, emailType, subject, body } = req.body as {
       targetType: 'school' | 'segment';

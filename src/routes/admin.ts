@@ -344,6 +344,46 @@ router.post('/verify', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/impersonate', async (req: Request, res: Response) => {
+  try {
+    const { token } = req.body as { token?: string };
+    if (!token) {
+      return res.status(400).json({ error: 'Impersonation token is required.' });
+    }
+
+    const { payload } = await jwtVerify(token, secret());
+    const schoolId = String((payload as any).schoolId || '');
+    const purpose = String((payload as any).purpose || '');
+    const adminId = String((payload as any).adminId || 'platform-admin');
+
+    if (!schoolId || purpose !== 'IMPERSONATION') {
+      return res.status(400).json({ error: 'Invalid impersonation token.' });
+    }
+
+    const sessionToken = await new SignJWT({
+      userId: adminId,
+      role: 'SCHOOL_ADMIN',
+      email: 'impersonation@schoolbase.local',
+      name: 'Platform Admin Impersonator',
+      schoolId,
+      impersonation: true,
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime('7d')
+      .sign(secret());
+
+    res.json({
+      success: true,
+      token: sessionToken,
+      schoolId,
+    });
+  } catch (error) {
+    console.error('[API ADMIN] Impersonation exchange error:', error);
+    return res.status(500).json({ error: 'Failed to exchange impersonation token.' });
+  }
+});
+
 // POST /api/admin/login - DEPRECATED: Use /api/auth/platform-login or /api/auth/school-login
 // This endpoint is kept for backward compatibility only
 router.post('/login', async (req: Request, res: Response) => {

@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { SignJWT } from 'jose';
 import { generateOtp, getSignupOtp, saveSignupOtp, verifySignupOtp } from '../services/otp.js';
 import { sendSignupOtpEmail, sendWelcomeEmail } from '../services/email.js';
+import { getPlatformSettingValue } from '../services/platform-settings.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -16,6 +17,22 @@ function secret() {
 // POST /api/trial/request-otp - Request OTP for signup
 router.post('/request-otp', async (req: Request, res: Response) => {
   try {
+    const maintenanceMode = await getPlatformSettingValue(prisma, 'maintenanceMode', false);
+    const allowSignup = await getPlatformSettingValue(prisma, 'allowSignup', true);
+    const allowTrial = await getPlatformSettingValue(prisma, 'allowTrial', true);
+
+    if (maintenanceMode) {
+      return res.status(503).json({ error: 'Platform is in maintenance mode. Signup is temporarily disabled.' });
+    }
+
+    if (!allowSignup) {
+      return res.status(403).json({ error: 'New signups are currently disabled.' });
+    }
+
+    if (!allowTrial) {
+      return res.status(403).json({ error: 'Trial signup is currently disabled.' });
+    }
+
     const schoolName = String(req.body.schoolName ?? '').trim();
     const slug = String(req.body.slug ?? '').trim();
     const tagline = String(req.body.tagline ?? '').trim();
@@ -100,6 +117,22 @@ router.post('/request-otp', async (req: Request, res: Response) => {
 // POST /api/trial/verify-otp - Verify OTP and create account
 router.post('/verify-otp', async (req: Request, res: Response) => {
   try {
+    const maintenanceMode = await getPlatformSettingValue(prisma, 'maintenanceMode', false);
+    const allowSignup = await getPlatformSettingValue(prisma, 'allowSignup', true);
+    const allowTrial = await getPlatformSettingValue(prisma, 'allowTrial', true);
+
+    if (maintenanceMode) {
+      return res.status(503).json({ error: 'Platform is in maintenance mode. Signup is temporarily disabled.' });
+    }
+
+    if (!allowSignup) {
+      return res.status(403).json({ error: 'New signups are currently disabled.' });
+    }
+
+    if (!allowTrial) {
+      return res.status(403).json({ error: 'Trial signup is currently disabled.' });
+    }
+
     const adminEmail = String(req.body.adminEmail ?? '').trim().toLowerCase();
     const otp = String(req.body.otp ?? '').trim();
     const tagline = String(req.body.tagline ?? '').trim();
