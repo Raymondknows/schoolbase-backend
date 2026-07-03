@@ -376,6 +376,82 @@ router.get('/children', async (req: Request, res: Response) => {
   }
 });
 
+// Get child's attendance for today or recent records
+router.get('/attendance/:childId', async (req: Request, res: Response) => {
+  try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+    
+    if (!sessionCookie) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+
+    const childId = req.params.childId;
+    const days = req.query.days ? parseInt(req.query.days as string) : 7;
+
+    // Verify parent has access to this child
+    const guardian = await prisma.guardian.findUnique({
+      where: { id: data.guardianId },
+      include: {
+        pupils: {
+          include: {
+            pupil: { select: { id: true } }
+          }
+        }
+      }
+    });
+
+    if (!guardian || !guardian.pupils.some(gp => gp.pupil.id === childId)) {
+      return res.status(403).json({ error: 'Unauthorized access to this child' });
+    }
+
+    const fromDate = new Date();
+    fromDate.setDate(fromDate.getDate() - days);
+    fromDate.setHours(0, 0, 0, 0);
+
+    // Get attendance records for the period
+    const attendanceRecords = await prisma.attendanceRecord.findMany({
+      where: {
+        pupilId: childId,
+        date: {
+          gte: fromDate,
+        },
+      },
+      orderBy: { date: 'desc' },
+      take: 50,
+    });
+
+    // Get today's attendance if it exists
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayAttendance = attendanceRecords.find(
+      a => new Date(a.date).getTime() === today.getTime()
+    );
+
+    // Calculate attendance percentage for the period
+    const totalRecords = attendanceRecords.length;
+    const presentCount = attendanceRecords.filter(a => a.status === 'PRESENT' || a.status === 'LATE').length;
+    const attendancePercentage = totalRecords > 0 ? Math.round((presentCount / totalRecords) * 100) : null;
+
+    res.json({
+      todayStatus: todayAttendance?.status || null,
+      todayDate: todayAttendance?.date || null,
+      attendancePercentage,
+      recentRecords: attendanceRecords.slice(0, 10).map(a => ({
+        date: a.date,
+        status: a.status,
+      })),
+    });
+  } catch (error) {
+    console.error('Error loading attendance:', error);
+    res.status(500).json({ error: 'Failed to load attendance' });
+  }
+});
+
 // Get available terms
 router.get('/terms', async (req: Request, res: Response) => {
   try {
