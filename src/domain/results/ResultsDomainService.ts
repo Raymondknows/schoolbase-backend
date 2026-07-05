@@ -322,9 +322,15 @@ export class ResultsDomainService {
 
     // Determine current state based on data
     const hasComponentData = !!assessment.componentData;
-    const hasScores = assessment.results.length > 0 && assessment.results.some((r) => r.totalScore);
-    const hasGrades = assessment.results.length > 0 && assessment.results.some((r) => r.grade);
-    const hasPositions = assessment.results.length > 0 && assessment.results.some((r) => r.classPosition);
+    const hasScores =
+      assessment.results.length > 0 &&
+      assessment.results.some((r) => r.totalScore !== null && r.totalScore !== undefined);
+    const hasGrades =
+      assessment.results.length > 0 &&
+      assessment.results.some((r) => r.grade !== null && r.grade !== undefined);
+    const hasPositions =
+      assessment.results.length > 0 &&
+      assessment.results.some((r) => r.classPosition !== null && r.classPosition !== undefined);
 
     // State calculation logic
     if (!hasComponentData) return ResultWorkflowState.DRAFT;
@@ -375,6 +381,11 @@ export class ResultsDomainService {
 
     const now = new Date();
 
+    const results = await this.prisma.result.findMany({
+      where: { assessmentId: assessment.id },
+      select: { id: true, pupilId: true },
+    });
+
     // Lock all results
     await this.prisma.result.updateMany({
       where: { assessmentId: assessment.id },
@@ -384,19 +395,20 @@ export class ResultsDomainService {
       },
     });
 
-    // Write audit entry
-    await this.prisma.resultAudit.create({
-      data: {
-        schoolId,
-        assessmentId,
-        resultId: 'BATCH', // Batch operation
-        pupilId: 'BATCH',
-        action: 'BATCH_LOCKED',
-        changes: JSON.stringify({ operation: 'lock_all_results', timestamp: now.toISOString() }),
-        changedBy: userId,
-        changedAt: now,
-      },
-    });
+    if (results.length > 0) {
+      await this.prisma.resultAudit.createMany({
+        data: results.map((result) => ({
+          schoolId,
+          assessmentId,
+          resultId: result.id,
+          pupilId: result.pupilId,
+          action: 'BATCH_LOCKED',
+          changes: JSON.stringify({ operation: 'lock_all_results', timestamp: now.toISOString() }),
+          changedBy: userId,
+          changedAt: now,
+        })),
+      });
+    }
   }
 
   /**
@@ -418,6 +430,11 @@ export class ResultsDomainService {
 
     const now = new Date();
 
+    const results = await this.prisma.result.findMany({
+      where: { assessmentId: assessment.id },
+      select: { id: true, pupilId: true },
+    });
+
     // Unlock all results
     await this.prisma.result.updateMany({
       where: { assessmentId: assessment.id },
@@ -427,19 +444,20 @@ export class ResultsDomainService {
       },
     });
 
-    // Write audit entry
-    await this.prisma.resultAudit.create({
-      data: {
-        schoolId,
-        assessmentId,
-        resultId: 'BATCH',
-        pupilId: 'BATCH',
-        action: 'BATCH_UNLOCKED',
-        changes: JSON.stringify({ operation: 'unlock_all_results', timestamp: now.toISOString() }),
-        changedBy: userId,
-        changedAt: now,
-      },
-    });
+    if (results.length > 0) {
+      await this.prisma.resultAudit.createMany({
+        data: results.map((result) => ({
+          schoolId,
+          assessmentId,
+          resultId: result.id,
+          pupilId: result.pupilId,
+          action: 'BATCH_UNLOCKED',
+          changes: JSON.stringify({ operation: 'unlock_all_results', timestamp: now.toISOString() }),
+          changedBy: userId,
+          changedAt: now,
+        })),
+      });
+    }
   }
 
   // ==================== PUBLISHING ====================
@@ -478,19 +496,30 @@ export class ResultsDomainService {
       },
     });
 
-    // Write audit entry
-    await this.prisma.resultAudit.create({
-      data: {
-        schoolId,
-        assessmentId,
-        resultId: 'BATCH',
-        pupilId: 'BATCH',
-        action: 'ASSESSMENT_PUBLISHED',
-        changes: JSON.stringify({ status: 'PUBLISHED', timestamp: now.toISOString() }),
-        changedBy: userId,
-        changedAt: now,
-      },
+    const results = await this.prisma.result.findMany({
+      where: { assessmentId: assessment.id },
+      select: { id: true, pupilId: true },
     });
+
+    if (results.length > 0) {
+      await this.prisma.result.updateMany({
+        where: { assessmentId: assessment.id },
+        data: { publishedAt: now },
+      });
+
+      await this.prisma.resultAudit.createMany({
+        data: results.map((result) => ({
+          schoolId,
+          assessmentId,
+          resultId: result.id,
+          pupilId: result.pupilId,
+          action: 'ASSESSMENT_PUBLISHED',
+          changes: JSON.stringify({ status: 'PUBLISHED', timestamp: now.toISOString() }),
+          changedBy: userId,
+          changedAt: now,
+        })),
+      });
+    }
   }
 
   /**
@@ -520,19 +549,30 @@ export class ResultsDomainService {
       },
     });
 
-    // Write audit entry
-    await this.prisma.resultAudit.create({
-      data: {
-        schoolId,
-        assessmentId,
-        resultId: 'BATCH',
-        pupilId: 'BATCH',
-        action: 'ASSESSMENT_UNPUBLISHED',
-        changes: JSON.stringify({ status: 'APPROVED', timestamp: now.toISOString() }),
-        changedBy: userId,
-        changedAt: now,
-      },
+    const results = await this.prisma.result.findMany({
+      where: { assessmentId: assessment.id },
+      select: { id: true, pupilId: true },
     });
+
+    if (results.length > 0) {
+      await this.prisma.result.updateMany({
+        where: { assessmentId: assessment.id },
+        data: { publishedAt: null },
+      });
+
+      await this.prisma.resultAudit.createMany({
+        data: results.map((result) => ({
+          schoolId,
+          assessmentId,
+          resultId: result.id,
+          pupilId: result.pupilId,
+          action: 'ASSESSMENT_UNPUBLISHED',
+          changes: JSON.stringify({ status: 'APPROVED', timestamp: now.toISOString() }),
+          changedBy: userId,
+          changedAt: now,
+        })),
+      });
+    }
   }
 
   // ==================== AUDIT ====================

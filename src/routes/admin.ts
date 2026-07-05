@@ -308,6 +308,12 @@ router.use((req: Request, res: Response, next: any) => {
     }
   }
 
+  // Allow read-only results access for school admins even if subscription is inactive.
+  // This keeps assessment pages visible while still protecting writes.
+  if (req.method === 'GET' && req.path.startsWith('/results')) {
+    return next();
+  }
+
   return requireActiveSubscription(req as any, res as any, next);
 });
 
@@ -2964,16 +2970,68 @@ router.get('/results/data', async (req: Request, res: Response) => {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
+    const currentAcademicYear = await prisma.academicYear.findFirst({
+      where: { schoolId, isCurrent: true },
+      select: { id: true, name: true },
+    });
+
+    const academicYears = await prisma.academicYear.findMany({
+      where: { schoolId },
+      select: { id: true, name: true, isCurrent: true },
+      orderBy: [{ isCurrent: 'desc' }, { name: 'asc' }],
+    });
+
     const assessments = await prisma.assessment.findMany({
       where: { schoolId },
-      include: { 
-        _count: { select: { results: true } }, 
-        term: true 
+      include: {
+        _count: { select: { results: true } },
+        term: {
+          include: {
+            academicYear: {
+              select: {
+                id: true,
+                name: true,
+                isCurrent: true,
+              },
+            },
+          },
+        },
+        results: { select: { lockedAt: true } },
       },
       orderBy: [{ phase: 'asc' }, { createdAt: 'desc' }],
     });
 
-    res.json({ assessments });
+    const sortedAssessments = [...assessments].sort((a, b) => {
+      const aIsCurrent = a.term?.academicYear?.isCurrent === true;
+      const bIsCurrent = b.term?.academicYear?.isCurrent === true;
+
+      if (aIsCurrent !== bIsCurrent) {
+        return Number(bIsCurrent) - Number(aIsCurrent);
+      }
+
+      const aTermOrder = a.term?.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      const bTermOrder = b.term?.sortOrder ?? Number.MAX_SAFE_INTEGER;
+
+      if (aTermOrder !== bTermOrder) {
+        return aTermOrder - bTermOrder;
+      }
+
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+
+    res.json({
+      assessments: sortedAssessments.map((assessment) => ({
+        ...assessment,
+        isLocked: assessment.results.some((result) => result.lockedAt !== null),
+        canEdit: assessment.status === 'DRAFT' && !assessment.results.some((result) => result.lockedAt !== null),
+        sessionName: assessment.term?.academicYear?.name ?? null,
+      })),
+      sessions: academicYears.map((academicYear) => ({
+        id: academicYear.id,
+        name: academicYear.name,
+        isCurrent: academicYear.isCurrent,
+      })),
+    });
   } catch (error) {
     console.error('Error fetching results data:', error);
     res.status(500).json({ error: 'Failed to fetch results data' });

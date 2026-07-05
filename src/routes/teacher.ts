@@ -28,6 +28,77 @@ function getAssessmentComponents(componentData?: string | null) {
   }
 }
 
+function normalizeTeacherResultScores(
+  componentData: string | null,
+  score: {
+    caScore?: number | null;
+    testScore?: number | null;
+    examScore?: number | null;
+    totalScore?: number | null;
+  }
+) {
+  const components = getAssessmentComponents(componentData);
+  const rawScores = {
+    ca: score.caScore ?? null,
+    test: score.testScore ?? null,
+    exam: score.examScore ?? null,
+  };
+
+  const mappedScores: Record<string, number | null> = {};
+  for (let index = 0; index < components.length; index++) {
+    const component = components[index];
+    const id = (component.id ?? '').toString().toLowerCase();
+    const name = (component.name ?? '').toString().toLowerCase();
+    let value: number | null = null;
+
+    if (id.includes('ca') || name.includes('ca') || name.includes('continuous')) {
+      value = rawScores.ca;
+    } else if (id.includes('test') || name.includes('test')) {
+      value = rawScores.test;
+    } else if (id.includes('exam') || name.includes('exam') || name.includes('examination')) {
+      value = rawScores.exam;
+    } else if (index === 0) {
+      value = rawScores.ca;
+    } else if (index === 1) {
+      value = rawScores.test;
+    } else if (index === 2) {
+      value = rawScores.exam;
+    } else {
+      value = rawScores.ca ?? rawScores.test ?? rawScores.exam ?? null;
+    }
+
+    mappedScores[component.id] = value;
+  }
+
+  const allScoresPresent = Object.values(mappedScores).every(
+    (value) => value !== null && value !== undefined
+  );
+
+  const totalScore =
+    score.totalScore !== null && score.totalScore !== undefined
+      ? score.totalScore
+      : allScoresPresent
+      ? parseFloat(
+          components
+            .reduce((sum, component) => {
+              const componentValue = mappedScores[component.id] ?? 0;
+              return sum + (componentValue / component.maxScore) * component.weight;
+            }, 0)
+            .toFixed(1)
+        )
+      : null;
+
+  const scoresJson: Record<string, number> = {};
+  for (const component of components) {
+    const componentValue = mappedScores[component.id];
+    if (componentValue !== null && componentValue !== undefined) {
+      scoresJson[component.id] = componentValue;
+    }
+  }
+
+  return { totalScore, scoresJson };
+}
+
 // Apply authentication middleware to all teacher routes
 router.use(verifyAuth);
 router.use(requireTeacher);
@@ -349,6 +420,16 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
       return res.json({ assessments: [] });
     }
 
+    const academicYears = await prisma.academicYear.findMany({
+      where: { schoolId },
+      select: {
+        id: true,
+        name: true,
+        isCurrent: true,
+      },
+      orderBy: [{ isCurrent: 'desc' }, { name: 'asc' }],
+    });
+
     // Get assessments matching teacher's class phases
     const assessments = await prisma.assessment.findMany({
       where: {
@@ -366,6 +447,18 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
           select: {
             id: true,
             name: true,
+            academicYear: {
+              select: {
+                id: true,
+                name: true,
+                isCurrent: true,
+              },
+            },
+          },
+        },
+        results: {
+          select: {
+            lockedAt: true,
           },
         },
         _count: {
@@ -381,9 +474,17 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
     res.json({
       assessments: assessments.map((assessment) => ({
         ...assessment,
+        isLocked: assessment.results.some((result) => result.lockedAt !== null),
+        canEdit: assessment.status === 'DRAFT' && !assessment.results.some((result) => result.lockedAt !== null),
         studentCount: studentsByPhase.get(assessment.phase)?.size ?? 0,
         entryCount: assessment._count.results,
         subjectCount: teacherSubjects.length,
+        sessionName: assessment.term?.academicYear?.name ?? null,
+      })),
+      sessions: academicYears.map((academicYear) => ({
+        id: academicYear.id,
+        name: academicYear.name,
+        isCurrent: academicYear.isCurrent,
       })),
     });
   } catch (error: any) {
@@ -689,12 +790,16 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b));
 
+    const isLocked = assessment.results.some((result) => result.lockedAt !== null);
+
     res.json({
       assessment: {
         id: assessment.id,
         name: assessment.name,
         phase: assessment.phase,
         status: assessment.status,
+        isLocked,
+        canEdit: assessment.status === 'DRAFT' && !isLocked,
         studentCount: uniqueStudentCount,
         entryCount: filteredResults.length,
         subjectCount: resultSubjects.length,
@@ -847,7 +952,12 @@ router.get('/results/:classId', async (req: AuthenticatedRequest, res) => {
 router.post('/results', async (req: AuthenticatedRequest, res) => {
   try {
     const { userId, schoolId } = req.user!;
-    const { assessmentId, scores, subjectId, subject } = req.body;
+    const { assessmentId, scores: requestScores, entries: requestEntries, subjectId, subject } = req.body;
+    const scores = Array.isArray(requestScores)
+      ? requestScores
+      : Array.isArray(requestEntries)
+      ? requestEntries
+      : [];
 
     if (!assessmentId || !Array.isArray(scores)) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -876,6 +986,15 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
         },
       },
     });
+
+    const existingAssessmentResults = await prisma.result.findMany({
+      where: { assessmentId },
+      select: { lockedAt: true },
+    });
+
+    if (assessment.status !== 'DRAFT' || existingAssessmentResults.some((result) => result.lockedAt !== null)) {
+      return res.status(403).json({ error: 'This assessment is locked and can no longer be edited.' });
+    }
 
     const classIdsInAssessmentPhase = teacherClasses
       .filter((teacherClass) => teacherClass.class.phase === assessment.phase)
@@ -929,34 +1048,56 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
 
       // Bulk upsert results
       const results = await Promise.all(
-        scores.map((score: { pupilId: string; caScore?: number; testScore?: number; examScore?: number }) =>
-          prisma.result.upsert({
-            where: {
-              assessmentId_pupilId_subject: {
+        scores.map(
+          (score: {
+            pupilId: string;
+            caScore?: number | null;
+            testScore?: number | null;
+            examScore?: number | null;
+            totalScore?: number | null;
+          }) => {
+            const { totalScore, scoresJson } = normalizeTeacherResultScores(
+              assessment.componentData,
+              score
+            );
+
+            return prisma.result.upsert({
+              where: {
+                assessmentId_pupilId_subject: {
+                  assessmentId,
+                  pupilId: score.pupilId,
+                  subject: resolvedSubjectName,
+                },
+              },
+              update: {
+                classId: assessment.classId ?? null,
+                subjectId: resolvedSubjectId,
+                subject: resolvedSubjectName,
+                caScore: score.caScore,
+                testScore: score.testScore,
+                examScore: score.examScore,
+                totalScore,
+                scores: Object.keys(scoresJson).length > 0 ? JSON.stringify(scoresJson) : undefined,
+                grade: null,
+                classPosition: null,
+                subjectPosition: null,
+                updatedBy: userId,
+              },
+              create: {
                 assessmentId,
                 pupilId: score.pupilId,
+                subjectId: resolvedSubjectId,
                 subject: resolvedSubjectName,
+                classId: assessment.classId ?? null,
+                caScore: score.caScore,
+                testScore: score.testScore,
+                examScore: score.examScore,
+                totalScore,
+                scores: Object.keys(scoresJson).length > 0 ? JSON.stringify(scoresJson) : undefined,
+                updatedBy: userId,
               },
-            },
-            update: {
-              classId: assessment.classId ?? null,
-              subjectId: resolvedSubjectId,
-              subject: resolvedSubjectName,
-              caScore: score.caScore,
-              testScore: score.testScore,
-              examScore: score.examScore,
-            },
-            create: {
-              assessmentId,
-              pupilId: score.pupilId,
-              subjectId: resolvedSubjectId,
-              subject: resolvedSubjectName,
-              classId: assessment.classId ?? null,
-              caScore: score.caScore,
-              testScore: score.testScore,
-              examScore: score.examScore,
-            },
-          })
+            });
+          }
         )
       );
 
@@ -965,33 +1106,55 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
 
     // Bulk upsert results
     const results = await Promise.all(
-      scores.map((score: { pupilId: string; caScore?: number; testScore?: number; examScore?: number }) =>
-        prisma.result.upsert({
-          where: {
-            assessmentId_pupilId_subject: {
+      scores.map(
+        (score: {
+          pupilId: string;
+          caScore?: number | null;
+          testScore?: number | null;
+          examScore?: number | null;
+          totalScore?: number | null;
+        }) => {
+          const { totalScore, scoresJson } = normalizeTeacherResultScores(
+            assessment.componentData,
+            score
+          );
+
+          return prisma.result.upsert({
+            where: {
+              assessmentId_pupilId_subject: {
+                assessmentId,
+                pupilId: score.pupilId,
+                subject: subject || null,
+              },
+            },
+            update: {
+              classId: assessment.classId ?? null,
+              subjectId: null,
+              caScore: score.caScore,
+              testScore: score.testScore,
+              examScore: score.examScore,
+              totalScore,
+              scores: Object.keys(scoresJson).length > 0 ? JSON.stringify(scoresJson) : undefined,
+              grade: null,
+              classPosition: null,
+              subjectPosition: null,
+              updatedBy: userId,
+            },
+            create: {
               assessmentId,
               pupilId: score.pupilId,
               subject: subject || null,
+              subjectId: null,
+              classId: assessment.classId ?? null,
+              caScore: score.caScore,
+              testScore: score.testScore,
+              examScore: score.examScore,
+              totalScore,
+              scores: Object.keys(scoresJson).length > 0 ? JSON.stringify(scoresJson) : undefined,
+              updatedBy: userId,
             },
-          },
-          update: {
-            classId: assessment.classId ?? null,
-            subjectId: null,
-            caScore: score.caScore,
-            testScore: score.testScore,
-            examScore: score.examScore,
-          },
-          create: {
-            assessmentId,
-            pupilId: score.pupilId,
-            subject: subject || null,
-            subjectId: null,
-            classId: assessment.classId ?? null,
-            caScore: score.caScore,
-            testScore: score.testScore,
-            examScore: score.examScore,
-          },
-        })
+          });
+        }
       )
     );
 

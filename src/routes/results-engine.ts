@@ -57,18 +57,53 @@ router.post('/calculate-grades/:assessmentId', async (req: Request, res: Respons
     const config = JSON.parse(assessment.componentData);
     const components = config.components || [];
 
+    const calculateResultTotal = (result: any): number | null => {
+      if (result.totalScore !== null && result.totalScore !== undefined) {
+        return result.totalScore;
+      }
+
+      if (assessment.componentData) {
+        try {
+          const config = JSON.parse(assessment.componentData);
+          const components = config.components || [];
+          if (result.scores) {
+            const scores = typeof result.scores === 'string' ? JSON.parse(result.scores) : result.scores;
+            if (scores && typeof scores === 'object') {
+              return resultsDomain.calculateTotalScore(scores, components, schoolId);
+            }
+          }
+        } catch {
+          // ignore parse issues and fallback to direct fields
+        }
+      }
+
+      if (
+        result.caScore !== null && result.caScore !== undefined &&
+        result.testScore !== null && result.testScore !== undefined &&
+        result.examScore !== null && result.examScore !== undefined
+      ) {
+        return result.caScore + result.testScore + result.examScore;
+      }
+
+      return null;
+    };
+
     // Calculate grades for all results
     let updateCount = 0;
     const errors = [];
 
     for (const result of assessment.results) {
       try {
-        if (result.totalScore) {
-          const grade = await resultsDomain.calculateGrade(schoolId, result.totalScore);
+        const effectiveTotal = calculateResultTotal(result);
+        if (effectiveTotal !== null) {
+          const grade = await resultsDomain.calculateGrade(schoolId, effectiveTotal);
 
           await prisma.result.update({
             where: { id: result.id },
-            data: { grade },
+            data: {
+              grade,
+              totalScore: result.totalScore ?? effectiveTotal,
+            },
           });
 
           // Audit through domain layer
@@ -77,7 +112,7 @@ router.post('/calculate-grades/:assessmentId', async (req: Request, res: Respons
             assessmentId,
             result.pupilId,
             'GRADE_CALCULATED',
-            { totalScore: result.totalScore, grade },
+            { totalScore: result.totalScore ?? effectiveTotal, grade },
             userId,
             schoolId
           );
@@ -99,10 +134,13 @@ router.post('/calculate-grades/:assessmentId', async (req: Request, res: Respons
       });
     }
 
+    const workflowState = await resultsDomain.calculateNextState(assessmentId, schoolId);
+
     res.json({
       success: true,
-      message: `Grades calculated for ${updateCount} results`,
+      message: `Grades calculated for ${updateCount} result${updateCount === 1 ? '' : 's'}`,
       gradesCalculated: updateCount,
+      workflowState,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error: any) {
@@ -177,11 +215,14 @@ router.post('/calculate-positions/:assessmentId', async (req: Request, res: Resp
     // Calculate class position (with deterministic tie-breaking)
     await resultsDomain.calculateClassPositioning(assessmentId, schoolId);
 
+    const workflowState = await resultsDomain.calculateNextState(assessmentId, schoolId);
+
     res.json({
       success: true,
-      message: 'Positions calculated successfully',
+      message: `Positions calculated successfully for ${subjectPositionCount} subject${subjectPositionCount === 1 ? '' : 's'}`,
       subjectsProcessed: subjectPositionCount,
       classPositionsCalculated: true,
+      workflowState,
     });
   } catch (error: any) {
     console.error('Error calculating positions:', error);
@@ -220,7 +261,15 @@ router.post('/validate/:assessmentId', async (req: Request, res: Response) => {
 
     const validation = await resultsDomain.validateResults(assessmentId, schoolId);
 
-    res.json(validation);
+    const workflowState = await resultsDomain.calculateNextState(assessmentId, schoolId);
+
+    res.json({
+      ...validation,
+      message: validation.isValid
+        ? 'Validation passed. Results are ready to lock.'
+        : 'This assessment is not ready yet. Please ask teachers to complete the following steps before results can proceed.',
+      workflowState,
+    });
   } catch (error: any) {
     console.error('Error validating results:', error);
     res.status(500).json({
@@ -260,12 +309,14 @@ router.post('/lock/:assessmentId', async (req: Request, res: Response) => {
 
     // Lock results (domain layer handles validation)
     await resultsDomain.lockResults(assessmentId, userId, schoolId);
+    const workflowState = await resultsDomain.calculateNextState(assessmentId, schoolId);
 
     res.json({
       success: true,
-      message: 'Results locked successfully',
+      message: 'Results locked successfully. Editing is now disabled.',
       lockedCount: assessment._count.results,
       status: assessment.status,
+      workflowState,
     });
   } catch (error: any) {
     console.error('Error locking results:', error);
@@ -306,12 +357,14 @@ router.post('/unlock/:assessmentId', async (req: Request, res: Response) => {
 
     // Unlock results (domain layer handles validation)
     await resultsDomain.unlockResults(assessmentId, userId, schoolId);
+    const workflowState = await resultsDomain.calculateNextState(assessmentId, schoolId);
 
     res.json({
       success: true,
-      message: 'Results unlocked successfully',
+      message: 'Results unlocked successfully. Editing is now enabled.',
       unlockedCount: assessment._count.results,
       status: assessment.status,
+      workflowState,
     });
   } catch (error: any) {
     console.error('Error unlocking results:', error);
@@ -358,12 +411,14 @@ router.post('/publish/:assessmentId', async (req: Request, res: Response) => {
 
     // Publish results (domain layer handles validation and state transitions)
     await resultsDomain.publishResults(assessmentId, userId, schoolId);
+    const workflowState = await resultsDomain.calculateNextState(assessmentId, schoolId);
 
     res.json({
       success: true,
       message: 'Results published successfully',
       assessmentId,
       status: 'PUBLISHED',
+      workflowState,
     });
   } catch (error: any) {
     console.error('Error publishing results:', error);
@@ -403,12 +458,14 @@ router.post('/unpublish/:assessmentId', async (req: Request, res: Response) => {
 
     // Unpublish results
     await resultsDomain.unpublishResults(assessmentId, userId, schoolId);
+    const workflowState = await resultsDomain.calculateNextState(assessmentId, schoolId);
 
     res.json({
       success: true,
       message: 'Results unpublished successfully',
       assessmentId,
       status: 'APPROVED',
+      workflowState,
     });
   } catch (error: any) {
     console.error('Error unpublishing results:', error);

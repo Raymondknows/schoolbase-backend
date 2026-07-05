@@ -100,7 +100,7 @@ export class ResultsValidator {
       if (expectedCount !== actualCount) {
         const error: ValidationError = {
           field: 'studentCoverage',
-          message: `Student coverage incomplete: ${actualCount}/${expectedCount} students have results`,
+          message: `Teachers still need to record results for ${expectedCount - actualCount} student${expectedCount - actualCount === 1 ? '' : 's'}.`,
           severity: 'error',
           details: {
             expected: expectedCount,
@@ -138,7 +138,7 @@ export class ResultsValidator {
         if (missingSubjects.length > 0) {
           const error: ValidationError = {
             field: 'subjectCoverage',
-            message: `${missingSubjects.length} student-subject pairs missing results`,
+            message: `Teachers still need to complete ${missingSubjects.length} student-subject entry${missingSubjects.length === 1 ? '' : 'ies'}.`,
             severity: 'error',
             details: {
               count: missingSubjects.length,
@@ -152,11 +152,13 @@ export class ResultsValidator {
     }
 
     // VALIDATION 5: Total scores exist
-    const resultsWithoutTotals = assessment.results.filter((r) => !r.totalScore);
+    const resultsWithoutTotals = assessment.results.filter(
+      (r) => r.totalScore === null || r.totalScore === undefined
+    );
     if (resultsWithoutTotals.length > 0) {
       const error: ValidationError = {
         field: 'totalScores',
-        message: `${resultsWithoutTotals.length} result(s) missing total scores`,
+        message: `Teachers still need to enter total scores for ${resultsWithoutTotals.length} result${resultsWithoutTotals.length === 1 ? '' : 's'}.`,
         severity: 'error',
         details: { count: resultsWithoutTotals.length },
       };
@@ -165,11 +167,13 @@ export class ResultsValidator {
     }
 
     // VALIDATION 6: Grades assigned
-    const resultsWithoutGrades = assessment.results.filter((r) => !r.grade);
+    const resultsWithoutGrades = assessment.results.filter(
+      (r) => r.grade === null || r.grade === undefined
+    );
     if (resultsWithoutGrades.length > 0) {
       const error: ValidationError = {
         field: 'grades',
-        message: `${resultsWithoutGrades.length} result(s) missing grades`,
+        message: `Teachers still need to assign grades for ${resultsWithoutGrades.length} result${resultsWithoutGrades.length === 1 ? '' : 's'}.`,
         severity: 'error',
         details: { count: resultsWithoutGrades.length },
       };
@@ -184,7 +188,7 @@ export class ResultsValidator {
     if (resultsWithoutPositions.length > 0) {
       const error: ValidationError = {
         field: 'positions',
-        message: `${resultsWithoutPositions.length} result(s) missing positions`,
+        message: `Teachers still need to record their scores or to confirm positions for ${resultsWithoutPositions.length} result${resultsWithoutPositions.length === 1 ? '' : 's'}.`,
         severity: 'error',
         details: { count: resultsWithoutPositions.length },
       };
