@@ -10,12 +10,14 @@ import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificatio
 import { CommunicationService, RulesEngine, TemplateEngine, RecipientResolver, DeliveryQueue, DriverManager, EmailDriver, WhatsAppDriver } from '../communications/index.js';
 import baileysSessionManager from '../communications/whatsapp-baileys.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
+import { ResultsDomainService } from '../domain/results/ResultsDomainService.js';
 import requireActiveSubscription from '../middleware/subscriptionGuard.js';
 import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
 import type { NextFunction } from 'express';
 
 const router = Router();
 const prisma = new PrismaClient();
+const resultsDomain = new ResultsDomainService(prisma);
 const communicationRulesRegistry = new CommunicationRulesRegistry(DEFAULT_COMMUNICATION_RULES);
 
 const sharedDriverManager = new DriverManager({
@@ -3968,8 +3970,13 @@ router.get('/results/:id', async (req: Request, res: Response) => {
       },
     }));
 
+    // Ensure publishedAt is available at the assessment level.
+    const fallbackPublishedAt =
+      assessment.results.find((r: any) => r.publishedAt)?.publishedAt || null;
+
     res.json({
       ...assessment,
+      publishedAt: fallbackPublishedAt,
       results: transformedResults,
     });
   } catch (error) {
@@ -4101,13 +4108,27 @@ router.post('/assessments/:id/approve', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Only draft assessments can be approved' });
     }
 
+    const readiness = await resultsDomain.isReadyForPublish(id, schoolId);
+    if (!readiness.ready) {
+      return res.status(400).json({
+        success: false,
+        error: readiness.reason || 'Assessment must be validated before approval',
+        details: { reason: readiness.reason },
+      });
+    }
+
     const updated = await prisma.assessment.update({
       where: { id },
       data: { status: 'APPROVED' },
       include: { _count: { select: { results: true } } },
     });
 
-    res.json(updated);
+    res.json({
+      success: true,
+      message: 'Assessment approved and ready to publish',
+      status: 'APPROVED',
+      assessment: updated,
+    });
   } catch (error) {
     console.error('Error approving assessment:', error);
     res.status(500).json({ error: 'Failed to approve assessment' });
@@ -4136,23 +4157,32 @@ router.post('/assessments/:id/publish', requireSubscription, async (req: Request
       return res.status(400).json({ error: 'Only approved assessments can be published' });
     }
 
-    // Update assessment status to PUBLISHED
-    const updated = await prisma.assessment.update({
-      where: { id },
-      data: { status: 'PUBLISHED' },
+    const userId = (req as any).user?.id || 'SYSTEM';
+
+    // Check readiness first so we can return validation details to the client
+    const readiness = await resultsDomain.isReadyForPublish(id, schoolId);
+    if (!readiness.ready) {
+      return res.status(400).json({ error: readiness.reason || 'Not ready to publish', details: { reason: readiness.reason } });
+    }
+
+    // Delegate to domain layer to perform publish validations, state transitions and audits
+    await resultsDomain.publishResults(id, userId, schoolId);
+
+    const updated = await prisma.assessment.findFirst({
+      where: { id, schoolId },
       include: { _count: { select: { results: true } } },
     });
 
-    // Update all results with publishedAt timestamp
-    await prisma.result.updateMany({
-      where: { assessmentId: id },
-      data: { publishedAt: new Date() },
+    res.json({
+      success: true,
+      message: 'Results published successfully',
+      status: 'PUBLISHED',
+      assessment: updated,
     });
-
-    res.json(updated);
   } catch (error) {
     console.error('Error publishing assessment:', error);
-    res.status(500).json({ error: 'Failed to publish assessment' });
+    const message = error instanceof Error ? error.message : 'Failed to publish assessment';
+    res.status(500).json({ error: message, details: { stack: (error as any)?.stack } });
   }
 });
 

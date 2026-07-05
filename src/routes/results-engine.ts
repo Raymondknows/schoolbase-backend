@@ -1,10 +1,17 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { jwtVerify } from 'jose';
 import { ResultsDomainService } from '../domain/results/ResultsDomainService.js';
 
 const router = Router();
 const prisma = new PrismaClient();
 const resultsDomain = new ResultsDomainService(prisma);
+
+function secret() {
+  return new TextEncoder().encode(
+    process.env.SESSION_SECRET ?? 'schoolbase-dev-secret-change-me'
+  );
+}
 
 /**
  * Results Engine API Routes - Refactored Phase 8
@@ -488,6 +495,37 @@ router.get('/assessment/:assessmentId', async (req: Request, res: Response) => {
         error: 'MISSING_PARAMETERS',
         message: 'Missing school ID or assessment ID',
       });
+    }
+
+    // Ensure unpublished assessments are only accessible to staff
+    const assessment = await prisma.assessment.findFirst({ where: { id: assessmentId, schoolId }, select: { status: true } });
+    if (!assessment) {
+      return res.status(404).json({ error: 'ASSESSMENT_NOT_FOUND' });
+    }
+
+    if (assessment.status !== 'PUBLISHED') {
+      // Check for staff session token in cookies
+      const cookieHeader = req.headers.cookie || '';
+      const sessionCookie = cookieHeader.split(';').find(c => {
+        const t = c.trim();
+        return t.startsWith('schoolbase_session=') || t.startsWith('schoolbase_staff=') || t.startsWith('staff_session=');
+      });
+
+      if (!sessionCookie) {
+        return res.status(403).json({ error: 'RESULTS_NOT_PUBLISHED' });
+      }
+
+      try {
+        const token = sessionCookie.split('=')[1];
+        const { payload } = await jwtVerify(token, secret());
+        const role = (payload as any).role;
+        const allowedRoles = ['PLATFORM_ADMIN', 'SCHOOL_ADMIN', 'TEACHER', 'BURSAR'];
+        if (!role || !allowedRoles.includes(role)) {
+          return res.status(403).json({ error: 'RESULTS_NOT_PUBLISHED' });
+        }
+      } catch (err) {
+        return res.status(403).json({ error: 'RESULTS_NOT_PUBLISHED' });
+      }
     }
 
     const resultSheet = await resultsDomain.getAssessmentResultSheet(assessmentId, schoolId);

@@ -509,11 +509,39 @@ router.get('/terms', async (req: Request, res: Response) => {
 // Get child results by term and assessment
 router.get('/results', async (req: Request, res: Response) => {
   try {
+    const cookieHeader = req.headers.cookie || '';
+    const sessionCookie = cookieHeader.split(';').find(c => c.trim().startsWith('schoolbase_session='));
+
+    if (!sessionCookie) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const data = payload as any;
+
     const childId = req.query.childId as string;
     const termId = req.query.termId as string;
 
     if (!childId) {
       return res.status(400).json({ error: 'childId required' });
+    }
+
+    const guardian = await prisma.guardian.findUnique({
+      where: { id: data.guardianId },
+      include: {
+        pupils: {
+          include: {
+            pupil: {
+              select: { id: true }
+            }
+          }
+        }
+      }
+    });
+
+    if (!guardian || !guardian.pupils.some((gp: any) => gp.pupil.id === childId)) {
+      return res.status(403).json({ error: 'Unauthorized access to this child' });
     }
 
     // Get child's school and phase

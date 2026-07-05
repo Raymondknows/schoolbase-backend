@@ -308,6 +308,7 @@ router.get('/classes/:classId/students', async (req: AuthenticatedRequest, res) 
 router.get('/subjects', async (req: AuthenticatedRequest, res) => {
   try {
     const { userId, schoolId } = req.user!;
+    const assessmentId = typeof req.query.assessmentId === 'string' ? req.query.assessmentId : null;
 
     const teacherClasses = await prisma.teacherClass.findMany({
       where: { teacherId: userId, schoolId },
@@ -327,6 +328,20 @@ router.get('/subjects', async (req: AuthenticatedRequest, res) => {
       return res.json({ subjects: [] });
     }
 
+    let phaseFilter: 'EARLY_YEARS' | 'PRIMARY' | 'SECONDARY' | null = null;
+    if (assessmentId) {
+      const assessment = await prisma.assessment.findFirst({
+        where: { id: assessmentId, schoolId },
+        select: { phase: true },
+      });
+
+      if (!assessment) {
+        return res.status(404).json({ error: 'Assessment not found' });
+      }
+
+      phaseFilter = assessment.phase as 'EARLY_YEARS' | 'PRIMARY' | 'SECONDARY';
+    }
+
     const subjects = await prisma.teacherSubject.findMany({
       where: {
         teacherId: userId,
@@ -335,6 +350,7 @@ router.get('/subjects', async (req: AuthenticatedRequest, res) => {
           subjectClasses: {
             some: {
               classId: { in: classIds },
+              ...(phaseFilter ? { class: { phase: phaseFilter } } : {}),
             },
           },
         },
@@ -346,7 +362,7 @@ router.get('/subjects', async (req: AuthenticatedRequest, res) => {
 
     res.json({
       subjects: subjects.map((ts) => ({
-        id: ts.subject.id,
+        id: ts.subjectId,
         name: ts.subject.name,
       })),
     });

@@ -78,6 +78,18 @@ export class ResultsValidator {
       blockers.push(componentError);
     }
 
+    // VALIDATION 1.1: Ensure at least one result exists
+    if (assessment.results.length === 0) {
+      const noResultsError: ValidationError = {
+        field: 'results',
+        message: 'Assessment has no recorded results yet',
+        severity: 'error',
+        details: { expectedResults: true },
+      };
+      errors.push(noResultsError);
+      blockers.push(noResultsError);
+    }
+
     // VALIDATION 2: Grading scale exists
     const gradingScales = await this.prisma.gradingScale.findMany({
       where: { schoolId: assessment.schoolId },
@@ -95,17 +107,18 @@ export class ResultsValidator {
     // VALIDATION 3: Student coverage
     if (assessment.classId && assessment.class) {
       const expectedCount = assessment.class.pupils.length;
-      const actualCount = assessment._count.results;
+      const actualUniqueStudentCount = new Set(assessment.results.map((r) => r.pupilId)).size;
 
-      if (expectedCount !== actualCount) {
+      if (actualUniqueStudentCount < expectedCount) {
+        const missingCount = expectedCount - actualUniqueStudentCount;
         const error: ValidationError = {
           field: 'studentCoverage',
-          message: `Teachers still need to record results for ${expectedCount - actualCount} student${expectedCount - actualCount === 1 ? '' : 's'}.`,
+          message: `Teachers still need to record results for ${missingCount} student${missingCount === 1 ? '' : 's'}.`,
           severity: 'error',
           details: {
             expected: expectedCount,
-            actual: actualCount,
-            missing: expectedCount - actualCount,
+            recorded: actualUniqueStudentCount,
+            missing: missingCount,
           },
         };
         errors.push(error);
@@ -347,6 +360,7 @@ export class ResultsValidator {
     }
 
     const errors: ValidationError[] = [];
+    const warnings: ValidationError[] = [];
     const blockers: ValidationError[] = [];
 
     // Check assessment has components
@@ -384,7 +398,7 @@ export class ResultsValidator {
     }
 
     return {
-      isValid: blockers.length === 0,
+      isValid: errors.length === 0 && blockers.length === 0,
       errors,
       warnings: [],
       blockers,
@@ -398,9 +412,10 @@ export class ResultsValidator {
     const validation = await this.validateAssessmentResults(assessmentId, schoolId);
 
     if (!validation.isValid) {
+      const reason = validation.blockers[0]?.message || validation.errors[0]?.message || 'Unknown error';
       return {
         ready: false,
-        reason: `Validation failed: ${validation.blockers[0]?.message || 'Unknown error'}`,
+        reason: `Validation failed: ${reason}`,
       };
     }
 
