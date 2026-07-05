@@ -3331,13 +3331,16 @@ router.get('/analytics/data', async (req: Request, res: Response) => {
 
     const termId = req.query.termId as string | undefined;
     const phaseQuery = req.query.phase as string | undefined;
+    const selectedClassId = (req.query.classId as string | undefined) || (req.query.sectionId as string | undefined);
     
-    console.log('[ANALYTICS] Received termId:', termId, 'phase:', phaseQuery);
+    console.log('[ANALYTICS] Received termId:', termId, 'phase:', phaseQuery, 'classId:', selectedClassId);
     
     // Build filter for assessments
     const assessmentWhere: any = {
       schoolId,
-      status: 'PUBLISHED',
+      status: {
+        in: ['APPROVED', 'PUBLISHED', 'ARCHIVED'],
+      },
     };
     
     if (phaseQuery && phaseQuery !== 'ALL') {
@@ -3346,6 +3349,10 @@ router.get('/analytics/data', async (req: Request, res: Response) => {
 
     if (termId) {
       assessmentWhere.termId = termId;
+    }
+
+    if (selectedClassId) {
+      assessmentWhere.classId = selectedClassId;
     }
 
     console.log('[ANALYTICS] assessmentWhere filter:', JSON.stringify(assessmentWhere));
@@ -3361,13 +3368,14 @@ router.get('/analytics/data', async (req: Request, res: Response) => {
     const assessmentIds = assessments.map((a) => a.id);
     const classIds = [...new Set(assessments.map((a) => a.classId).filter(Boolean))] as string[];
 
-    // Only fetch classes that have assessments in this term
-    // If no assessments, return empty array (not all classes)
-    const classes = classIds.length > 0 
+    // Fetch classes for display
+    // If a specific class is selected, return that class
+    // Otherwise, return all school classes (so user can see available classes even if no assessments exist)
+    const classes = selectedClassId
       ? await prisma.class.findMany({
           where: {
             schoolId,
-            id: { in: classIds },
+            id: selectedClassId,
           },
           select: {
             id: true,
@@ -3376,18 +3384,52 @@ router.get('/analytics/data', async (req: Request, res: Response) => {
           },
           orderBy: { name: 'asc' },
         })
-      : [];
+      : await prisma.class.findMany({
+          where: {
+            schoolId,
+          },
+          select: {
+            id: true,
+            name: true,
+            phase: true,
+          },
+          orderBy: { name: 'asc' },
+        });
 
-    const subjects = await prisma.subject.findMany({
-      where: { schoolId },
-      orderBy: { name: 'asc' },
+    // Get all subjects for the school
+    // First, get all results for the selected assessments
+    const allResults = await prisma.result.findMany({
+      where: {
+        assessmentId: { in: assessmentIds },
+      },
+      select: { subjectId: true },
+      distinct: ['subjectId'],
     });
 
-    // Fetch results for these assessments
+    const subjectIds = allResults
+      .map(r => r.subjectId)
+      .filter(Boolean) as string[];
+
+    // Fetch only subjects that have results in the selected term/phase/class
+    const subjects = subjectIds.length > 0
+      ? await prisma.subject.findMany({
+          where: {
+            schoolId,
+            id: { in: subjectIds },
+          },
+          orderBy: { name: 'asc' },
+        })
+      : [];
+
+    // Fetch results for these assessments (for analytics calculation)
     const results = await prisma.result.findMany({
       where: {
         assessmentId: { in: assessmentIds },
-        publishedAt: { not: null },
+        OR: [
+          { publishedAt: { not: null } },
+          { totalScore: { not: null } },
+          { grade: { not: null } },
+        ],
       },
       include: {
         pupil: true,
@@ -3780,14 +3822,36 @@ router.get('/terms', async (req: Request, res: Response) => {
       where: {
         academicYear: {
           schoolId,
-          isCurrent: true,
         },
       },
-      orderBy: { sortOrder: 'asc' },
-      select: { id: true, name: true, sortOrder: true },
+      orderBy: [
+        { academicYear: { isCurrent: 'desc' } },
+        { academicYear: { createdAt: 'desc' } },
+        { sortOrder: 'asc' },
+        { name: 'asc' },
+      ],
+      select: {
+        id: true,
+        name: true,
+        sortOrder: true,
+        academicYearId: true,
+        academicYear: {
+          select: {
+            isCurrent: true,
+          },
+        },
+      },
     });
 
-    res.json({ terms });
+    const normalizedTerms = terms.map((term) => ({
+      id: term.id,
+      name: term.name,
+      sortOrder: term.sortOrder,
+      academicYearId: term.academicYearId,
+      isCurrent: term.academicYear?.isCurrent ?? false,
+    }));
+
+    res.json({ terms: normalizedTerms });
   } catch (error) {
     console.error('Error fetching terms:', error);
     res.status(500).json({ error: 'Failed to fetch terms' });
