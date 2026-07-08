@@ -3998,25 +3998,8 @@ router.get('/results/:id', async (req: Request, res: Response) => {
       });
 
       if (previousTerms.length > 0) {
-        const pupilBase = new Map(
-          transformedResults.map((result) => [
-            result.pupil.id,
-            {
-              pupilId: result.pupil.id,
-              pupilName: result.pupil.name,
-              admissionNo: result.pupil.admissionNo ?? null,
-              termData: {} as Record<
-                number,
-                {
-                  totalScore: number;
-                  examScore: number;
-                  totalCount: number;
-                  examCount: number;
-                }
-              >,
-            },
-          ])
-        );
+        const buildSubjectKey = (subjectId: string | null, subject: string | null) =>
+          subjectId ? `id:${subjectId}` : `name:${subject?.trim().toLowerCase() ?? ''}`;
 
         const previousResults = await prisma.result.findMany({
           where: {
@@ -4025,7 +4008,7 @@ router.get('/results/:id', async (req: Request, res: Response) => {
               status: 'PUBLISHED',
               schoolId,
             },
-            pupilId: { in: Array.from(pupilBase.keys()) },
+            pupilId: { in: transformedResults.map((result) => result.pupil.id) },
           },
           include: {
             assessment: {
@@ -4061,9 +4044,10 @@ router.get('/results/:id', async (req: Request, res: Response) => {
         previousResults.forEach((previousResult) => {
           const pupilId = previousResult.pupilId;
           const termSort = previousResult.assessment?.term?.sortOrder;
-          if (!termSort || !pupilBase.has(pupilId)) return;
+          if (!termSort) return;
 
-          const key = `${pupilId}:${termSort}`;
+          const subjectKey = buildSubjectKey(previousResult.subjectId ?? null, previousResult.subject ?? null);
+          const key = `${pupilId}:${subjectKey}:${termSort}`;
           const existingTermData = publishedTermData.get(key) ?? {
             totalScore: 0,
             examScore: 0,
@@ -4090,50 +4074,55 @@ router.get('/results/:id', async (req: Request, res: Response) => {
             academicYearId: currentTerm.academicYear.id,
             termId: { in: previousTerms.map((term) => term.id) },
             classId: assessment.classId ?? undefined,
-            studentId: { in: Array.from(pupilBase.keys()) },
+            studentId: { in: transformedResults.map((result) => result.pupil.id) },
           },
         });
 
         const historicalTotalMap = new Map<string, number>();
         historicalTotals.forEach((record: any) => {
-          historicalTotalMap.set(`${record.studentId}:${record.termId}`, record.totalScore);
+          const subjectKey = buildSubjectKey(record.subjectId ?? null, record.subject ?? null);
+          historicalTotalMap.set(`${record.studentId}:${record.termId}:${subjectKey}`, record.totalScore);
         });
 
-        const entries = Array.from(pupilBase.values()).map((entry) => ({
-          pupilId: entry.pupilId,
-          pupilName: entry.pupilName,
-          admissionNo: entry.admissionNo,
-          terms: previousTerms.map((term) => {
-            const publishedKey = `${entry.pupilId}:${term.sortOrder}`;
-            const publishedTotals = publishedTermData.get(publishedKey);
-            let totalScore: number | null = null;
-            let examScore: number | null = null;
-            let subjectCount = 0;
+        const entries = transformedResults.map((result) => {
+          const subjectId = result.subjectRef?.id ?? null;
+          const subjectName = result.subjectRef?.name ?? result.subject ?? 'General';
+          const subjectKey = buildSubjectKey(subjectId, result.subject ?? null);
 
-            if (publishedTotals && publishedTotals.totalCount > 0) {
-              totalScore = Math.round(publishedTotals.totalScore);
-              examScore = publishedTotals.examCount > 0 ? Math.round(publishedTotals.examScore) : null;
-              subjectCount = publishedTotals.totalCount;
-            } else {
-              const historyKey = `${entry.pupilId}:${term.id}`;
-              const historicalScore = historicalTotalMap.get(historyKey);
-              if (typeof historicalScore === 'number') {
-                totalScore = Math.round(historicalScore);
-                examScore = null;
-                subjectCount = 0;
+          return {
+            pupilId: result.pupil.id,
+            pupilName: result.pupil.name,
+            admissionNo: result.pupil.admissionNo ?? null,
+            subjectId,
+            subjectName,
+            terms: previousTerms.map((term) => {
+              const publishedKey = `${result.pupil.id}:${subjectKey}:${term.sortOrder}`;
+              const publishedTotals = publishedTermData.get(publishedKey);
+              let totalScore: number | null = null;
+              let examScore: number | null = null;
+
+              if (publishedTotals && publishedTotals.totalCount > 0) {
+                totalScore = Math.round(publishedTotals.totalScore);
+                examScore = publishedTotals.examCount > 0 ? Math.round(publishedTotals.examScore) : null;
+              } else {
+                const historyKey = `${result.pupil.id}:${term.id}:${subjectKey}`;
+                const historicalScore = historicalTotalMap.get(historyKey);
+                if (typeof historicalScore === 'number') {
+                  totalScore = Math.round(historicalScore);
+                  examScore = null;
+                }
               }
-            }
 
-            return {
-              termId: term.id,
-              termName: term.name,
-              sortOrder: term.sortOrder,
-              totalScore,
-              examScore,
-              subjectCount,
-            };
-          }),
-        }));
+              return {
+                termId: term.id,
+                termName: term.name,
+                sortOrder: term.sortOrder,
+                totalScore,
+                examScore,
+              };
+            }),
+          };
+        });
 
         thirdTermHistory = {
           terms: previousTerms,
