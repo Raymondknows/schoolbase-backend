@@ -4221,6 +4221,78 @@ router.post('/assessments/:id/return-draft', async (req: Request, res: Response)
   }
 });
 
+// DELETE /api/admin/assessments/{id} - Safely delete assessment (DRAFT only, no results)
+router.delete('/assessments/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const schoolId = await resolveSchoolId(req);
+
+    if (!schoolId) {
+      return res.status(401).json({ error: 'School ID required' });
+    }
+
+    // Fetch assessment with related counts
+    const assessment = await prisma.assessment.findFirst({
+      where: { id, schoolId },
+      include: {
+        _count: {
+          select: {
+            results: true,
+            resultSheets: true,
+            components: true,
+          },
+        },
+      },
+    });
+
+    if (!assessment) {
+      return res.status(404).json({ error: 'Assessment not found' });
+    }
+
+    // Safety checks
+    if (assessment.status !== 'DRAFT') {
+      return res.status(400).json({
+        error: 'Can only delete DRAFT assessments',
+        reason: `Assessment is ${assessment.status}. Only draft assessments can be deleted.`,
+      });
+    }
+
+    if (assessment._count.results > 0) {
+      return res.status(400).json({
+        error: 'Cannot delete assessment with results',
+        reason: `This assessment has ${assessment._count.results} result(s) entered. Please delete results first.`,
+      });
+    }
+
+    if (assessment._count.resultSheets > 0) {
+      return res.status(400).json({
+        error: 'Cannot delete assessment with result sheets',
+        reason: `This assessment has result sheets. Please archive them first.`,
+      });
+    }
+
+    // Delete assessment (cascade will handle components, etc.)
+    const deleted = await prisma.assessment.delete({
+      where: { id },
+    });
+
+    console.log(`[AUDIT] Assessment deleted by admin: ${id}, School: ${schoolId}`);
+
+    res.json({
+      success: true,
+      message: `Assessment "${deleted.name}" deleted successfully`,
+      deletedId: id,
+    });
+  } catch (error) {
+    console.error('Error deleting assessment:', error);
+    const message = error instanceof Error ? error.message : 'Failed to delete assessment';
+    res.status(500).json({
+      error: 'Delete failed',
+      message,
+    });
+  }
+});
+
 // ============== TEACHER MANAGEMENT ==============
 
 // POST /api/admin/teachers - Create new teacher
