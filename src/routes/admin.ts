@@ -3931,7 +3931,17 @@ router.get('/results/:id', async (req: Request, res: Response) => {
     const assessment = await prisma.assessment.findFirst({
       where: { id, schoolId },
       include: {
-        term: true,
+        term: {
+          include: {
+            academicYear: {
+              select: {
+                id: true,
+                name: true,
+                isCurrent: true,
+              },
+            },
+          },
+        },
         results: {
           include: {
             pupil: {
@@ -3970,6 +3980,168 @@ router.get('/results/:id', async (req: Request, res: Response) => {
       },
     }));
 
+    // Third term historical totals support
+    let thirdTermHistory = null;
+    const currentTerm = assessment.term;
+    if (currentTerm?.sortOrder === 3 && currentTerm.academicYear?.id) {
+      const previousTerms = await prisma.term.findMany({
+        where: {
+          academicYearId: currentTerm.academicYear.id,
+          sortOrder: { in: [1, 2] },
+        },
+        orderBy: { sortOrder: 'asc' },
+        select: {
+          id: true,
+          name: true,
+          sortOrder: true,
+        },
+      });
+
+      if (previousTerms.length > 0) {
+        const pupilBase = new Map(
+          transformedResults.map((result) => [
+            result.pupil.id,
+            {
+              pupilId: result.pupil.id,
+              pupilName: result.pupil.name,
+              admissionNo: result.pupil.admissionNo ?? null,
+              termData: {} as Record<
+                number,
+                {
+                  totalScore: number;
+                  examScore: number;
+                  totalCount: number;
+                  examCount: number;
+                }
+              >,
+            },
+          ])
+        );
+
+        const previousResults = await prisma.result.findMany({
+          where: {
+            assessment: {
+              termId: { in: previousTerms.map((term) => term.id) },
+              status: 'PUBLISHED',
+              schoolId,
+            },
+            pupilId: { in: Array.from(pupilBase.keys()) },
+          },
+          include: {
+            assessment: {
+              select: {
+                id: true,
+                term: {
+                  select: {
+                    id: true,
+                    name: true,
+                    sortOrder: true,
+                  },
+                },
+              },
+            },
+            pupil: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                admissionNo: true,
+              },
+            },
+          },
+        });
+
+        const publishedTermData = new Map<string, {
+          totalScore: number;
+          examScore: number;
+          totalCount: number;
+          examCount: number;
+        }>();
+
+        previousResults.forEach((previousResult) => {
+          const pupilId = previousResult.pupilId;
+          const termSort = previousResult.assessment?.term?.sortOrder;
+          if (!termSort || !pupilBase.has(pupilId)) return;
+
+          const key = `${pupilId}:${termSort}`;
+          const existingTermData = publishedTermData.get(key) ?? {
+            totalScore: 0,
+            examScore: 0,
+            totalCount: 0,
+            examCount: 0,
+          };
+
+          if (typeof previousResult.totalScore === 'number') {
+            existingTermData.totalScore += previousResult.totalScore;
+            existingTermData.totalCount += 1;
+          }
+
+          if (typeof previousResult.examScore === 'number') {
+            existingTermData.examScore += previousResult.examScore;
+            existingTermData.examCount += 1;
+          }
+
+          publishedTermData.set(key, existingTermData);
+        });
+
+        const historicalTotals = await (prisma as any).historicalTermTotal.findMany({
+          where: {
+            schoolId,
+            academicYearId: currentTerm.academicYear.id,
+            termId: { in: previousTerms.map((term) => term.id) },
+            classId: assessment.classId ?? undefined,
+            studentId: { in: Array.from(pupilBase.keys()) },
+          },
+        });
+
+        const historicalTotalMap = new Map<string, number>();
+        historicalTotals.forEach((record: any) => {
+          historicalTotalMap.set(`${record.studentId}:${record.termId}`, record.totalScore);
+        });
+
+        const entries = Array.from(pupilBase.values()).map((entry) => ({
+          pupilId: entry.pupilId,
+          pupilName: entry.pupilName,
+          admissionNo: entry.admissionNo,
+          terms: previousTerms.map((term) => {
+            const publishedKey = `${entry.pupilId}:${term.sortOrder}`;
+            const publishedTotals = publishedTermData.get(publishedKey);
+            let totalScore: number | null = null;
+            let examScore: number | null = null;
+            let subjectCount = 0;
+
+            if (publishedTotals && publishedTotals.totalCount > 0) {
+              totalScore = Math.round(publishedTotals.totalScore);
+              examScore = publishedTotals.examCount > 0 ? Math.round(publishedTotals.examScore) : null;
+              subjectCount = publishedTotals.totalCount;
+            } else {
+              const historyKey = `${entry.pupilId}:${term.id}`;
+              const historicalScore = historicalTotalMap.get(historyKey);
+              if (typeof historicalScore === 'number') {
+                totalScore = Math.round(historicalScore);
+                examScore = null;
+                subjectCount = 0;
+              }
+            }
+
+            return {
+              termId: term.id,
+              termName: term.name,
+              sortOrder: term.sortOrder,
+              totalScore,
+              examScore,
+              subjectCount,
+            };
+          }),
+        }));
+
+        thirdTermHistory = {
+          terms: previousTerms,
+          entries,
+        };
+      }
+    }
+
     // Ensure publishedAt is available at the assessment level.
     const fallbackPublishedAt =
       assessment.results.find((r: any) => r.publishedAt)?.publishedAt || null;
@@ -3978,6 +4150,7 @@ router.get('/results/:id', async (req: Request, res: Response) => {
       ...assessment,
       publishedAt: fallbackPublishedAt,
       results: transformedResults,
+      thirdTermHistory,
     });
   } catch (error) {
     console.error('Error fetching assessment:', error);
@@ -4083,6 +4256,101 @@ router.post('/results', requireSubscription, async (req: Request, res: Response)
   } catch (error) {
     console.error('Error updating results:', error);
     res.status(500).json({ error: 'Failed to update results' });
+  }
+});
+
+// GET /api/admin/results/historical-totals - Fetch historical term totals for a class/year/subject/student
+router.get('/results/historical-totals', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    const { academicYearId, termId, classId, studentId, subjectId } = req.query;
+
+    if (!schoolId || !academicYearId || !termId || !classId) {
+      return res.status(400).json({ error: 'Missing required query parameters' });
+    }
+
+    const totals = await (prisma as any).historicalTermTotal.findMany({
+      where: {
+        schoolId,
+        academicYearId: String(academicYearId),
+        termId: String(termId),
+        classId: String(classId),
+        studentId: studentId ? String(studentId) : undefined,
+        subjectId: subjectId ? String(subjectId) : undefined,
+      },
+      include: {
+        subjectRef: true,
+      },
+    });
+
+    res.json({ success: true, totals });
+  } catch (error) {
+    console.error('Error fetching historical totals:', error);
+    res.status(500).json({ error: 'Failed to fetch historical totals' });
+  }
+});
+
+// POST /api/admin/results/historical-totals - Save or update a historical term total
+router.post('/results/historical-totals', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    const entries = Array.isArray(req.body) ? req.body : [req.body];
+    const createdBy = (req as any).user?.id || 'SYSTEM';
+
+    if (!schoolId || entries.length === 0) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const records: any[] = [];
+
+    for (const entry of entries) {
+      const { academicYearId, termId, classId, studentId, subjectId, subject, totalScore } = entry;
+
+      if (!academicYearId || !termId || !classId || !studentId || totalScore === undefined) {
+        return res.status(400).json({ error: 'Missing required fields for one or more entries' });
+      }
+
+      const existing = await (prisma as any).historicalTermTotal.findFirst({
+        where: {
+          schoolId,
+          academicYearId,
+          termId,
+          classId,
+          studentId,
+          subjectId: subjectId ?? null,
+        },
+      });
+
+      const record = existing
+        ? await (prisma as any).historicalTermTotal.update({
+            where: { id: existing.id },
+            data: {
+              subject,
+              totalScore,
+              createdBy,
+            },
+          })
+        : await (prisma as any).historicalTermTotal.create({
+            data: {
+              schoolId,
+              academicYearId,
+              termId,
+              classId,
+              studentId,
+              subjectId: subjectId ?? null,
+              subject: subject ?? null,
+              totalScore,
+              createdBy,
+            },
+          });
+
+      records.push(record);
+    }
+
+    res.json({ success: true, totals: records });
+  } catch (error) {
+    console.error('Error saving historical total:', error);
+    res.status(500).json({ error: 'Failed to save historical total' });
   }
 });
 

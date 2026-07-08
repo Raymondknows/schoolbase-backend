@@ -79,6 +79,7 @@ model School {
   resultSheets                  ResultSheet[]
   studentSummaries              StudentTermSummary[] @relation("School_StudentTermSummary")
   promotionRecords              PromotionRecord[] @relation("School_PromotionRecord")
+  historicalTermTotals          HistoricalTermTotal[]
   partner                       Partner?                 @relation(fields: [partnerId], references: [id], map: "School_partnerId_fkey")
   enabledPhases                 SchoolOnPhase[]
   subjects                      Subject[]
@@ -122,6 +123,7 @@ model AcademicYear {
   terms     Term[]
   resultSheets      ResultSheet[]
   promotionRecords  PromotionRecord[]
+  historicalTermTotals HistoricalTermTotal[]
 
   @@index([schoolId], map: "AcademicYear_schoolId_fkey")
   @@unique([schoolId, name])
@@ -139,6 +141,7 @@ model Term {
   feeSchedules   FeeSchedule[]
   psychomotorAssessments PsychomotorAssessment[]
   resultSheets   ResultSheet[]
+  historicalTermTotals HistoricalTermTotal[]
   academicYear   AcademicYear  @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
 
   @@index([academicYearId], map: "Term_academicYearId_fkey")
@@ -164,6 +167,7 @@ model Class {
   feeSchedules   FeeSchedule[]
   assessments    Assessment[]
   results        Result[]
+  historicalTermTotals HistoricalTermTotal[]
 
   @@index([schoolId], map: "Class_schoolId_fkey")
   @@unique([schoolId, name, phase])
@@ -203,6 +207,7 @@ model Pupil {
   class          Class?             @relation(fields: [classId], references: [id])
   school         School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   results        Result[]
+  historicalTermTotals HistoricalTermTotal[]
 
   @@index([classId], map: "Pupil_classId_fkey")
   @@index([schoolId], map: "Pupil_schoolId_fkey")
@@ -366,6 +371,7 @@ model Subject {
   code            String?
   createdAt       DateTime         @default(now())
   results         Result[]
+  historicalTermTotals HistoricalTermTotal[]
   school          School           @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   subjectClasses  SubjectClass[]
   subjectResults  SubjectResult[]
@@ -717,6 +723,32 @@ model StudentTermSummary {
   @@index([classId, termId])
   @@index([classPosition])
   @@index([schoolId, termId])
+}
+
+model HistoricalTermTotal {
+  id              String        @id @default(cuid())
+  schoolId        String
+  academicYearId  String
+  termId          String
+  classId         String
+  studentId       String
+  subjectId       String?
+  subject         String?
+  totalScore      Float
+  createdBy       String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  school          School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  academicYear    AcademicYear  @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  term            Term          @relation(fields: [termId], references: [id], onDelete: Cascade)
+  class           Class         @relation(fields: [classId], references: [id], onDelete: Cascade)
+  student         Pupil         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subjectRef      Subject?      @relation(fields: [subjectId], references: [id])
+
+  @@unique([schoolId, academicYearId, termId, classId, studentId, subjectId])
+  @@index([termId])
+  @@index([studentId])
 }
 
 model BehaviourAssessment {

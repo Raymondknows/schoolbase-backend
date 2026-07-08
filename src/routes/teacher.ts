@@ -555,6 +555,11 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
     const assessment = await prisma.assessment.findFirst({
       where: { id: assessmentId, schoolId },
       include: {
+        term: {
+          include: {
+            academicYear: true,
+          },
+        },
         results: {
           include: {
             pupil: {
