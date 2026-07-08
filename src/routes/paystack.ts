@@ -15,9 +15,13 @@ const PAYSTACK_BASE_URL = 'https://api.paystack.co';
 // POST /api/paystack/init - Initialize Paystack payment
 router.post('/init', async (req: Request, res: Response) => {
   try {
-    const { email, amount, amountMinor, metadata, callback_url } = req.body;
+    const { email, amount, amountMinor, metadata, callback_url, cancel_action } = req.body;
 
     const normalizedAmount = typeof amount === 'number' ? amount : typeof amountMinor === 'number' ? amountMinor / 100 : null;
+    const normalizedCallbackUrl = typeof callback_url === 'string' && callback_url.trim() ? callback_url.trim() : undefined;
+    const normalizedCancelAction = typeof cancel_action === 'string' && cancel_action.trim()
+      ? cancel_action.trim()
+      : normalizedCallbackUrl || normalizedCallbackUrl;
 
     if (!email || normalizedAmount === null) {
       return res.status(400).json({ error: 'Missing required fields: email and amountMinor/amount' });
@@ -83,7 +87,8 @@ router.post('/init', async (req: Request, res: Response) => {
         amount: Math.round(normalizedAmount * 100), // Convert to kobo (smallest unit)
         reference,
         metadata: paystackMetadata,
-        callback_url,
+        callback_url: normalizedCallbackUrl,
+        cancel_action: normalizedCancelAction,
       },
       {
         headers: {

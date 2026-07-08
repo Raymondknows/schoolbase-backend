@@ -367,9 +367,10 @@ router.get('/audit-logs', async (req: Request, res: Response) => {
   if (!session) return;
 
   try {
+    const limit = parseInt(req.query.limit as string) || 20;
     const logs = await prisma.platformAuditLog.findMany({
       orderBy: { createdAt: 'desc' },
-      take: 20,
+      take: limit,
       select: {
         id: true,
         event: true,
@@ -389,7 +390,17 @@ router.get('/audit-logs', async (req: Request, res: Response) => {
       },
     });
 
-    res.json({ logs });
+    res.json({
+      logs: logs.map((log: any) => ({
+        id: log.id,
+        event: log.event,
+        action: log.event,
+        details: log.details,
+        createdAt: log.createdAt,
+        user: log.user,
+        school: log.school,
+      })),
+    });
   } catch (error) {
     console.error('Error fetching audit logs:', error);
     res.status(500).json({ message: (error as Error).message || 'Failed to fetch activity' });
@@ -459,8 +470,9 @@ router.get('/schools', async (req: Request, res: Response) => {
     if (schools.length > 0) {
       const adminEmails = schools
         .map((s: any) => s.users[0]?.email)
-        .filter(Boolean);
-      
+        .filter(Boolean)
+        .map((email: string) => email.trim().toLowerCase());
+
       if (adminEmails.length > 0) {
         const verifiedOtps = await prisma.signupOtp.findMany({
           where: {
@@ -469,9 +481,9 @@ router.get('/schools', async (req: Request, res: Response) => {
           },
           select: { email: true }
         });
-        
+
         verifiedOtps.forEach((otp: any) => {
-          verificationMap.set(otp.email, true);
+          verificationMap.set((otp.email || '').trim().toLowerCase(), true);
         });
       }
     }
@@ -536,6 +548,10 @@ router.get('/schools/:schoolId', async (req: Request, res: Response) => {
         principalComment: true,
         stampUrl: true,
         principalSignatureUrl: true,
+        users: {
+          where: { role: 'SCHOOL_ADMIN' },
+          select: { email: true }
+        },
       },
     });
 
@@ -543,7 +559,26 @@ router.get('/schools/:schoolId', async (req: Request, res: Response) => {
       return res.status(404).json({ message: 'School not found.' });
     }
 
-    res.json(school);
+    const adminEmail = school.users[0]?.email;
+    let isVerified = false;
+
+    if (adminEmail) {
+      const normalizedEmail = adminEmail.trim().toLowerCase();
+      const verifiedOtp = await prisma.signupOtp.findFirst({
+        where: {
+          email: normalizedEmail,
+          verifiedAt: { not: null }
+        },
+        select: { email: true }
+      });
+
+      isVerified = !!verifiedOtp;
+    }
+
+    res.json({
+      ...school,
+      isVerified,
+    });
   } catch (error) {
     console.error('Error fetching school detail:', error);
     res.status(500).json({ message: (error as Error).message || 'Failed to fetch school detail' });
