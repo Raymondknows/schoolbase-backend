@@ -43,6 +43,7 @@ export class CommunicationRulesRegistry {
 
 export const DEFAULT_COMMUNICATION_RULES: Record<string, CommunicationRuleDefinition> = {
   FeeInvoiceCreated: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Invoice' },
+  FeeReminder: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'FeeReminder' },
   FeePaymentReceived: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Receipt' },
   AttendanceMarked: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Attendance' },
   ResultsPublished: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Results' },

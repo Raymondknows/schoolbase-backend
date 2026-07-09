@@ -44,11 +44,13 @@ const sharedDriverManager = new DriverManager({
         logoUrl,
       );
     } else if (request.event === 'FeePaymentReceived') {
+      const currency = String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN');
       await sendFeePaymentReceiptEmail(
         recipient.address,
         recipient.name ?? 'Guardian',
         studentName,
         className,
+        currency,
         amount,
         paidAmount,
         outstanding,
@@ -86,12 +88,14 @@ const sharedDriverManager = new DriverManager({
         logoUrl,
       );
     } else {
+      const currency = String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN');
       await sendFeeReminderEmail(
         recipient.address,
         recipient.name ?? 'Guardian',
         studentName,
         className,
         termName,
+        currency,
         amount,
         paidAmount,
         outstanding,
@@ -1322,6 +1326,8 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       return res.status(400).json({ error: 'School ID required' });
     }
 
+    const requestCurrency = (req.body && req.body.currency) ? String(req.body.currency).trim() : undefined;
+
     const { termId } = req.body;
     if (!termId) {
       return res.status(400).json({ error: 'Term ID required' });
@@ -1342,7 +1348,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
-      select: { name: true, logoUrl: true },
+      select: { name: true, logoUrl: true, currency: true },
     });
 
     const communicationService = createCommunicationService();
@@ -1414,7 +1420,8 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
 
           for (const guardianPupil of pupil.guardians) {
             const guardian = guardianPupil.guardian;
-            const message = `Dear ${guardian.firstName}, this is to inform you that an invoice for ${school?.name || 'School'} fees has been issued for ${pupilName} (${className}). Amount: NGN ${amount}. Please contact the school for payment details.`;
+            const scheduleCurrency = requestCurrency || school?.currency || 'NGN';
+            const message = `Dear ${guardian.firstName}, this is to inform you that an invoice for ${school?.name || 'School'} fees has been issued for ${pupilName} (${className}). Amount: ${scheduleCurrency} ${amount}. Please contact the school for payment details.`;
             const whatsappAddress = guardian.whatsapp || guardian.phone;
 
             const recipients = [
@@ -1435,6 +1442,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
                     studentName: pupilName,
                     className,
                     amount,
+                    currency: scheduleCurrency,
                     balance: amount,
                     schoolName: school?.name || 'School',
                     recipientName: guardian.firstName,
@@ -1443,6 +1451,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
                     studentName: pupilName,
                     className,
                     amount,
+                    currency: scheduleCurrency,
                     balance: amount,
                     schoolName: school?.name || 'School',
                     termName: schedule.term?.name || 'Current Term',
@@ -1524,6 +1533,7 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
     }
 
     const { invoiceId } = req.body || {};
+    const requestCurrency = (req.body && req.body.currency) ? String(req.body.currency).trim() : undefined;
 
     // Find invoices that may need reminders: sent, part-paid, or overdue
     const invoices = invoiceId
@@ -1597,7 +1607,10 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
       for (const guardianPupil of invoice.pupil.guardians) {
         processedGuardians++;
         const guardian = guardianPupil.guardian;
-        const message = `Dear ${guardian.firstName}, this is a reminder that fee payment of ${school.currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${school.currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
+        const currency = requestCurrency || school.currency || 'NGN';
+        const cookiePresent = Boolean(req.cookies && req.cookies.country_v1);
+        console.log(`[send-reminders] invoice=${invoice.id} guardian=${guardian.id} requestCurrency=${requestCurrency || '<none>'} cookiePresent=${cookiePresent} schoolCurrency=${school.currency || '<none>'} chosenCurrency=${currency}`);
+        const message = `Dear ${guardian.firstName}, this is a reminder that fee payment of ${currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
         const whatsappAddress = guardian.whatsapp || guardian.phone;
         const canSendWhatsApp = Boolean(whatsappAddress);
         const canSendEmail = Boolean(guardian.email);
@@ -1615,7 +1628,7 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
         if (recipients.length > 0) {
           try {
             const dispatchResult = await communicationService.dispatch({
-              event: 'FeeInvoiceCreated',
+              event: 'FeeReminder',
               schoolId,
               recipients,
               template: 'FeeReminder',
@@ -1625,6 +1638,7 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
                 studentName: pupilName,
                 className,
                 amount,
+                currency,
                 balance: outstanding.toFixed(2),
                 schoolName: school.name,
                 recipientName: guardian.firstName,
@@ -1633,6 +1647,7 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
                 studentName: pupilName,
                 className,
                 amount,
+                currency,
                 balance: outstanding.toFixed(2),
                 schoolName: school.name,
                 termName: invoice.feeSchedule?.term?.name || 'Current Term',
@@ -2103,7 +2118,8 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
     const newPaidAmountFormatted = (newAmountPaid / 100).toFixed(2);
     const balanceAmount = Math.max(0, updatedInvoice.amountDue - updatedInvoice.amountPaid) / 100;
     const balance = balanceAmount.toFixed(2);
-    const paymentMessage = `Dear guardian, we have received payment of ${school?.currency ?? 'NGN'} ${amountPaidFormatted} for ${pupilName} (${className}). Your updated balance is ${school?.currency ?? 'NGN'} ${balance}. Thank you.`;
+    const paymentCurrency = school?.currency || 'NGN';
+    const paymentMessage = `Dear guardian, we have received payment of ${paymentCurrency} ${amountPaidFormatted} for ${pupilName} (${className}). Your updated balance is ${paymentCurrency} ${balance}. Thank you.`;
 
     for (const guardianPupil of guardians) {
       const guardian = guardianPupil.guardian;
@@ -2129,6 +2145,7 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
             studentName: pupilName,
             className,
             amount: amountPaidFormatted,
+            currency: paymentCurrency,
             paidAmount: newPaidAmountFormatted,
             balance,
             schoolName: school?.name || 'SchoolBase',
@@ -2138,6 +2155,7 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
             studentName: pupilName,
             className,
             amount: amountPaidFormatted,
+            currency: paymentCurrency,
             paidAmount: newPaidAmountFormatted,
             outstanding: balance,
             schoolName: school?.name || 'SchoolBase',

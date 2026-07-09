@@ -509,6 +509,7 @@ export async function sendFeeReminderEmail(
   pupilName: string,
   className: string,
   termName: string,
+  currency: string,
   totalAmount: string,
   paidAmount: string,
   outstandingAmount: string,
@@ -522,7 +523,7 @@ export async function sendFeeReminderEmail(
 
     const schoolLogoInline = await fetchInlineLogo(schoolLogo);
     const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
-    const textBody = `School Fee Payment Reminder - ${schoolName}\n\nDear ${guardianName},\n\nThis is a friendly reminder that there is an outstanding school fee balance for ${pupilName}.\n\nStudent: ${pupilName}\nClass: ${className}\nTerm: ${termName}\n\nOutstanding Balance: ₦${outstandingAmount}\nTotal Fees: ₦${totalAmount}\nAlready Paid: ₦${paidAmount}\n\nPlease arrange payment as soon as possible to avoid disruptions. Contact the school office for payment options or visit https://schoolbase.live/parent/invoices to review the invoice.\n\nThank you,\n${schoolName} Finance Team`;
+    const textBody = `School Fee Payment Reminder - ${schoolName}\n\nDear ${guardianName},\n\nThis is a friendly reminder that there is an outstanding school fee balance for ${pupilName}.\n\nStudent: ${pupilName}\nClass: ${className}\nTerm: ${termName}\n\nOutstanding Balance: ${currency} ${outstandingAmount}\nTotal Fees: ${currency} ${totalAmount}\nAlready Paid: ${currency} ${paidAmount}\n\nPlease arrange payment as soon as possible to avoid disruptions. Contact the school office for payment options or visit https://schoolbase.live/parent/invoices to review the invoice.\n\nThank you,\n${schoolName} Finance Team`;
 
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
@@ -555,8 +556,8 @@ export async function sendFeeReminderEmail(
                 </div>
 
                 <h2 style="margin-top: 32px; text-align: center;">Outstanding Balance</h2>
-                <p style="text-align: center;"><strong style="font-size: 20px; color: ${BRAND.error};">₦${outstandingAmount}</strong></p>
-                <p style="text-align: center; font-size: 13px; color: ${BRAND.textMuted};">Total Fees: ₦${totalAmount} | Already Paid: ₦${paidAmount}</p>
+                <p style="text-align: center;"><strong style="font-size: 20px; color: ${BRAND.error};">${currency} ${outstandingAmount}</strong></p>
+                <p style="text-align: center; font-size: 13px; color: ${BRAND.textMuted};">Total Fees: ${currency} ${totalAmount} | Already Paid: ${currency} ${paidAmount}</p>
 
                 <p style="margin-top: 24px;">We kindly request that you arrange payment at your earliest convenience to ensure there are no disruptions to your child's education and access to school records.</p>
 
@@ -604,6 +605,7 @@ export async function sendFeePaymentReceiptEmail(
   guardianName: string,
   pupilName: string,
   className: string,
+  currency: string,
   amountPaid: string,
   totalPaid: string,
   balance: string,
@@ -617,7 +619,7 @@ export async function sendFeePaymentReceiptEmail(
 
     const schoolLogoInline = await fetchInlineLogo(schoolLogo);
     const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
-    const textBody = `School Fee Payment Receipt - ${schoolName}\n\nHello ${guardianName},\n\nWe have received a payment of ₦${amountPaid} for ${pupilName}.\n\nStudent: ${pupilName}\nClass: ${className}\nAmount Paid: ₦${amountPaid}\nTotal Paid: ₦${totalPaid}\nBalance: ₦${balance}\n\nThank you for your prompt payment. If you have questions, please contact the school office.`;
+    const textBody = `School Fee Payment Receipt - ${schoolName}\n\nHello ${guardianName},\n\nWe have received a payment of ${currency} ${amountPaid} for ${pupilName}.\n\nStudent: ${pupilName}\nClass: ${className}\nAmount Paid: ${currency} ${amountPaid}\nTotal Paid: ${currency} ${totalPaid}\nBalance: ${currency} ${balance}\n\nThank you for your prompt payment. If you have questions, please contact the school office.`;
 
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
@@ -645,9 +647,9 @@ export async function sendFeePaymentReceiptEmail(
                 <div class="info-box">
                   <p><strong>Student:</strong> ${pupilName}</p>
                   <p><strong>Class:</strong> ${className}</p>
-                  <p><strong>Amount Paid:</strong> ₦${amountPaid}</p>
-                  <p><strong>Total Paid:</strong> ₦${totalPaid}</p>
-                  <p><strong>Balance:</strong> ₦${balance}</p>
+                  <p><strong>Amount Paid:</strong> ${currency} ${amountPaid}</p>
+                  <p><strong>Total Paid:</strong> ${currency} ${totalPaid}</p>
+                  <p><strong>Balance:</strong> ${currency} ${balance}</p>
                 </div>
                 <p>If you have any questions about this payment, please contact the school office.</p>
                 <div class="button-container">
