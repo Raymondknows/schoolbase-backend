@@ -39,6 +39,7 @@ interface ReportCardData {
   term: {
     name: string;
     session: string; // Academic year name
+    sortOrder: number | null;
   };
   subjects: SubjectResult[];
   averageScore: number;
@@ -51,6 +52,26 @@ interface ReportCardData {
     lowestScore: number;
     passRate: number; // Percentage
   };
+  thirdTermHistory?: {
+    terms: Array<{
+      id: string;
+      name: string;
+      sortOrder: number;
+    }>;
+    entries: Array<{
+      subjectId: string | null;
+      subjectName: string;
+      currentTotal: number | null;
+      cumulativeTotal: number | null;
+      previousTotals: Array<{
+        termId: string;
+        termName: string;
+        sortOrder: number;
+        totalScore: number | null;
+        examScore: number | null;
+      }>;
+    }>;
+  } | null;
 }
 
 class ReportCardService {
@@ -83,6 +104,164 @@ class ReportCardService {
     if (totalScore >= 40) return 'E';
 
     return storedGrade || 'F';
+  }
+
+  private async getThirdTermHistory(
+    assessment: any,
+    schoolId: string,
+    pupilId: string,
+    currentSubjects: SubjectResult[]
+  ) {
+    const currentTerm = assessment.term;
+    if (!currentTerm?.sortOrder || currentTerm.sortOrder !== 3 || !currentTerm.academicYear?.id) {
+      return null;
+    }
+
+    const previousTerms = await this.prisma.term.findMany({
+      where: {
+        academicYearId: currentTerm.academicYear.id,
+        sortOrder: { in: [1, 2] },
+      },
+      orderBy: { sortOrder: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        sortOrder: true,
+      },
+    });
+
+    if (previousTerms.length === 0) {
+      return null;
+    }
+
+    const buildSubjectKey = (subjectId: string | null, subject: string | null) =>
+      subjectId ? `id:${subjectId}` : `name:${subject?.trim().toLowerCase() ?? ''}`;
+
+    const previousResults = await this.prisma.result.findMany({
+      where: {
+        assessment: {
+          termId: { in: previousTerms.map((term) => term.id) },
+          status: 'PUBLISHED',
+          schoolId,
+        },
+        pupilId,
+      },
+      include: {
+        assessment: {
+          select: {
+            term: {
+              select: {
+                id: true,
+                name: true,
+                sortOrder: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const publishedTermData = new Map<string, {
+      totalScore: number;
+      examScore: number;
+      totalCount: number;
+      examCount: number;
+    }>();
+
+    previousResults.forEach((previousResult) => {
+      const termSort = previousResult.assessment?.term?.sortOrder;
+      if (!termSort) return;
+
+      const subjectKey = buildSubjectKey(previousResult.subjectId ?? null, previousResult.subject ?? null);
+      const key = `${pupilId}:${subjectKey}:${termSort}`;
+      const existingTermData = publishedTermData.get(key) ?? {
+        totalScore: 0,
+        examScore: 0,
+        totalCount: 0,
+        examCount: 0,
+      };
+
+      if (typeof previousResult.totalScore === 'number') {
+        existingTermData.totalScore += previousResult.totalScore;
+        existingTermData.totalCount += 1;
+      }
+
+      if (typeof previousResult.examScore === 'number') {
+        existingTermData.examScore += previousResult.examScore;
+        existingTermData.examCount += 1;
+      }
+
+      publishedTermData.set(key, existingTermData);
+    });
+
+    const historicalTotals = await (this.prisma as any).historicalTermTotal.findMany({
+      where: {
+        schoolId,
+        academicYearId: currentTerm.academicYear.id,
+        termId: { in: previousTerms.map((term) => term.id) },
+        studentId: pupilId,
+      },
+    });
+
+    const historicalTotalMap = new Map<string, number>();
+    historicalTotals.forEach((record: any) => {
+      const subjectKey = buildSubjectKey(record.subjectId ?? null, record.subject ?? null);
+      historicalTotalMap.set(`${pupilId}:${record.termId}:${subjectKey}`, record.totalScore);
+    });
+
+    const entries = currentSubjects
+      .map((subject) => {
+        const subjectKey = buildSubjectKey(subject.subjectId || null, subject.subjectName || null);
+        const previousTotals = previousTerms.map((term) => {
+          const publishedKey = `${pupilId}:${subjectKey}:${term.sortOrder}`;
+          const publishedTotals = publishedTermData.get(publishedKey);
+          let totalScore: number | null = null;
+          let examScore: number | null = null;
+
+          if (publishedTotals && publishedTotals.totalCount > 0) {
+            totalScore = Math.round(publishedTotals.totalScore);
+            examScore = publishedTotals.examCount > 0 ? Math.round(publishedTotals.examScore) : null;
+          } else {
+            const historyKey = `${pupilId}:${term.id}:${subjectKey}`;
+            const historicalScore = historicalTotalMap.get(historyKey);
+            if (typeof historicalScore === 'number') {
+              totalScore = Math.round(historicalScore);
+            }
+          }
+
+          return {
+            termId: term.id,
+            termName: term.name,
+            sortOrder: term.sortOrder,
+            totalScore,
+            examScore,
+          };
+        });
+
+        const currentTotal = subject.totalScore ?? null;
+        const cumulativeTotal =
+          currentTotal === null
+            ? null
+            : previousTotals.reduce((sum, termTotal) => sum + (termTotal.totalScore ?? 0), 0) + currentTotal;
+
+        return {
+          subjectId: subject.subjectId || null,
+          subjectName: subject.subjectName,
+          currentTotal,
+          cumulativeTotal,
+          previousTotals,
+        };
+      })
+      .filter(
+        (entry) =>
+          entry.previousTotals.some((termTotal) => termTotal.totalScore !== null) ||
+          entry.currentTotal !== null
+      );
+
+    return {
+      terms: previousTerms,
+      entries,
+    };
   }
 
   /**
@@ -176,6 +355,8 @@ class ReportCardService {
 
     subjects.sort((a, b) => a.subjectName.localeCompare(b.subjectName));
 
+    const thirdTermHistory = await this.getThirdTermHistory(assessment, schoolId, pupil.id, subjects);
+
     // Calculate statistics
     const validScores = subjects.filter((s) => s.totalScore > 0).map((s) => s.totalScore);
     const averageScore =
@@ -227,6 +408,7 @@ class ReportCardService {
       term: {
         name: assessment.term?.name || 'Unknown',
         session: assessment.term?.academicYear?.name || 'Unknown',
+        sortOrder: assessment.term?.sortOrder ?? null,
       },
       subjects,
       averageScore,
@@ -239,6 +421,7 @@ class ReportCardService {
         lowestScore: validScores.length > 0 ? Math.min(...validScores) : 0,
         passRate,
       },
+      thirdTermHistory,
     };
   }
 

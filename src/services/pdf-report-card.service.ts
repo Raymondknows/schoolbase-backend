@@ -24,7 +24,7 @@ interface ReportCardData {
     initials: string | null;
   };
   class: { name: string; phase: string };
-  term: { name: string; session: string };
+  term: { name: string; session: string; sortOrder: number | null };
   subjects: Array<{
     subjectId: string;
     subjectName: string;
@@ -44,6 +44,26 @@ interface ReportCardData {
     lowestScore: number;
     passRate: number;
   };
+  thirdTermHistory?: {
+    terms: Array<{
+      id: string;
+      name: string;
+      sortOrder: number;
+    }>;
+    entries: Array<{
+      subjectId: string | null;
+      subjectName: string;
+      currentTotal: number | null;
+      cumulativeTotal: number | null;
+      previousTotals: Array<{
+        termId: string;
+        termName: string;
+        sortOrder: number;
+        totalScore: number | null;
+        examScore: number | null;
+      }>;
+    }>;
+  } | null;
 }
 
 type ReportCardSubject = ReportCardData['subjects'][number] & {
@@ -156,6 +176,38 @@ class PDFReportCardService {
 
     const summaryPosition = reportCard.classPosition ?? '-';
     const principalName = reportCard.school.principalName || 'Principal/Headmaster';
+    const showThirdTermHistory = reportCard.term.sortOrder === 3 && reportCard.thirdTermHistory?.entries?.length;
+    const thirdTermHistoryHtml = showThirdTermHistory
+      ? `
+        <div class="remarks" style="margin-top: 10px;">
+          <div class="remark-box">
+            <div class="remark-title">THIRD TERM CUMULATIVE HISTORY</div>
+            <div style="margin-top: 6px; overflow-x: auto;">
+              <table style="font-size: 9px; width: 100%; border-collapse: collapse;">
+                <thead>
+                  <tr>
+                    <th style="text-align:left; border: 1px solid #d1d5db; padding: 4px; background: #f3f4f6;">Subject</th>
+                    ${reportCard.thirdTermHistory?.terms.map((term) => `<th style="border: 1px solid #d1d5db; padding: 4px; background: #f3f4f6;">${this.escapeHtml(term.name)}</th>`).join('')}
+                    <th style="border: 1px solid #d1d5db; padding: 4px; background: #f3f4f6;">Term 3</th>
+                    <th style="border: 1px solid #d1d5db; padding: 4px; background: #f3f4f6;">Cumulative</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${reportCard.thirdTermHistory?.entries.map((entry) => `
+                    <tr>
+                      <td style="border: 1px solid #d1d5db; padding: 4px; font-weight: 700;">${this.escapeHtml(entry.subjectName)}</td>
+                      ${entry.previousTotals.map((termTotal) => `<td style="border: 1px solid #d1d5db; padding: 4px; text-align: center;">${termTotal.totalScore !== null ? termTotal.totalScore.toFixed(1) : '—'}</td>`).join('')}
+                      <td style="border: 1px solid #d1d5db; padding: 4px; text-align: center;">${entry.currentTotal !== null ? entry.currentTotal.toFixed(1) : '—'}</td>
+                      <td style="border: 1px solid #d1d5db; padding: 4px; text-align: center; font-weight: 700;">${entry.cumulativeTotal !== null ? entry.cumulativeTotal.toFixed(1) : '—'}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `
+      : '';
 
     return `
       <!doctype html>
@@ -391,6 +443,7 @@ class PDFReportCardService {
               <div class="remarks">
                 ${reportCard.teacherRemark ? `<div class="remark-box"><div class="remark-title">TEACHER'S REMARK:</div><div>${this.escapeHtml(reportCard.teacherRemark)}</div></div>` : ''}
                 ${reportCard.principalRemark ? `<div class="remark-box"><div class="remark-title">PRINCIPAL'S REMARK:</div><div>${this.escapeHtml(reportCard.principalRemark)}</div></div>` : ''}
+                ${thirdTermHistoryHtml}
               </div>
 
               <div class="footer-signatures">
