@@ -1523,22 +1523,45 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
       return res.status(400).json({ error: 'School ID required' });
     }
 
+    const { invoiceId } = req.body || {};
+
     // Find invoices that may need reminders: sent, part-paid, or overdue
-    const invoices = await prisma.invoice.findMany({
-      where: {
-        schoolId,
-        status: { in: ['SENT', 'OVERDUE', 'PART_PAID'] },
-      },
-      include: {
-        pupil: {
-          include: {
-            guardians: { include: { guardian: true } },
-            class: true,
+    const invoices = invoiceId
+      ? await prisma.invoice.findMany({
+          where: {
+            schoolId,
+            id: invoiceId,
+            status: { in: ['SENT', 'OVERDUE', 'PART_PAID'] },
           },
-        },
-        feeSchedule: { include: { term: true } },
-      },
-    });
+          include: {
+            pupil: {
+              include: {
+                guardians: { include: { guardian: true } },
+                class: true,
+              },
+            },
+            feeSchedule: { include: { term: true } },
+          },
+        })
+      : await prisma.invoice.findMany({
+          where: {
+            schoolId,
+            status: { in: ['SENT', 'OVERDUE', 'PART_PAID'] },
+          },
+          include: {
+            pupil: {
+              include: {
+                guardians: { include: { guardian: true } },
+                class: true,
+              },
+            },
+            feeSchedule: { include: { term: true } },
+          },
+        });
+
+    if (invoiceId && invoices.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
