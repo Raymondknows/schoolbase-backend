@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { PrismaClient } from '@prisma/client';
+import { resolveSupportedCurrency } from '../services/currency.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from './rules.js';
 
 export type CommunicationChannel = 'EMAIL' | 'WHATSAPP' | 'SMS' | 'PUSH';
@@ -453,14 +454,20 @@ export class CommunicationService {
         console.warn('[CommunicationService] Failed to load school metadata for template rendering', e);
       }
 
+      const renderData = {
+        ...(request.data ?? {}),
+        currency: resolveSupportedCurrency(
+          typeof request.data?.currency === 'string' ? request.data.currency : undefined,
+          typeof request.data?.schoolCurrency === 'string' ? request.data.schoolCurrency : undefined
+        ),
+        recipientName: recipient.name ?? 'Guardian',
+        schoolName: request.data?.schoolName ?? (schoolMeta?.name as string) ?? 'SchoolBase',
+        school: schoolMeta,
+      };
+
       const content = this.dependencies.templateEngine.render(
         request.template ?? ruleSet.template,
-        {
-          ...(request.data ?? {}),
-          recipientName: recipient.name ?? 'Guardian',
-          schoolName: request.data?.schoolName ?? (schoolMeta?.name as string) ?? 'SchoolBase',
-          school: schoolMeta,
-        },
+        renderData,
         request.body,
         recipient.channel
       );

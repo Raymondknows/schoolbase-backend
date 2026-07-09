@@ -8,6 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendFeePaymentReceiptEmail, sendAnnouncementEmail, sendPlatformCommunicationEmail, sendSubscriptionPaymentSuccessEmail } from '../services/email.js';
+import { normalizeCurrency, getDefaultCurrency, resolveSupportedCurrency } from '../services/currency.js';
 import { CommunicationService, RulesEngine, TemplateEngine, RecipientResolver, DeliveryQueue, DriverManager, EmailDriver, WhatsAppDriver } from '../communications/index.js';
 import baileysSessionManager from '../communications/whatsapp-baileys.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
@@ -44,7 +45,7 @@ const sharedDriverManager = new DriverManager({
         logoUrl,
       );
     } else if (request.event === 'FeePaymentReceived') {
-      const currency = String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN');
+      const currency = resolveSupportedCurrency(String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN'));
       await sendFeePaymentReceiptEmail(
         recipient.address,
         recipient.name ?? 'Guardian',
@@ -88,7 +89,7 @@ const sharedDriverManager = new DriverManager({
         logoUrl,
       );
     } else {
-      const currency = String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN');
+      const currency = resolveSupportedCurrency(String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN'));
       await sendFeeReminderEmail(
         recipient.address,
         recipient.name ?? 'Guardian',
@@ -1095,7 +1096,7 @@ router.get('/fees/data', async (req: Request, res: Response) => {
     res.json({
       invoices: mappedInvoices,
       outstanding,
-      currency: school?.currency || 'NGN',
+      currency: resolveSupportedCurrency(school?.currency),
       terms,
     });
   } catch (error) {
@@ -1140,7 +1141,7 @@ router.get('/fees/schedules', async (req: Request, res: Response) => {
 
     res.json({
       feeSchedules,
-      currency: school?.currency || 'NGN',
+      currency: resolveSupportedCurrency(school?.currency),
       terms,
       classes,
     });
@@ -1420,7 +1421,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
 
           for (const guardianPupil of pupil.guardians) {
             const guardian = guardianPupil.guardian;
-            const scheduleCurrency = requestCurrency || school?.currency || 'NGN';
+            const scheduleCurrency = resolveSupportedCurrency(requestCurrency, school?.currency);
             const message = `Dear ${guardian.firstName}, this is to inform you that an invoice for ${school?.name || 'School'} fees has been issued for ${pupilName} (${className}). Amount: ${scheduleCurrency} ${amount}. Please contact the school for payment details.`;
             const whatsappAddress = guardian.whatsapp || guardian.phone;
 
@@ -1607,7 +1608,7 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
       for (const guardianPupil of invoice.pupil.guardians) {
         processedGuardians++;
         const guardian = guardianPupil.guardian;
-        const currency = requestCurrency || school.currency || 'NGN';
+        const currency = resolveSupportedCurrency(requestCurrency, school.currency);
         const cookiePresent = Boolean(req.cookies && req.cookies.country_v1);
         console.log(`[send-reminders] invoice=${invoice.id} guardian=${guardian.id} requestCurrency=${requestCurrency || '<none>'} cookiePresent=${cookiePresent} schoolCurrency=${school.currency || '<none>'} chosenCurrency=${currency}`);
         const message = `Dear ${guardian.firstName}, this is a reminder that fee payment of ${currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
@@ -2047,6 +2048,7 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
       return res.status(400).json({ error: 'School ID required' });
     }
 
+    const requestCurrency = req.body && req.body.currency ? String(req.body.currency).trim() : undefined;
     const { invoiceId, amount, method, reference } = req.body;
 
     // Validate required fields
@@ -2118,7 +2120,7 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
     const newPaidAmountFormatted = (newAmountPaid / 100).toFixed(2);
     const balanceAmount = Math.max(0, updatedInvoice.amountDue - updatedInvoice.amountPaid) / 100;
     const balance = balanceAmount.toFixed(2);
-    const paymentCurrency = school?.currency || 'NGN';
+    const paymentCurrency = resolveSupportedCurrency(requestCurrency, school?.currency);
     const paymentMessage = `Dear guardian, we have received payment of ${paymentCurrency} ${amountPaidFormatted} for ${pupilName} (${className}). Your updated balance is ${paymentCurrency} ${balance}. Thank you.`;
 
     for (const guardianPupil of guardians) {

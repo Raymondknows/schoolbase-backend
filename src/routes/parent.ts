@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { SignJWT, jwtVerify } from 'jose';
 import { PrismaClient } from '@prisma/client';
+import { resolveSupportedCurrency } from '../services/currency.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -823,7 +824,7 @@ router.get('/school', async (req: Request, res: Response) => {
         manualPaymentBankName: school.manualPaymentBankName || '',
       city: school.city || '',
       country: school.country || 'NG',
-      currency: school.currency || 'NGN',
+      currency: resolveSupportedCurrency(school.currency),
       initials: school.initials || '',
       termCount: school.termCount,
       logoUrl: school.logoUrl || '',
