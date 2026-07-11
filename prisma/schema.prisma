@@ -80,6 +80,8 @@ model School {
   studentSummaries              StudentTermSummary[] @relation("School_StudentTermSummary")
   promotionRecords              PromotionRecord[] @relation("School_PromotionRecord")
   historicalTermTotals          HistoricalTermTotal[]
+  resultPins                    ResultPin[]
+  resultPinBatches              ResultPinBatch[]
   partner                       Partner?                 @relation(fields: [partnerId], references: [id], map: "School_partnerId_fkey")
   enabledPhases                 SchoolOnPhase[]
   subjects                      Subject[]
@@ -100,6 +102,11 @@ model School {
   onboardingStatus      String?      @default("Pending")
   onboardingProgress    Int          @default(0)
   lastSeenAt            DateTime?
+  resultAccessPinEnabled Boolean      @default(false)
+  resultAccessMode      String       @default("NONE")
+  resultAccessPinType   String       @default("NONE")
+  resultAccessPinValidity String      @default("TERM")
+  resultAccessAllowRegeneration Boolean @default(false)
 
   @@index([partnerId], map: "School_partnerId_fkey")
 }
@@ -142,9 +149,51 @@ model Term {
   psychomotorAssessments PsychomotorAssessment[]
   resultSheets   ResultSheet[]
   historicalTermTotals HistoricalTermTotal[]
+  resultPins     ResultPin[]
   academicYear   AcademicYear  @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
 
   @@index([academicYearId], map: "Term_academicYearId_fkey")
+}
+
+model ResultPinBatch {
+  id            String   @id @default(cuid())
+  schoolId      String
+  batchName     String?
+  type          String   @default("GENERIC")
+  quantity      Int      @default(0)
+  generatedBy   String?
+  generatedAt   DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  school        School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  pins          ResultPin[]
+}
+
+model ResultPin {
+  id                String   @id @default(cuid())
+  schoolId          String
+  studentId         String?
+  sessionId         String?
+  termId            String?
+  assessmentId      String?
+  batchId           String?
+  pinHash           String
+  pinValue          String?
+  type              String   @default("GENERIC")
+  status            String   @default("ACTIVE")
+  expiresAt         DateTime?
+  assignedAt        DateTime?
+  generatedBy       String?
+  generatedAt       DateTime @default(now())
+  revokedBy         String?
+  revokedAt         DateTime?
+  lastValidatedAt   DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  school            School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  student           Pupil?   @relation(fields: [studentId], references: [id], onDelete: SetNull)
+  term              Term?    @relation(fields: [termId], references: [id], onDelete: SetNull)
+  batch             ResultPinBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
 }
 
 model Class {
@@ -208,6 +257,7 @@ model Pupil {
   school         School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   results        Result[]
   historicalTermTotals HistoricalTermTotal[]
+  resultPins     ResultPin[]
 
   @@index([classId], map: "Pupil_classId_fkey")
   @@index([schoolId], map: "Pupil_schoolId_fkey")
@@ -747,8 +797,12 @@ model HistoricalTermTotal {
   subjectRef      Subject?      @relation(fields: [subjectId], references: [id])
 
   @@unique([schoolId, academicYearId, termId, classId, studentId, subjectId])
-  @@index([termId])
-  @@index([studentId])
+  @@index([schoolId], map: "HistoricalTermTotal_schoolId_fkey")
+  @@index([academicYearId], map: "HistoricalTermTotal_academicYearId_fkey")
+  @@index([termId], map: "HistoricalTermTotal_termId_idx")
+  @@index([classId], map: "HistoricalTermTotal_classId_fkey")
+  @@index([studentId], map: "HistoricalTermTotal_studentId_idx")
+  @@index([subjectId], map: "HistoricalTermTotal_subjectId_fkey")
 }
 
 model BehaviourAssessment {

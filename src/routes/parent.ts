@@ -1,10 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { SignJWT, jwtVerify } from 'jose';
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 import { resolveSupportedCurrency } from '../services/currency.js';
 
 const router = Router();
-const prisma = new PrismaClient();
+const prisma = new PrismaClient() as PrismaClient & {
+  resultPin: any;
+  resultPinBatch: any;
+};
 
 function secret() {
   return new TextEncoder().encode(
@@ -507,6 +511,84 @@ router.get('/terms', async (req: Request, res: Response) => {
   }
 });
 
+async function ensureResultPinAccess(childId: string, suppliedPin?: string | null, termId?: string | null) {
+  const child = await prisma.pupil.findUnique({
+    where: { id: childId },
+    select: { id: true, schoolId: true },
+  });
+
+  if (!child) {
+    return { allowed: false, requiresPin: false, error: 'Student not found' };
+  }
+
+  const school = await prisma.school.findUnique({
+    where: { id: child.schoolId },
+    select: {
+      id: true,
+      resultAccessPinEnabled: true,
+      resultAccessMode: true,
+    },
+  });
+
+  if (!school || !school.resultAccessPinEnabled) {
+    return { allowed: true, requiresPin: false };
+  }
+
+  const mode = school.resultAccessMode || 'NONE';
+  // Parent portal access should not be blocked by PUBLIC_CHECKER_ONLY mode
+  // Mode only affects public result checking, not authenticated parent portal access
+  // If PIN is enabled, we'll require it below
+
+  // Allow parent portal access if PIN is enabled (modes: NONE, PARENT_PORTAL_ONLY, BOTH)
+  // If no PIN is supplied, request one
+  const normalizedPin = String(suppliedPin ?? '').trim();
+  if (!normalizedPin) {
+    return { allowed: false, requiresPin: true, error: 'Result PIN required' };
+  }
+
+  const candidates = await prisma.resultPin.findMany({
+    where: {
+      schoolId: child.schoolId,
+      status: 'ACTIVE',
+      OR: [
+        { studentId: child.id },
+        { studentId: null },
+      ],
+      ...(termId ? { termId } : {}),
+    },
+    select: {
+      id: true,
+      pinHash: true,
+      type: true,
+      studentId: true,
+      expiresAt: true,
+      termId: true,
+    },
+    orderBy: { generatedAt: 'desc' },
+  });
+
+  const now = Date.now();
+  for (const candidate of candidates) {
+    if (candidate.expiresAt && new Date(candidate.expiresAt).getTime() < now) {
+      continue;
+    }
+
+    const matches = await bcrypt.compare(normalizedPin, candidate.pinHash);
+    if (matches) {
+      if (candidate.type === 'GENERIC' && !candidate.studentId) {
+        await prisma.resultPin.update({
+          where: { id: candidate.id },
+          data: { studentId: child.id, assignedAt: new Date() },
+        });
+      }
+
+      return { allowed: true, requiresPin: false };
+    }
+  }
+
+  return { allowed: false, requiresPin: false, error: 'Invalid result PIN' };
+}
+
 // Get child results by term and assessment
 router.get('/results', async (req: Request, res: Response) => {
   try {
@@ -523,6 +605,7 @@ router.get('/results', async (req: Request, res: Response) => {
 
     const childId = req.query.childId as string;
     const termId = req.query.termId as string;
+    const suppliedPin = req.query.pin as string | undefined;
 
     if (!childId) {
       return res.status(400).json({ error: 'childId required' });
@@ -543,6 +626,15 @@ router.get('/results', async (req: Request, res: Response) => {
 
     if (!guardian || !guardian.pupils.some((gp: any) => gp.pupil.id === childId)) {
       return res.status(403).json({ error: 'Unauthorized access to this child' });
+    }
+
+    const accessCheck = await ensureResultPinAccess(childId, suppliedPin, termId || null);
+    if (!accessCheck.allowed) {
+      if (accessCheck.requiresPin) {
+        return res.status(403).json({ error: accessCheck.error || 'Result PIN required', requiresPin: true });
+      }
+
+      return res.status(403).json({ error: accessCheck.error || 'Result PIN validation failed', requiresPin: false });
     }
 
     // Get child's school and phase

@@ -121,11 +121,14 @@ async function loadRoutes() {
     console.log('✓ Loaded PDF reports routes');
     const { default: assessmentSetupRoutes } = await import('./routes/assessment-setup.js');
     console.log('✓ Loaded assessment setup routes');
+    const { default: resultPinRoutes } = await import('./routes/result-pins.js');
+    console.log('✓ Loaded result PIN routes');
 
     app.use('/api/admin', adminRoutes);
     app.use('/api/admin/assessment-components', adminComponentsRoutes);
     app.use('/api/admin/flexible-results', adminFlexibleResultsRoutes);
     app.use('/api/assessments/setup', assessmentSetupRoutes);
+    app.use('/api/result-pins', resultPinRoutes);
     app.use('/api/results', resultsEngineRoutes);
     app.use('/api/report-cards', reportCardRoutes);
     app.use('/api/pdf-reports', pdfReportsRoutes);
