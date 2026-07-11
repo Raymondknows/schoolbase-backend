@@ -155,13 +155,17 @@ router.post('/results/check', async (req: Request, res: Response) => {
 
     const school = await resolveSchoolForPublicResultCheck(prisma, schoolCode);
 
-    if (!school || !school.resultAccessPinEnabled) {
-      return res.status(403).json({ error: 'Result PIN access is not enabled for this school' });
+    if (!school) {
+      return res.status(404).json({ error: 'School not found for the provided school code' });
     }
 
+    const pinAccessEnabled = Boolean(school.resultAccessPinEnabled);
     const mode = school.resultAccessMode || 'NONE';
     if (mode === 'PARENT_PORTAL_ONLY') {
-      return res.status(403).json({ error: 'This school only allows parent-portal result access' });
+      return res.status(403).json({
+        error: 'This school only allows parent-portal result access',
+        requiresPin: false,
+      });
     }
 
     const pupil = await prisma.pupil.findFirst({
@@ -184,10 +188,98 @@ router.post('/results/check', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Student record not found for the supplied admission number' });
     }
 
-    // If PIN is not provided, ask for it
+    if (!pinAccessEnabled) {
+      const where: any = {
+        schoolId: school.id,
+        phase: pupil.class.phase,
+        status: 'PUBLISHED',
+      };
+
+      if (termId && termId !== 'latest') {
+        where.termId = termId;
+      }
+
+      const assessments = await prisma.assessment.findMany({
+        where,
+        include: {
+          term: {
+            select: { id: true, name: true, sortOrder: true },
+          },
+          results: {
+            where: { pupilId: pupil.id },
+            select: {
+              id: true,
+              caScore: true,
+              testScore: true,
+              examScore: true,
+              totalScore: true,
+            },
+          },
+        },
+        orderBy: [
+          { term: { sortOrder: 'desc' } },
+          { createdAt: 'desc' },
+        ],
+      });
+
+      const resultPayload = assessments.map((assessment) => {
+        const result = assessment.results[0];
+        const totalScore = result?.totalScore ?? null;
+        return buildPublicResultPayloadItem({
+          assessmentId: assessment.id,
+          assessmentName: assessment.name ?? 'Assessment',
+          termName: assessment.term?.name ?? 'Unknown term',
+          termId: assessment.term?.id ?? null,
+          totalScore,
+          caScore: result?.caScore ?? null,
+          testScore: result?.testScore ?? null,
+          examScore: result?.examScore ?? null,
+          grade: getPublicGrade(totalScore) ?? null,
+        });
+      });
+
+      const reportCards = await Promise.all(
+        assessments.map(async (assessment) => {
+          try {
+            const reportCardData = await reportCardService.generateReportCard(assessment.id, pupil.id, school.id);
+            return {
+              assessmentId: assessment.id,
+              ...reportCardData,
+            };
+          } catch (error) {
+            console.error('Error generating public report card payload:', error);
+            return null;
+          }
+        })
+      );
+
+      return res.json({
+        ok: true,
+        requiresPin: false,
+        school: {
+          id: school.id,
+          name: school.name,
+          slug: school.slug,
+          mode: school.resultAccessMode || 'NONE',
+        },
+        student: {
+          id: pupil.id,
+          firstName: pupil.firstName,
+          lastName: pupil.lastName,
+          admissionNo: pupil.admissionNo,
+          className: pupil.class?.name ?? null,
+        },
+        results: resultPayload,
+        reportCards: reportCards.filter(Boolean),
+        term: assessments[0]?.term ?? null,
+      });
+    }
+
+    // Only require a PIN when the school has explicitly enabled PIN-protected result access.
     if (!pin) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: 'PIN is required to view results',
+        requiresPin: true,
         student: {
           id: pupil.id,
           firstName: pupil.firstName,
@@ -320,6 +412,7 @@ router.post('/results/check', async (req: Request, res: Response) => {
 
     res.json({
       ok: true,
+      requiresPin: false,
       school: {
         id: school.id,
         name: school.name,
