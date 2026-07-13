@@ -560,6 +560,11 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentAccountName: true,
         manualPaymentAccountNumber: true,
         manualPaymentBankName: true,
+        resultAccessPinEnabled: true,
+        resultAccessMode: true,
+        resultAccessPinType: true,
+        resultAccessPinValidity: true,
+        resultAccessAllowRegeneration: true,
         paystackPublicEncrypted: true,
         paystackSecretEncrypted: true,
       },
@@ -588,6 +593,13 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentAccountName: school.manualPaymentAccountName,
         manualPaymentAccountNumber: school.manualPaymentAccountNumber,
         manualPaymentBankName: school.manualPaymentBankName,
+        resultAccess: {
+          enabled: Boolean(school.resultAccessPinEnabled),
+          mode: school.resultAccessMode || 'NONE',
+          pinType: school.resultAccessPinType || 'NONE',
+          pinValidity: school.resultAccessPinValidity || 'TERM',
+          allowRegeneration: Boolean(school.resultAccessAllowRegeneration),
+        },
         hasPaystackPublic: Boolean(school.paystackPublicEncrypted),
         hasPaystackSecret: Boolean(school.paystackSecretEncrypted),
       },
@@ -622,6 +634,7 @@ router.post('/settings', async (req: Request, res: Response) => {
       logoUrl,
       paystackPublic,
       paystackSecret,
+      resultAccess,
     } = req.body;
 
     const school = await prisma.school.update({
@@ -640,6 +653,11 @@ router.post('/settings', async (req: Request, res: Response) => {
         principalSignatureUrl,
         stampUrl,
         logoUrl,
+        resultAccessPinEnabled: Boolean(resultAccess?.enabled),
+        resultAccessMode: resultAccess?.mode || 'NONE',
+        resultAccessPinType: resultAccess?.pinType || 'NONE',
+        resultAccessPinValidity: resultAccess?.pinValidity || 'TERM',
+        resultAccessAllowRegeneration: Boolean(resultAccess?.allowRegeneration),
         paystackPublicEncrypted: paystackPublic || null,
         paystackSecretEncrypted: paystackSecret || null,
       },
@@ -714,6 +732,11 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         manualPaymentAccountName: true,
         manualPaymentAccountNumber: true,
         manualPaymentBankName: true,
+        resultAccessPinEnabled: true,
+        resultAccessMode: true,
+        resultAccessPinType: true,
+        resultAccessPinValidity: true,
+        resultAccessAllowRegeneration: true,
         paystackPublicEncrypted: true,
         paystackSecretEncrypted: true,
         enabledPhases: true,
@@ -750,6 +773,13 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         manualPaymentAccountName: school.manualPaymentAccountName,
         manualPaymentAccountNumber: school.manualPaymentAccountNumber,
         manualPaymentBankName: school.manualPaymentBankName,
+        resultAccess: {
+          enabled: Boolean(school.resultAccessPinEnabled),
+          mode: school.resultAccessMode || 'NONE',
+          pinType: school.resultAccessPinType || 'NONE',
+          pinValidity: school.resultAccessPinValidity || 'TERM',
+          allowRegeneration: Boolean(school.resultAccessAllowRegeneration),
+        },
         paystackPublicKey:
           process.env.PAYSTACK_SUBSCRIPTION_PUBLIC_KEY ||
           process.env.PAYSTACK_PUBLIC_KEY ||
