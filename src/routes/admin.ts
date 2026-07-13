@@ -8,7 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendFeePaymentReceiptEmail, sendAnnouncementEmail, sendPlatformCommunicationEmail, sendSubscriptionPaymentSuccessEmail } from '../services/email.js';
-import { normalizeCurrency, getDefaultCurrency, resolveSupportedCurrency } from '../services/currency.js';
+import { normalizeCurrency, getDefaultCurrency } from '../services/currency.js';
 import { CommunicationService, RulesEngine, TemplateEngine, RecipientResolver, DeliveryQueue, DriverManager, EmailDriver, WhatsAppDriver } from '../communications/index.js';
 import baileysSessionManager from '../communications/whatsapp-baileys.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
@@ -45,7 +45,7 @@ const sharedDriverManager = new DriverManager({
         logoUrl,
       );
     } else if (request.event === 'FeePaymentReceived') {
-      const currency = resolveSupportedCurrency(String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN'));
+      const currency = String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN');
       await sendFeePaymentReceiptEmail(
         recipient.address,
         recipient.name ?? 'Guardian',
@@ -89,7 +89,7 @@ const sharedDriverManager = new DriverManager({
         logoUrl,
       );
     } else {
-      const currency = resolveSupportedCurrency(String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN'));
+      const currency = String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN');
       await sendFeeReminderEmail(
         recipient.address,
         recipient.name ?? 'Guardian',
@@ -307,6 +307,7 @@ router.use((req: Request, res: Response, next: any) => {
     '/reset-password',
     '/paystack',
     '/platform',
+    '/impersonate',
   ];
 
   // Allow exact or prefix matches for the allowlist
@@ -377,7 +378,7 @@ router.post('/impersonate', async (req: Request, res: Response) => {
     const sessionToken = await new SignJWT({
       userId: adminId,
       role: 'SCHOOL_ADMIN',
-      email: 'impersonation@schoolbase.local',
+      email: 'admin@schoolbase.live',
       name: 'Platform Admin Impersonator',
       schoolId,
       impersonation: true,
@@ -391,6 +392,8 @@ router.post('/impersonate', async (req: Request, res: Response) => {
       success: true,
       token: sessionToken,
       schoolId,
+      redirectUrl: '/admin',
+      message: 'Impersonation session created.',
     });
   } catch (error) {
     console.error('[API ADMIN] Impersonation exchange error:', error);
@@ -559,11 +562,6 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentBankName: true,
         paystackPublicEncrypted: true,
         paystackSecretEncrypted: true,
-        resultAccessPinEnabled: true,
-        resultAccessMode: true,
-        resultAccessPinType: true,
-        resultAccessPinValidity: true,
-        resultAccessAllowRegeneration: true,
       },
     });
 
@@ -592,13 +590,6 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentBankName: school.manualPaymentBankName,
         hasPaystackPublic: Boolean(school.paystackPublicEncrypted),
         hasPaystackSecret: Boolean(school.paystackSecretEncrypted),
-        resultAccess: {
-          enabled: Boolean(school.resultAccessPinEnabled),
-          mode: school.resultAccessMode || 'NONE',
-          pinType: school.resultAccessPinType || 'NONE',
-          pinValidity: school.resultAccessPinValidity || 'TERM',
-          allowRegeneration: Boolean(school.resultAccessAllowRegeneration),
-        },
       },
     });
   } catch (error) {
@@ -631,7 +622,6 @@ router.post('/settings', async (req: Request, res: Response) => {
       logoUrl,
       paystackPublic,
       paystackSecret,
-      resultAccess,
     } = req.body;
 
     const school = await prisma.school.update({
@@ -652,11 +642,6 @@ router.post('/settings', async (req: Request, res: Response) => {
         logoUrl,
         paystackPublicEncrypted: paystackPublic || null,
         paystackSecretEncrypted: paystackSecret || null,
-        resultAccessPinEnabled: Boolean(resultAccess?.enabled ?? false),
-        resultAccessMode: resultAccess?.mode || 'NONE',
-        resultAccessPinType: resultAccess?.pinType || 'NONE',
-        resultAccessPinValidity: resultAccess?.pinValidity || 'TERM',
-        resultAccessAllowRegeneration: Boolean(resultAccess?.allowRegeneration ?? false),
       },
     });
 
@@ -732,11 +717,6 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         paystackPublicEncrypted: true,
         paystackSecretEncrypted: true,
         enabledPhases: true,
-        resultAccessPinEnabled: true,
-        resultAccessMode: true,
-        resultAccessPinType: true,
-        resultAccessPinValidity: true,
-        resultAccessAllowRegeneration: true,
       },
     });
 
@@ -777,13 +757,6 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         hasPaystackPublic: Boolean(school.paystackPublicEncrypted),
         hasPaystackSecret: Boolean(school.paystackSecretEncrypted),
         enabledPhases: school.enabledPhases,
-        resultAccess: {
-          enabled: Boolean(school.resultAccessPinEnabled),
-          mode: school.resultAccessMode || 'NONE',
-          pinType: school.resultAccessPinType || 'NONE',
-          pinValidity: school.resultAccessPinValidity || 'TERM',
-          allowRegeneration: Boolean(school.resultAccessAllowRegeneration),
-        },
       },
       staff,
     });
@@ -1126,7 +1099,7 @@ router.get('/fees/data', async (req: Request, res: Response) => {
     res.json({
       invoices: mappedInvoices,
       outstanding,
-      currency: resolveSupportedCurrency(school?.currency),
+      currency: school?.currency || 'NGN',
       terms,
     });
   } catch (error) {
@@ -1171,7 +1144,7 @@ router.get('/fees/schedules', async (req: Request, res: Response) => {
 
     res.json({
       feeSchedules,
-      currency: resolveSupportedCurrency(school?.currency),
+      currency: school?.currency || 'NGN',
       terms,
       classes,
     });
@@ -1451,7 +1424,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
 
           for (const guardianPupil of pupil.guardians) {
             const guardian = guardianPupil.guardian;
-            const scheduleCurrency = resolveSupportedCurrency(requestCurrency, school?.currency);
+            const scheduleCurrency = normalizeCurrency(requestCurrency) || normalizeCurrency(school?.currency) || getDefaultCurrency();
             const message = `Dear ${guardian.firstName}, this is to inform you that an invoice for ${school?.name || 'School'} fees has been issued for ${pupilName} (${className}). Amount: ${scheduleCurrency} ${amount}. Please contact the school for payment details.`;
             const whatsappAddress = guardian.whatsapp || guardian.phone;
 
@@ -1638,9 +1611,11 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
       for (const guardianPupil of invoice.pupil.guardians) {
         processedGuardians++;
         const guardian = guardianPupil.guardian;
-        const currency = resolveSupportedCurrency(requestCurrency, school.currency);
+        const normalizedRequestCurrency = normalizeCurrency(requestCurrency);
+        const normalizedSchoolCurrency = normalizeCurrency(school.currency);
+        const currency = normalizedRequestCurrency || normalizedSchoolCurrency || getDefaultCurrency();
         const cookiePresent = Boolean(req.cookies && req.cookies.country_v1);
-        console.log(`[send-reminders] invoice=${invoice.id} guardian=${guardian.id} requestCurrency=${requestCurrency || '<none>'} cookiePresent=${cookiePresent} schoolCurrency=${school.currency || '<none>'} chosenCurrency=${currency}`);
+        console.log(`[send-reminders] invoice=${invoice.id} guardian=${guardian.id} requestCurrency=${requestCurrency || '<none>'} normalizedRequestCurrency=${normalizedRequestCurrency || '<none>'} cookiePresent=${cookiePresent} schoolCurrency=${school.currency || '<none>'} normalizedSchoolCurrency=${normalizedSchoolCurrency || '<none>'} chosenCurrency=${currency}`);
         const message = `Dear ${guardian.firstName}, this is a reminder that fee payment of ${currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
         const whatsappAddress = guardian.whatsapp || guardian.phone;
         const canSendWhatsApp = Boolean(whatsappAddress);
@@ -2078,7 +2053,6 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const requestCurrency = req.body && req.body.currency ? String(req.body.currency).trim() : undefined;
     const { invoiceId, amount, method, reference } = req.body;
 
     // Validate required fields
@@ -2150,7 +2124,7 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
     const newPaidAmountFormatted = (newAmountPaid / 100).toFixed(2);
     const balanceAmount = Math.max(0, updatedInvoice.amountDue - updatedInvoice.amountPaid) / 100;
     const balance = balanceAmount.toFixed(2);
-    const paymentCurrency = resolveSupportedCurrency(requestCurrency, school?.currency);
+    const paymentCurrency = normalizeCurrency(school?.currency) || getDefaultCurrency();
     const paymentMessage = `Dear guardian, we have received payment of ${paymentCurrency} ${amountPaidFormatted} for ${pupilName} (${className}). Your updated balance is ${paymentCurrency} ${balance}. Thank you.`;
 
     for (const guardianPupil of guardians) {
@@ -3886,17 +3860,16 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const existingSchool = await prisma.school.findUnique({
+    const school = await prisma.school.findUnique({
       where: { id: schoolId },
     });
 
-    if (!existingSchool) {
+    if (!school) {
       return res.status(404).json({ error: 'School not found' });
     }
 
-    // Check setup completion items, including school settings/profile data
+    // Check setup completion items
     const [
-      schoolSettings,
       enabledPhases,
       academicYears,
       classes,
@@ -3904,29 +3877,6 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
       teacherClasses,
       feeSchedules,
     ] = await Promise.all([
-      prisma.school.findUnique({
-        where: { id: schoolId },
-        select: {
-          name: true,
-          initials: true,
-          country: true,
-          currency: true,
-          address: true,
-          city: true,
-          phone: true,
-          email: true,
-          logoUrl: true,
-          principalName: true,
-          principalComment: true,
-          principalSignatureUrl: true,
-          stampUrl: true,
-          manualPaymentAccountName: true,
-          manualPaymentAccountNumber: true,
-          manualPaymentBankName: true,
-          paystackPublicEncrypted: true,
-          paystackSecretEncrypted: true,
-        },
-      }),
       prisma.schoolOnPhase.count({ where: { schoolId } }),
       prisma.academicYear.count({ where: { schoolId } }),
       prisma.class.count({ where: { schoolId } }),
@@ -3942,17 +3892,6 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
       hasSubjects: subjects > 0,
       hasStaff: teacherClasses > 0,
       hasFees: feeSchedules > 0,
-      hasSchoolProfile: Boolean(
-        schoolSettings?.name && schoolSettings?.address && schoolSettings?.city && schoolSettings?.country && schoolSettings?.currency && schoolSettings?.phone && schoolSettings?.email,
-      ),
-      hasSchoolLogo: Boolean(schoolSettings?.logoUrl),
-      hasPrincipalInfo: Boolean(schoolSettings?.principalName || schoolSettings?.principalComment),
-      hasPrincipalSignature: Boolean(schoolSettings?.principalSignatureUrl),
-      hasSchoolStamp: Boolean(schoolSettings?.stampUrl),
-      hasPaymentSetup: Boolean(
-        (schoolSettings?.manualPaymentAccountName && schoolSettings?.manualPaymentAccountNumber && schoolSettings?.manualPaymentBankName) ||
-        (schoolSettings?.paystackPublicEncrypted && schoolSettings?.paystackSecretEncrypted),
-      ),
     };
 
     // School is considered complete if it has all setup items
@@ -4740,37 +4679,23 @@ router.post('/teachers', async (req: Request, res: Response) => {
 
     // Send email notification with login credentials
     try {
-      let schoolName = 'Your School';
-      let schoolLogo: string | undefined;
+      const school = await prisma.school.findUnique({
+        where: { id: schoolId },
+        select: { name: true, logoUrl: true },
+      });
 
-      try {
-        const school = await prisma.school.findUnique({
-          where: { id: schoolId },
-          select: { name: true, logoUrl: true },
-        });
-
-        if (school) {
-          schoolName = school.name || schoolName;
-          schoolLogo = school.logoUrl ?? undefined;
-        } else {
-          console.warn(`[POST /teachers] School record not found for welcome email; using fallback school name. schoolId=${schoolId}`);
-        }
-      } catch (schoolLookupError) {
-        console.warn('[POST /teachers] Failed to load school details for welcome email:', schoolLookupError);
+      if (school) {
+        // Send welcome email with login instructions and temp password
+        await sendTeacherWelcomeEmail(
+          email,
+          name,
+          school.name,
+          password,
+          'https://www.schoolbase.live/login',
+          school.logoUrl ?? undefined,
+        );
+        console.log(`✅ Teacher welcome email sent to ${email}`);
       }
-
-      const normalizedEmail = String(email).trim().toLowerCase();
-
-      // Send welcome email with login instructions and temp password
-      await sendTeacherWelcomeEmail(
-        normalizedEmail,
-        name,
-        schoolName,
-        password,
-        'https://www.schoolbase.live/login',
-        schoolLogo,
-      );
-      console.log(`✅ Teacher welcome email sent to ${normalizedEmail}`);
     } catch (emailError) {
       console.warn('⚠️ Failed to send teacher notification email:', emailError);
       // Don't fail the request if email fails

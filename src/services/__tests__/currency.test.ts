@@ -14,3 +14,8 @@ test('resolveSupportedCurrency falls back to the supported default currency', ()
   assert.equal(resolveSupportedCurrency('UGX', 'GHS'), 'GHS');
   assert.equal(resolveSupportedCurrency('NGN'), 'NGN');
 });
+
+test('resolveSupportedCurrency uses the third fallback when the first two values are unsupported', () => {
+  assert.equal(resolveSupportedCurrency('KES', 'UGX', 'GHS'), 'GHS');
+  assert.equal(resolveSupportedCurrency('', 'USD', 'NGN'), 'NGN');
+});

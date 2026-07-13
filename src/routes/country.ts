@@ -1,5 +1,4 @@
 import { Router, Request, Response } from 'express';
-import { COUNTRY_DETAILS } from '../services/currency.js';
 
 const router = Router();
 
@@ -7,9 +6,13 @@ const router = Router();
 router.get('/config', async (req: Request, res: Response) => {
   try {
     // Mock countries for now - in production, load from file
-    const countries = Object.fromEntries(
-      Object.entries(COUNTRY_DETAILS).map(([code, details]) => [code, { name: details.name, currency: details.currency }])
-    );
+    const countries = {
+      NG: { name: 'Nigeria', currency: 'NGN' },
+      GH: { name: 'Ghana', currency: 'GHS' },
+      SL: { name: 'Sierra Leone', currency: 'SLE' },
+      LR: { name: 'Liberia', currency: 'LRD' },
+      GM: { name: 'The Gambia', currency: 'GMD' }
+    };
     
     res.json(countries);
   } catch (error) {
