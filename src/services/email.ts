@@ -1,18 +1,26 @@
 import nodemailer from 'nodemailer';
 
-const transportConfig = {
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT || '587'),
-  secure: process.env.NODE_ENV === 'production' ? true : false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  connectionTimeout: 5000,
-  socketTimeout: 10000,
-};
+export function buildTransportConfig() {
+  const port = parseInt(process.env.SMTP_PORT || '587', 10);
+  const explicitSecure = process.env.SMTP_SECURE;
+  const secure = explicitSecure === undefined
+    ? process.env.NODE_ENV === 'production'
+    : explicitSecure.toLowerCase() === 'true';
 
-const transporter = nodemailer.createTransport(transportConfig as any);
+  return {
+    host: process.env.SMTP_HOST,
+    port,
+    secure,
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+    connectionTimeout: 5000,
+    socketTimeout: 10000,
+  };
+}
+
+const transporter = nodemailer.createTransport(buildTransportConfig() as any);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BRAND COLORS & CONSTANTS
@@ -1013,11 +1021,33 @@ export async function sendAdmissionNotificationEmail(
 // TEMPLATE 8: SETUP COMPLETION REMINDER EMAIL
 // ═══════════════════════════════════════════════════════════════════════════════
 
+export function buildSetupReminderTaskSections(
+  completedItems: string[] = [],
+  missingItems: string[] = [],
+) {
+  const completedHtml = completedItems.length > 0
+    ? completedItems
+        .map((item) => `<p style="margin: 8px 0; color: ${BRAND.text};"><strong>✓</strong> ${item}</p>`)
+        .join('')
+    : `<p style="margin: 8px 0; color: ${BRAND.textMuted};">No completed setup items were detected yet.</p>`;
+
+  const missingHtml = missingItems.length > 0
+    ? missingItems
+        .map((item) => `<p style="margin: 8px 0; color: ${BRAND.text};"><strong>○</strong> ${item}</p>`)
+        .join('')
+    : `<p style="margin: 8px 0; color: ${BRAND.primary};">Everything looks complete so far.</p>`;
+
+  return { completedHtml, missingHtml };
+}
+
 export async function sendSetupReminderEmail(
   email: string,
   adminName: string,
   schoolName: string,
   remainingTasks: string[] = [],
+  completedItems: string[] = [],
+  missingItems: string[] = [],
+  completionPercentage?: number,
 ) {
   try {
     if (!isValidEmail(email)) {
@@ -1031,20 +1061,47 @@ export async function sendSetupReminderEmail(
       { task: 'Invite parents to the portal', time: '5 min' },
     ];
 
-    let tasksList = defaultTasks;
-    if (remainingTasks.length > 0) {
-      tasksList = remainingTasks.map((task, i) => ({
-        task,
-        time: defaultTasks[i]?.time || 'few min',
-      }));
+    let taskSectionHtml = '';
+    const hasChecklistData = completedItems.length > 0 || missingItems.length > 0;
+
+    if (hasChecklistData) {
+      const { completedHtml, missingHtml } = buildSetupReminderTaskSections(completedItems, missingItems);
+      taskSectionHtml = `
+        <div style="display: grid; gap: 12px; margin: 16px 0;">
+          <div style="background-color: ${BRAND.primaryLight}; padding: 14px 16px; border-radius: 6px; border: 1px solid ${BRAND.primary};">
+            <h3 style="font-size: 14px; margin-bottom: 6px; color: ${BRAND.primary};">Completed setup</h3>
+            ${completedHtml}
+          </div>
+          <div style="background-color: ${BRAND.surface}; padding: 14px 16px; border-radius: 6px; border: 1px solid ${BRAND.border};">
+            <h3 style="font-size: 14px; margin-bottom: 6px; color: ${BRAND.primary};">Still missing</h3>
+            ${missingHtml}
+          </div>
+        </div>
+      `;
+    } else {
+      let tasksList = defaultTasks;
+      if (remainingTasks.length > 0) {
+        tasksList = remainingTasks.map((task, i) => ({
+          task,
+          time: defaultTasks[i]?.time || 'few min',
+        }));
+      }
+
+      taskSectionHtml = `
+        <div style="background-color: ${BRAND.primaryLight}; padding: 16px; border-radius: 4px; margin: 16px 0;">
+          ${tasksList
+            .map(
+              (item) =>
+                `<p style="margin: 8px 0;"><strong>☐</strong> ${item.task} <span style="font-size: 12px; color: ${BRAND.textMuted};">(${item.time})</span></p>`,
+            )
+            .join('')}
+        </div>
+      `;
     }
 
-    const tasksHtml = tasksList
-      .map(
-        (item) =>
-          `<p style="margin: 8px 0;"><strong>☐</strong> ${item.task} <span style="font-size: 12px; color: ${BRAND.textMuted};">(${item.time})</span></p>`,
-      )
-      .join('');
+    const progressLabel = typeof completionPercentage === 'number'
+      ? `<p style="margin-top: 12px;"><strong>Current progress:</strong> ${completionPercentage}% complete</p>`
+      : '';
 
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
@@ -1068,10 +1125,9 @@ export async function sendSetupReminderEmail(
                 <p>Hi ${adminName},</p>
                 <p>We noticed you created your SchoolBase workspace but haven't fully set it up yet. We're here to help make it super quick and easy!</p>
 
-                <h2 style="font-size: 16px; margin-top: 24px;">Remaining Tasks:</h2>
-                <div style="background-color: ${BRAND.primaryLight}; padding: 16px; border-radius: 4px; margin: 16px 0;">
-                  ${tasksHtml}
-                </div>
+                ${progressLabel}
+                <h2 style="font-size: 16px; margin-top: 24px;">Setup status</h2>
+                ${taskSectionHtml}
 
                 <p style="margin-top: 24px;">Most schools go live in under 30 minutes. And once you're set up, your parents will immediately start paying fees, requesting updates, and getting results instantly from the portal.</p>
 
@@ -1085,8 +1141,8 @@ export async function sendSetupReminderEmail(
                 <div class="list-item">Live chat support (9am-5pm)</div>
                 <div class="list-item">Email support</div>
 
-                <div class="warning-box">
-                  <p><strong>Your 7-day free trial is counting down.</strong> Let's get you live! 🎓</p>
+                <div class="warning-box" style="background-color: ${BRAND.primaryLight}; border-left-color: ${BRAND.primary};">
+                  <p style="color: ${BRAND.primary};"><strong>Your 7-day free trial is counting down.</strong> Let's get you live!</p>
                 </div>
 
                 <p style="margin-top: 32px;">Warm regards,<br><strong>The SchoolBase Team</strong></p>

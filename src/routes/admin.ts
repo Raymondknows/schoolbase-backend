@@ -3886,16 +3886,17 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const school = await prisma.school.findUnique({
+    const existingSchool = await prisma.school.findUnique({
       where: { id: schoolId },
     });
 
-    if (!school) {
+    if (!existingSchool) {
       return res.status(404).json({ error: 'School not found' });
     }
 
-    // Check setup completion items
+    // Check setup completion items, including school settings/profile data
     const [
+      schoolSettings,
       enabledPhases,
       academicYears,
       classes,
@@ -3903,6 +3904,29 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
       teacherClasses,
       feeSchedules,
     ] = await Promise.all([
+      prisma.school.findUnique({
+        where: { id: schoolId },
+        select: {
+          name: true,
+          initials: true,
+          country: true,
+          currency: true,
+          address: true,
+          city: true,
+          phone: true,
+          email: true,
+          logoUrl: true,
+          principalName: true,
+          principalComment: true,
+          principalSignatureUrl: true,
+          stampUrl: true,
+          manualPaymentAccountName: true,
+          manualPaymentAccountNumber: true,
+          manualPaymentBankName: true,
+          paystackPublicEncrypted: true,
+          paystackSecretEncrypted: true,
+        },
+      }),
       prisma.schoolOnPhase.count({ where: { schoolId } }),
       prisma.academicYear.count({ where: { schoolId } }),
       prisma.class.count({ where: { schoolId } }),
@@ -3918,6 +3942,17 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
       hasSubjects: subjects > 0,
       hasStaff: teacherClasses > 0,
       hasFees: feeSchedules > 0,
+      hasSchoolProfile: Boolean(
+        schoolSettings?.name && schoolSettings?.address && schoolSettings?.city && schoolSettings?.country && schoolSettings?.currency && schoolSettings?.phone && schoolSettings?.email,
+      ),
+      hasSchoolLogo: Boolean(schoolSettings?.logoUrl),
+      hasPrincipalInfo: Boolean(schoolSettings?.principalName || schoolSettings?.principalComment),
+      hasPrincipalSignature: Boolean(schoolSettings?.principalSignatureUrl),
+      hasSchoolStamp: Boolean(schoolSettings?.stampUrl),
+      hasPaymentSetup: Boolean(
+        (schoolSettings?.manualPaymentAccountName && schoolSettings?.manualPaymentAccountNumber && schoolSettings?.manualPaymentBankName) ||
+        (schoolSettings?.paystackPublicEncrypted && schoolSettings?.paystackSecretEncrypted),
+      ),
     };
 
     // School is considered complete if it has all setup items
@@ -4705,23 +4740,37 @@ router.post('/teachers', async (req: Request, res: Response) => {
 
     // Send email notification with login credentials
     try {
-      const school = await prisma.school.findUnique({
-        where: { id: schoolId },
-        select: { name: true, logoUrl: true },
-      });
+      let schoolName = 'Your School';
+      let schoolLogo: string | undefined;
 
-      if (school) {
-        // Send welcome email with login instructions and temp password
-        await sendTeacherWelcomeEmail(
-          email,
-          name,
-          school.name,
-          password,
-          'https://www.schoolbase.live/login',
-          school.logoUrl ?? undefined,
-        );
-        console.log(`✅ Teacher welcome email sent to ${email}`);
+      try {
+        const school = await prisma.school.findUnique({
+          where: { id: schoolId },
+          select: { name: true, logoUrl: true },
+        });
+
+        if (school) {
+          schoolName = school.name || schoolName;
+          schoolLogo = school.logoUrl ?? undefined;
+        } else {
+          console.warn(`[POST /teachers] School record not found for welcome email; using fallback school name. schoolId=${schoolId}`);
+        }
+      } catch (schoolLookupError) {
+        console.warn('[POST /teachers] Failed to load school details for welcome email:', schoolLookupError);
       }
+
+      const normalizedEmail = String(email).trim().toLowerCase();
+
+      // Send welcome email with login instructions and temp password
+      await sendTeacherWelcomeEmail(
+        normalizedEmail,
+        name,
+        schoolName,
+        password,
+        'https://www.schoolbase.live/login',
+        schoolLogo,
+      );
+      console.log(`✅ Teacher welcome email sent to ${normalizedEmail}`);
     } catch (emailError) {
       console.warn('⚠️ Failed to send teacher notification email:', emailError);
       // Don't fail the request if email fails

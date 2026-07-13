@@ -8,6 +8,92 @@ import { getPlatformSettings, serializePlatformSettingValue, parsePlatformSettin
 const router = Router();
 const prisma = new PrismaClient();
 
+async function getSchoolSetupChecklistData(schoolId: string) {
+  const [school, enabledPhases, academicYears, classes, subjects, teacherClasses, feeSchedules] = await Promise.all([
+    prisma.school.findUnique({
+      where: { id: schoolId },
+      select: {
+        name: true,
+        initials: true,
+        country: true,
+        currency: true,
+        address: true,
+        city: true,
+        phone: true,
+        email: true,
+        logoUrl: true,
+        principalName: true,
+        principalComment: true,
+        principalSignatureUrl: true,
+        stampUrl: true,
+        manualPaymentAccountName: true,
+        manualPaymentAccountNumber: true,
+        manualPaymentBankName: true,
+        paystackPublicEncrypted: true,
+        paystackSecretEncrypted: true,
+      },
+    }),
+    prisma.schoolOnPhase.count({ where: { schoolId } }),
+    prisma.academicYear.count({ where: { schoolId } }),
+    prisma.class.count({ where: { schoolId } }),
+    prisma.subject.count({ where: { schoolId } }),
+    prisma.teacherClass.count({ where: { schoolId } }),
+    prisma.feeSchedule.count({ where: { schoolId } }),
+  ]);
+
+  const setupItems = {
+    hasEnabledPhases: enabledPhases > 0,
+    hasAcademicYears: academicYears > 0,
+    hasClasses: classes > 0,
+    hasSubjects: subjects > 0,
+    hasStaff: teacherClasses > 0,
+    hasFees: feeSchedules > 0,
+    hasSchoolProfile: Boolean(
+      school?.name && school?.address && school?.city && school?.country && school?.currency && school?.phone && school?.email,
+    ),
+    hasSchoolLogo: Boolean(school?.logoUrl),
+    hasPrincipalInfo: Boolean(school?.principalName || school?.principalComment),
+    hasPrincipalSignature: Boolean(school?.principalSignatureUrl),
+    hasSchoolStamp: Boolean(school?.stampUrl),
+    hasPaymentSetup: Boolean(
+      (school?.manualPaymentAccountName && school?.manualPaymentAccountNumber && school?.manualPaymentBankName) ||
+      (school?.paystackPublicEncrypted && school?.paystackSecretEncrypted),
+    ),
+  };
+
+  const itemLabels: Record<string, string> = {
+    hasEnabledPhases: 'Enabled school phases',
+    hasAcademicYears: 'Academic years',
+    hasClasses: 'Classes',
+    hasSubjects: 'Subjects',
+    hasStaff: 'Staff / teacher setup',
+    hasFees: 'Fee schedules',
+    hasSchoolProfile: 'School profile details',
+    hasSchoolLogo: 'School logo / branding',
+    hasPrincipalInfo: 'Principal info',
+    hasPrincipalSignature: 'Principal signature',
+    hasSchoolStamp: 'School stamp',
+    hasPaymentSetup: 'Payment setup',
+  };
+
+  const completedItems = Object.entries(setupItems)
+    .filter(([, value]) => Boolean(value))
+    .map(([key]) => itemLabels[key] || key);
+
+  const missingItems = Object.entries(setupItems)
+    .filter(([, value]) => !Boolean(value))
+    .map(([key]) => itemLabels[key] || key);
+
+  return {
+    completedItems,
+    missingItems,
+    completionPercentage: Math.round(
+      (Object.values(setupItems).filter((value) => Boolean(value)).length / Object.values(setupItems).length) * 100,
+    ),
+    setupItems,
+  };
+}
+
 // Helper to get JWT secret
 function secret() {
   return new TextEncoder().encode(
@@ -18,23 +104,22 @@ function secret() {
 // Middleware to verify platform admin session
 const requirePlatformAdminSession = async (req: Request, res: Response): Promise<string | null> => {
   try {
-    // Get session from httpOnly cookie
-    const sessionToken = req.cookies?.schoolbase_session;
+    const cookieToken = req.cookies?.schoolbase_session;
+    const headerToken = req.get('x-schoolbase-session') || req.get('X-Schoolbase-Session');
+    const sessionToken = cookieToken || headerToken;
+
     if (!sessionToken) {
       res.status(401).json({ message: 'Unauthorized - no session' });
       return null;
     }
 
-    // Verify JWT token
     const { payload } = await jwtVerify(sessionToken, secret());
-    
-    // Verify it's a platform admin
+
     if (payload.role !== 'PLATFORM_ADMIN') {
       res.status(403).json({ message: 'Forbidden - not a platform admin' });
       return null;
     }
 
-    // Return userId for audit purposes
     return payload.userId as string;
   } catch (error) {
     console.error('[ADMIN] Session verification error:', error);
@@ -714,11 +799,17 @@ router.post('/reminders/send-bulk', async (req: Request, res: Response) => {
           continue;
         }
 
+        const checklist = await getSchoolSetupChecklistData(school.id);
+
         // Send actual email
         await sendSetupReminderEmail(
           admin.email,
           admin.name || 'School Administrator',
-          school.name
+          school.name,
+          [],
+          checklist.completedItems,
+          checklist.missingItems,
+          checklist.completionPercentage,
         );
 
         // Log the successful email send attempt
@@ -826,11 +917,17 @@ router.post('/reminders/send-single', async (req: Request, res: Response) => {
     }
 
     try {
+      const checklist = await getSchoolSetupChecklistData(school.id);
+
       // Send actual email
       await sendSetupReminderEmail(
         admin.email,
         admin.name || 'School Administrator',
-        school.name
+        school.name,
+        [],
+        checklist.completedItems,
+        checklist.missingItems,
+        checklist.completionPercentage,
       );
 
       // Log the email send attempt
