@@ -262,6 +262,85 @@ router.post('/generate/batch', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/generate/class', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'schoolId is required' });
+    }
+
+    const { classId, termId, assessmentId, expiresAt, generatedBy, pinFormat, pinLength } = req.body as any;
+    if (!classId) {
+      return res.status(400).json({ error: 'classId is required' });
+    }
+
+    const { school, isEnabled } = await ensureResultPinFeatureEnabled(schoolId);
+    if (!school || !isEnabled) {
+      return res.status(403).json({ error: 'Result PIN access is disabled for this school' });
+    }
+
+    const pupils = await prisma.pupil.findMany({
+      where: { schoolId, classId: String(classId), isActive: true },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        admissionNo: true,
+      },
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
+    });
+
+    const cards: Array<{
+      student: { id: string; firstName: string; lastName: string; admissionNo?: string | null };
+      pin: string;
+      termId?: string | null;
+      assessmentId?: string | null;
+    }> = [];
+
+    for (const pupil of pupils) {
+      const pin = generatePinValue(Number(pinLength) || 8, pinFormat || 'XXXX-XXXX');
+      const pinHash = await bcrypt.hash(pin, 10);
+      await prisma.resultPin.create({
+        data: {
+          schoolId,
+          studentId: pupil.id,
+          termId: termId || null,
+          assessmentId: assessmentId || null,
+          pinHash,
+          pinValue: pin,
+          type: 'STUDENT',
+          status: 'ACTIVE',
+          expiresAt: expiresAt ? new Date(expiresAt) : null,
+          generatedBy: generatedBy || 'system',
+          generatedAt: new Date(),
+        },
+      });
+      cards.push({
+        student: pupil,
+        pin,
+        termId: termId || null,
+        assessmentId: assessmentId || null,
+      });
+    }
+
+    const metadata = await resolvePinMetadata(termId || null, assessmentId || null);
+
+    res.json({
+      ok: true,
+      school: {
+        id: school.id,
+      },
+      sessionName: metadata.sessionName || null,
+      termName: metadata.termName || null,
+      assessmentName: metadata.assessmentName || null,
+      cards,
+    });
+  } catch (error) {
+    console.error('[result-pins] Failed to generate class PINs', error);
+    res.status(500).json({ error: 'Failed to generate class PINs' });
+  }
+});
+
 router.get('/status', async (req: Request, res: Response) => {
   try {
     const schoolId = await resolveSchoolId(req);
@@ -296,7 +375,9 @@ router.get('/pins', async (req: Request, res: Response) => {
     }
 
     const search = String(req.query.search || '').trim();
-    const limit = Math.min(Math.max(Number(req.query.limit || 25), 1), 100);
+    const limit = Math.min(Math.max(Number(req.query.limit || 25), 1), 250);
+    const page = Math.max(1, Number(req.query.page || 1));
+    const skip = (page - 1) * limit;
 
     const where: any = {
       schoolId,
@@ -309,51 +390,131 @@ router.get('/pins', async (req: Request, res: Response) => {
         { status: { contains: search } },
       ];
     }
+    // Optional type filter (e.g., GENERIC, STUDENT)
+    if (req.query.type) {
+      const typeFilter = String(req.query.type).toUpperCase();
+      where.type = typeFilter;
+    }
 
-    const pins = await prisma.resultPin.findMany({
-      where,
-      orderBy: { generatedAt: 'desc' },
-      take: limit,
-      select: {
-        id: true,
-        pinValue: true,
-        studentId: true,
-        type: true,
-        status: true,
-        expiresAt: true,
-        generatedAt: true,
-        lastValidatedAt: true,
-        generatedBy: true,
-        student: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            admissionNo: true,
-            class: {
-              select: { id: true, name: true },
+    if (req.query.status && String(req.query.status).toLowerCase() !== 'all') {
+      where.status = String(req.query.status).toUpperCase();
+    }
+
+    if (req.query.batch && String(req.query.batch).trim()) {
+      const batchName = String(req.query.batch).trim();
+      where.batch = { batchName };
+    }
+
+    if (req.query.term && String(req.query.term).trim()) {
+      const termName = String(req.query.term).trim();
+      where.term = { name: termName };
+    }
+
+    if (req.query.session && String(req.query.session).trim()) {
+      const sessionName = String(req.query.session).trim();
+      where.term = { ...(where.term || {}), academicYear: { name: sessionName } };
+    }
+
+    if (req.query.generatedBy && String(req.query.generatedBy).trim() && String(req.query.generatedBy) !== 'all') {
+      where.generatedBy = String(req.query.generatedBy).trim();
+    }
+
+    if (req.query.classId && String(req.query.classId).trim() && String(req.query.classId) !== 'all') {
+      const classId = String(req.query.classId).trim();
+      where.student = { ...(where.student || {}), class: { id: classId } } as any;
+    }
+
+    const [pins, total] = await Promise.all([
+      prisma.resultPin.findMany({
+        where,
+        orderBy: { generatedAt: 'desc' },
+        skip,
+        take: limit,
+        select: {
+          id: true,
+          pinValue: true,
+          studentId: true,
+          type: true,
+          status: true,
+          expiresAt: true,
+          generatedAt: true,
+          lastValidatedAt: true,
+          generatedBy: true,
+          student: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              admissionNo: true,
+              class: {
+                select: { id: true, name: true },
+              },
+            },
+          },
+          batch: {
+            select: { id: true, batchName: true },
+          },
+          term: {
+            select: {
+              id: true,
+              name: true,
+              academicYear: {
+                select: { name: true },
+              },
             },
           },
         },
-        batch: {
-          select: { id: true, batchName: true },
-        },
-        term: {
-          select: {
-            id: true,
-            name: true,
-            academicYear: {
-              select: { name: true },
-            },
-          },
-        },
-      },
-    });
+      }),
+      prisma.resultPin.count({ where }),
+    ]);
 
-    res.json({ ok: true, pins });
+    res.json({ ok: true, pins, total, page, limit });
   } catch (error) {
     console.error('[result-pins] Failed to list PINs', error);
     res.status(500).json({ error: 'Failed to list PINs' });
+  }
+});
+
+router.post('/pins/bulk/status', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'schoolId is required' });
+    }
+
+    const ids = Array.isArray((req.body as any)?.ids) ? (req.body as any).ids : [];
+    const status = String((req.body as any)?.status || '').toUpperCase();
+    if (!ids.length) return res.status(400).json({ error: 'ids are required' });
+    if (!['ACTIVE', 'INACTIVE', 'REVOKED'].includes(status)) return res.status(400).json({ error: 'invalid status' });
+
+    const result = await prisma.resultPin.updateMany({
+      where: { id: { in: ids }, schoolId },
+      data: { status },
+    });
+
+    res.json({ ok: true, updated: result.count });
+  } catch (error) {
+    console.error('[result-pins] Failed to bulk update status', error);
+    res.status(500).json({ error: 'Failed to bulk update status' });
+  }
+});
+
+router.post('/pins/bulk/delete', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'schoolId is required' });
+    }
+
+    const ids = Array.isArray((req.body as any)?.ids) ? (req.body as any).ids : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids are required' });
+
+    const result = await prisma.resultPin.deleteMany({ where: { id: { in: ids }, schoolId } });
+
+    res.json({ ok: true, deleted: result.count });
+  } catch (error) {
+    console.error('[result-pins] Failed to bulk delete pins', error);
+    res.status(500).json({ error: 'Failed to bulk delete pins' });
   }
 });
 
