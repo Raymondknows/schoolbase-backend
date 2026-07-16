@@ -7,7 +7,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendFeePaymentReceiptEmail, sendAnnouncementEmail, sendPlatformCommunicationEmail, sendSubscriptionPaymentSuccessEmail } from '../services/email.js';
+import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendFeePaymentReceiptEmail, sendAnnouncementEmail, sendPlatformCommunicationEmail, sendSubscriptionPaymentSuccessEmail, sendResultsPublishedEmail, sendPinDeliveryEmail, buildResultsPublishedWhatsAppMessage, buildPinDeliveryWhatsAppMessage } from '../services/email.js';
 import { normalizeCurrency, getDefaultCurrency } from '../services/currency.js';
 import { CommunicationService, RulesEngine, TemplateEngine, RecipientResolver, DeliveryQueue, DriverManager, EmailDriver, WhatsAppDriver } from '../communications/index.js';
 import baileysSessionManager from '../communications/whatsapp-baileys.js';
@@ -87,6 +87,27 @@ const sharedDriverManager = new DriverManager({
         schoolName,
         String(metadata.customMessage ?? ''),
         logoUrl,
+      );
+    } else if (request.event === 'ResultsPublished') {
+      await sendResultsPublishedEmail(
+        recipient.address,
+        recipient.name ?? 'Guardian',
+        String(metadata.studentName ?? 'Student'),
+        String(metadata.assessmentName ?? 'Assessment Results'),
+        String(metadata.termName ?? 'Current Term'),
+        schoolName,
+        logoUrl,
+        typeof metadata.resultsUrl === 'string' ? metadata.resultsUrl : undefined,
+      );
+    } else if (request.event === 'PinDelivered') {
+      await sendPinDeliveryEmail(
+        recipient.address,
+        recipient.name ?? 'Guardian',
+        String(metadata.pupilName ?? 'Student'),
+        String(metadata.pin ?? ''),
+        schoolName,
+        logoUrl,
+        typeof metadata.resultsUrl === 'string' ? metadata.resultsUrl : undefined,
       );
     } else {
       const currency = String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN');
@@ -297,6 +318,7 @@ router.use((req: Request, res: Response, next: any) => {
     '/settings/status',
     '/settings/data',
     '/logo/presign',
+    '/communications',
     '/school-logo',
     '/school-stamp',
     '/school-signature',
@@ -4508,6 +4530,117 @@ router.post('/assessments/:id/publish', requireSubscription, async (req: Request
       where: { id, schoolId },
       include: { _count: { select: { results: true } } },
     });
+
+    if (updated) {
+      const assessmentWithDetails = await prisma.assessment.findFirst({
+        where: { id, schoolId },
+        include: {
+          term: { select: { name: true } },
+          results: {
+            select: { pupilId: true },
+          },
+        },
+      });
+
+      if (assessmentWithDetails) {
+        const pupilIds = [...new Set(assessmentWithDetails.results.map((result: any) => result.pupilId))];
+        const pupils = await prisma.pupil.findMany({
+          where: { id: { in: pupilIds } },
+          include: {
+            guardians: { include: { guardian: true } },
+          },
+        });
+
+        const school = await prisma.school.findUnique({
+          where: { id: schoolId },
+          select: { name: true, logoUrl: true },
+        });
+
+        const communicationService = createCommunicationService();
+        const resultsUrl = `${process.env.FRONTEND_URL || 'https://www.schoolbase.live'}/parent/results`;
+        const rules = communicationRulesRegistry.getRules(schoolId);
+        const shouldSendResultsNotification = rules.ResultsPublished?.enabled !== false;
+
+        if (shouldSendResultsNotification) {
+          for (const pupil of pupils) {
+            const pupilName = `${pupil.firstName} ${pupil.lastName}`;
+
+            for (const guardianPupil of pupil.guardians) {
+              const guardian = guardianPupil.guardian;
+              const whatsappAddress = guardian.whatsapp || guardian.phone;
+              const recipients = [
+                ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
+                ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
+              ];
+
+              if (recipients.length === 0) {
+                continue;
+              }
+
+              const message = buildResultsPublishedWhatsAppMessage({
+                guardianName: guardian.firstName,
+                pupilName,
+                assessmentName: updated.name || 'Assessment Results',
+                termName: assessmentWithDetails.term?.name || 'Current Term',
+                schoolName: school?.name || 'SchoolBase',
+                resultsUrl,
+              });
+
+              try {
+                const dispatchResult = await communicationService.dispatch({
+                  event: 'ResultsPublished',
+                  schoolId,
+                  recipients,
+                  template: 'Results',
+                  subject: 'Results Published',
+                  body: message,
+                  data: {
+                    studentName: pupilName,
+                    assessmentName: updated.name || 'Assessment Results',
+                    termName: assessmentWithDetails.term?.name || 'Current Term',
+                    schoolName: school?.name || 'SchoolBase',
+                    recipientName: guardian.firstName,
+                    resultsUrl,
+                  },
+                  metadata: {
+                    studentName: pupilName,
+                    assessmentName: updated.name || 'Assessment Results',
+                    termName: assessmentWithDetails.term?.name || 'Current Term',
+                    schoolName: school?.name || 'SchoolBase',
+                    recipientName: guardian.firstName,
+                    schoolLogoUrl: school?.logoUrl || undefined,
+                    resultsUrl,
+                    logoUrl: school?.logoUrl || undefined,
+                    guardianId: guardian.id,
+                  },
+                });
+
+                for (const delivery of dispatchResult.deliveries) {
+                  const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
+                  await prisma.notification.create({
+                    data: {
+                      schoolId,
+                      guardianId: guardian.id,
+                      type: 'RESULTS_PUBLISHED',
+                      title: 'Results Published',
+                      body: truncateNotificationBody(message),
+                      channel: delivery.channel,
+                      status,
+                      sentAt: delivery.status === 'SENT' || delivery.status === 'QUEUED' ? new Date() : undefined,
+                      failureReason: delivery.error,
+                      relatedId: updated.id,
+                      reference: updated.id,
+                    },
+                  });
+                }
+              } catch (dispatchError) {
+                console.error(`Failed to dispatch results published notification for guardian ${guardian.id}:`, dispatchError);
+              }
+            }
+          }
+        }
+      }
+    }
 
     res.json({
       success: true,

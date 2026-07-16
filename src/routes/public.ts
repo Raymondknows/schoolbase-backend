@@ -188,12 +188,15 @@ router.post('/results/check', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Student record not found for the supplied admission number' });
     }
 
+    const publishedAssessmentWhere: any = {
+      schoolId: school.id,
+      phase: pupil.class.phase,
+      status: 'PUBLISHED',
+      publishedAt: { not: null },
+    };
+
     if (!pinAccessEnabled) {
-      const where: any = {
-        schoolId: school.id,
-        phase: pupil.class.phase,
-        status: 'PUBLISHED',
-      };
+      const where: any = { ...publishedAssessmentWhere };
 
       if (termId && termId !== 'latest') {
         where.termId = termId;
@@ -253,9 +256,12 @@ router.post('/results/check', async (req: Request, res: Response) => {
         })
       );
 
+      const hasPublishedResults = resultPayload.length > 0 || reportCards.some(Boolean);
+
       return res.json({
         ok: true,
         requiresPin: false,
+        message: hasPublishedResults ? null : 'No published results are available yet for this student.',
         school: {
           id: school.id,
           name: school.name,
@@ -346,11 +352,7 @@ router.post('/results/check', async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'The supplied PIN is invalid or has expired' });
     }
 
-    const where: any = {
-      schoolId: school.id,
-      phase: pupil.class.phase,
-      status: 'PUBLISHED',
-    };
+    const where: any = { ...publishedAssessmentWhere };
 
     if (termId && termId !== 'latest') {
       where.termId = termId;
@@ -410,9 +412,12 @@ router.post('/results/check', async (req: Request, res: Response) => {
       })
     );
 
+    const hasPublishedResults = resultPayload.length > 0 || reportCards.some(Boolean);
+
     res.json({
       ok: true,
       requiresPin: false,
+      message: hasPublishedResults ? null : 'No published results are available yet for this student.',
       school: {
         id: school.id,
         name: school.name,

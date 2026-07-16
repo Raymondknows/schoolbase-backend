@@ -946,6 +946,268 @@ export async function sendAnnouncementEmail(
   }
 }
 
+export function buildResultsPublishedWhatsAppMessage(input: {
+  guardianName: string;
+  pupilName: string;
+  assessmentName: string;
+  termName?: string;
+  schoolName: string;
+  resultsUrl: string;
+}) {
+  return [
+    `Hello ${input.guardianName} 👋`,
+    `Results for ${input.pupilName} have been published at ${input.schoolName}.`,
+    `Assessment: ${input.assessmentName}`,
+    `Term: ${input.termName || 'Current Term'}`,
+    `View them here: ${input.resultsUrl}`,
+  ].join('\n');
+}
+
+export function buildResultsPublishedEmailContent(input: {
+  guardianName: string;
+  pupilName: string;
+  assessmentName: string;
+  termName?: string;
+  schoolName: string;
+  resultsUrl: string;
+}) {
+  const subject = `Results Published - ${input.pupilName}`;
+  const text = `Results Published - ${input.schoolName}\n\nHello ${input.guardianName},\n\nNew results for ${input.pupilName} have been published.\n\nAssessment: ${input.assessmentName}\nTerm: ${input.termName || 'Current Term'}\n\nYou can view the latest results here: ${input.resultsUrl}\n\nBest regards,\n${input.schoolName} Administration`;
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>${EMAIL_STYLES}</style>
+      </head>
+      <body>
+        <div class="email-container">
+          <div class="header">
+            <h1>${input.schoolName}</h1>
+            <p class="header-subtitle">Results Published</p>
+          </div>
+          <div class="content">
+            <p>Hello ${input.guardianName},</p>
+            <p>New results for <strong>${input.pupilName}</strong> have been published.</p>
+            <div class="info-box">
+              <p><strong>Assessment:</strong> ${input.assessmentName}</p>
+              <p><strong>Term:</strong> ${input.termName || 'Current Term'}</p>
+            </div>
+            <div class="button-container">
+              <a href="${input.resultsUrl}" class="button">View Results</a>
+            </div>
+            <p>Best regards,<br><strong>${input.schoolName} Administration</strong></p>
+          </div>
+          <div class="footer">
+            <p class="footer-text">&copy; 2026 SchoolBase. All rights reserved.</p>
+            <p class="footer-text"><a href="https://schoolbase.live">Visit SchoolBase</a></p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  return { subject, text, html };
+}
+
+export function buildPinDeliveryWhatsAppMessage(input: {
+  guardianName: string;
+  pupilName: string;
+  pin: string;
+  schoolName: string;
+  schoolCode?: string;
+  admissionNumber?: string;
+  sessionName?: string;
+  termName?: string;
+  resultsUrl: string;
+}) {
+  return [
+    `Hello ${input.guardianName} 👋`,
+    `Your result access PIN for ${input.pupilName} is ready at ${input.schoolName}.`,
+    `School code: ${input.schoolCode || '—'}`,
+    `Student: ${input.pupilName}`,
+    `Admission number: ${input.admissionNumber || '—'}`,
+    `Session: ${input.sessionName || '—'}`,
+    `Term: ${input.termName || '—'}`,
+    `PIN: ${input.pin}`,
+    `How to access the result/check: ${input.resultsUrl}`,
+    `Please keep this information secure and use the PIN when checking results.`,
+  ].join('\n');
+}
+
+export function buildPinDeliveryEmailContent(input: {
+  guardianName: string;
+  pupilName: string;
+  pin: string;
+  schoolName: string;
+  schoolCode?: string;
+  admissionNumber?: string;
+  sessionName?: string;
+  termName?: string;
+  resultsUrl: string;
+}) {
+  const subject = `Result PIN Ready - ${input.pupilName}`;
+  const text = [
+    `Result PIN Ready - ${input.schoolName}`,
+    '',
+    `Hello ${input.guardianName},`,
+    '',
+    `Your result access PIN for ${input.pupilName} is ready.`,
+    '',
+    `School code: ${input.schoolCode || '—'}`,
+    `Student: ${input.pupilName}`,
+    `Admission number: ${input.admissionNumber || '—'}`,
+    `Session: ${input.sessionName || '—'}`,
+    `Term: ${input.termName || '—'}`,
+    '',
+    `PIN: ${input.pin}`,
+    '',
+    `How to access the result/check: ${input.resultsUrl}`,
+    '',
+    'Please keep this information secure and use the PIN when checking results.',
+    '',
+    `Best regards,`,
+    `${input.schoolName} Administration`,
+  ].join('\n');
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>${EMAIL_STYLES}</style>
+      </head>
+      <body>
+        <div class="email-container">
+          <div class="header">
+            <h1>${input.schoolName}</h1>
+            <p class="header-subtitle">Result PIN Ready</p>
+          </div>
+          <div class="content">
+            <p>Hello ${input.guardianName},</p>
+            <p>Your result access PIN for <strong>${input.pupilName}</strong> is ready.</p>
+            <div class="info-box">
+              <p><strong>School code:</strong> ${input.schoolCode || '—'}</p>
+              <p><strong>Student:</strong> ${input.pupilName}</p>
+              <p><strong>Admission number:</strong> ${input.admissionNumber || '—'}</p>
+              <p><strong>Session:</strong> ${input.sessionName || '—'}</p>
+              <p><strong>Term:</strong> ${input.termName || '—'}</p>
+            </div>
+            <div class="otp-code">${input.pin}</div>
+            <div class="button-container">
+              <a href="${input.resultsUrl}" class="button">Check Results</a>
+            </div>
+            <p style="font-size: 13px; color: ${BRAND.textMuted};">How to access the result/check: <a href="${input.resultsUrl}" style="color: ${BRAND.primary};">${input.resultsUrl}</a></p>
+            <p style="margin-top: 16px;">Please keep this information secure and use the PIN when checking results.</p>
+            <p>Best regards,<br><strong>${input.schoolName} Administration</strong></p>
+          </div>
+          <div class="footer">
+            <p class="footer-text">&copy; 2026 SchoolBase. All rights reserved.</p>
+            <p class="footer-text"><a href="https://schoolbase.live">Visit SchoolBase</a></p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  return { subject, text, html };
+}
+
+export async function sendResultsPublishedEmail(
+  email: string,
+  guardianName: string,
+  pupilName: string,
+  assessmentName: string,
+  termName: string,
+  schoolName: string,
+  schoolLogo?: string,
+  resultsUrl?: string,
+) {
+  try {
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
+    const schoolLogoInline = await fetchInlineLogo(schoolLogo);
+    const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
+    const resolvedResultsUrl = resultsUrl || 'https://schoolbase.live/parent/results';
+    const content = buildResultsPublishedEmailContent({
+      guardianName,
+      pupilName,
+      assessmentName,
+      termName,
+      schoolName,
+      resultsUrl: resolvedResultsUrl,
+    });
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: content.subject,
+      text: content.text,
+      ...(attachments ? { attachments } : {}),
+      html: content.html.replace(/<h1>[^<]+<\/h1>/, `<h1>${schoolName}</h1>`),
+    });
+
+    console.log('Results published email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('Failed to send results published email:', error);
+    throw error;
+  }
+}
+
+export async function sendPinDeliveryEmail(
+  email: string,
+  guardianName: string,
+  pupilName: string,
+  pin: string,
+  schoolName: string,
+  schoolLogo?: string,
+  resultsUrl?: string,
+  schoolCode?: string,
+  admissionNumber?: string,
+  sessionName?: string,
+  termName?: string,
+) {
+  try {
+    if (!isValidEmail(email)) {
+      throw new Error(`Invalid email address: ${email}`);
+    }
+
+    const schoolLogoInline = await fetchInlineLogo(schoolLogo);
+    const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
+    const resolvedResultsUrl = resultsUrl || 'https://schoolbase.live/parent/results';
+    const content = buildPinDeliveryEmailContent({
+      guardianName,
+      pupilName,
+      pin,
+      schoolName,
+      schoolCode,
+      admissionNumber,
+      sessionName,
+      termName,
+      resultsUrl: resolvedResultsUrl,
+    });
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+      to: email,
+      subject: content.subject,
+      text: content.text,
+      ...(attachments ? { attachments } : {}),
+      html: content.html
+        .replace(/<h1>[^<]+<\/h1>/, `<h1>${schoolName}</h1>`)
+        .replace(/<div class="header">/, `<div class="header">${schoolLogoInline ? `<img src="${schoolLogoInline.src}" alt="${schoolName}" class="logo" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">` : `<img src="${DEFAULT_EMAIL_LOGO}" alt="SchoolBase Logo" class="logo" />`}`),
+    });
+
+    console.log('PIN delivery email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('Failed to send PIN delivery email:', error);
+    throw error;
+  }
+}
+
 export async function sendAdmissionNotificationEmail(
   email: string,
   guardianName: string,
