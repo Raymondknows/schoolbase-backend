@@ -656,7 +656,6 @@ router.get('/results', async (req: Request, res: Response) => {
       schoolId: child.class.schoolId,
       phase: child.class.phase,
       status: 'PUBLISHED',
-      publishedAt: { not: null },
     };
 
     // If termId is specified, filter by term

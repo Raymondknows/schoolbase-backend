@@ -192,7 +192,6 @@ router.post('/results/check', async (req: Request, res: Response) => {
       schoolId: school.id,
       phase: pupil.class.phase,
       status: 'PUBLISHED',
-      publishedAt: { not: null },
     };
 
     if (!pinAccessEnabled) {
