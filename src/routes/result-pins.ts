@@ -7,7 +7,7 @@ import { CommunicationService, RulesEngine, TemplateEngine, RecipientResolver, D
 import baileysSessionManager from '../communications/whatsapp-baileys.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
 import { buildPinDeliveryEmailContent, buildPinDeliveryWhatsAppMessage, sendPinDeliveryEmail } from '../services/email.js';
-import { resolveGuardianNotificationTargets } from '../services/guardian-notification-recipients.js';
+import { buildGuardianNotificationRecipients, resolveGuardianNotificationTargets } from '../services/guardian-notification-recipients.js';
 import { buildBulkPinNotificationBatches, validateBulkPinNotificationRequest } from '../services/pin-notification-batch-guards.js';
 import { resolvePublicResultsUrl } from '../services/public-url.js';
 

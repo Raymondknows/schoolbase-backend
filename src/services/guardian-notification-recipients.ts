@@ -6,6 +6,7 @@ export interface GuardianNotificationRecipientInput {
     email?: string | null;
     whatsapp?: string | null;
     phone?: string | null;
+    altPhone?: string | null;
   };
 }
 
@@ -24,6 +25,22 @@ function normalizeContactValue(value?: string | null): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+export function buildGuardianNotificationRecipients(
+  guardian: GuardianNotificationRecipientInput['guardian'],
+): GuardianNotificationTarget['recipients'] {
+  const normalizedEmail = normalizeContactValue(guardian.email);
+  const normalizedWhatsApp = normalizeContactValue(guardian.whatsapp)
+    || normalizeContactValue(guardian.phone)
+    || normalizeContactValue((guardian as { altPhone?: string | null }).altPhone);
+
+  const name = [guardian.firstName, guardian.lastName].filter(Boolean).join(' ').trim() || 'Guardian';
+
+  return [
+    ...(normalizedEmail ? [{ channel: 'EMAIL' as const, address: normalizedEmail, name }] : []),
+    ...(normalizedWhatsApp ? [{ channel: 'WHATSAPP' as const, address: normalizedWhatsApp, name }] : []),
+  ];
+}
+
 export function resolveGuardianNotificationTargets(
   guardians: GuardianNotificationRecipientInput[],
   selectedGuardianIds?: string[] | null,
@@ -37,12 +54,7 @@ export function resolveGuardianNotificationTargets(
     })
     .map((entry) => {
       const guardian = entry.guardian;
-      const normalizedEmail = normalizeContactValue(guardian.email);
-      const normalizedWhatsApp = normalizeContactValue(guardian.whatsapp) || normalizeContactValue(guardian.phone);
-      const recipients = [
-        ...(normalizedEmail ? [{ channel: 'EMAIL' as const, address: normalizedEmail, name: guardian.firstName || 'Guardian' }] : []),
-        ...(normalizedWhatsApp ? [{ channel: 'WHATSAPP' as const, address: normalizedWhatsApp, name: guardian.firstName || 'Guardian' }] : []),
-      ];
+      const recipients = buildGuardianNotificationRecipients(guardian);
 
       return {
         guardian,

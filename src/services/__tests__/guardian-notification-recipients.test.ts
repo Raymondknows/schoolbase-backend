@@ -84,3 +84,28 @@ test('resolveGuardianNotificationTargets ignores blank and whitespace-only conta
   );
   assert.equal(targets[0].recipients[0].address, 'john@example.com');
 });
+
+test('buildGuardianNotificationRecipients falls back to phone and altPhone for WhatsApp', () => {
+  const recipients = resolveGuardianNotificationTargets(
+    [
+      {
+        guardian: {
+          id: 'g4',
+          firstName: 'Grace',
+          lastName: 'Moses',
+          email: 'grace@example.com',
+          whatsapp: null,
+          phone: '+2348000000003',
+          altPhone: '+2348000000004',
+        },
+      },
+    ],
+    ['g4'],
+  )[0].recipients;
+
+  assert.deepEqual(
+    recipients.map((recipient) => recipient.channel),
+    ['EMAIL', 'WHATSAPP'],
+  );
+  assert.equal(recipients[1].address, '+2348000000003');
+});

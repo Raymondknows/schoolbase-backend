@@ -15,7 +15,7 @@ import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../comm
 import { ResultsDomainService } from '../domain/results/ResultsDomainService.js';
 import requireActiveSubscription from '../middleware/subscriptionGuard.js';
 import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
-import { resolveGuardianNotificationTargets } from '../services/guardian-notification-recipients.js';
+import { buildGuardianNotificationRecipients, resolveGuardianNotificationTargets } from '../services/guardian-notification-recipients.js';
 import { resolvePublicResultsUrl } from '../services/public-url.js';
 import type { NextFunction } from 'express';
 
@@ -1476,8 +1476,12 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
           const className = pupil.class?.name || 'Unknown Class';
           const amount = (schedule.amount / 100).toFixed(2);
 
+          const selectedGuardianIds = Array.isArray((req.body as any)?.guardianIds)
+            ? (req.body as any).guardianIds.filter(Boolean)
+            : [];
           const guardianTargets = resolveGuardianNotificationTargets(
             pupil.guardians.map((entry) => ({ guardian: entry.guardian })),
+            selectedGuardianIds,
           );
 
           for (const target of guardianTargets) {
@@ -1661,8 +1665,12 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
         continue;
       }
 
+      const selectedGuardianIds = Array.isArray((req.body as any)?.guardianIds)
+        ? (req.body as any).guardianIds.filter(Boolean)
+        : [];
       const guardianTargets = resolveGuardianNotificationTargets(
         invoice.pupil.guardians.map((entry) => ({ guardian: entry.guardian })),
+        selectedGuardianIds,
       );
 
       for (const target of guardianTargets) {
@@ -2556,11 +2564,7 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
         },
       });
 
-      const whatsappAddress = guardian.whatsapp || guardian.phone;
-      const recipients = [
-        ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
-        ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
-      ];
+      const recipients = buildGuardianNotificationRecipients(guardian);
 
       if (recipients.length > 0) {
         const className = pupil.class?.name || 'your class';
