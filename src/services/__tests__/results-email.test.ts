@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildResultsPublishedEmailContent, buildResultsPublishedWhatsAppMessage, buildPinDeliveryEmailContent, buildPinDeliveryWhatsAppMessage } from '../email.js';
+import { resolvePublicResultsUrl } from '../public-url.js';
 
 test('buildResultsPublishedEmailContent includes the student, assessment, and parent portal link', () => {
   const content = buildResultsPublishedEmailContent({
@@ -61,17 +62,23 @@ test('buildPinDeliveryEmailContent includes the student name and PIN', () => {
   assert.match(content.html, /parent\/results/);
 });
 
-test('buildPinDeliveryWhatsAppMessage includes the PIN and portal link', () => {
+test('buildPinDeliveryWhatsAppMessage includes the PIN and secure public result-check link', () => {
   const message = buildPinDeliveryWhatsAppMessage({
     guardianName: 'Mrs. Ada',
     pupilName: 'Ada Okafor',
     pin: 'ABCD-1234',
     schoolName: 'Bright Stars Academy',
-    resultsUrl: 'https://schoolbase.live/parent/results',
+    resultsUrl: 'https://schoolbase.live/results/check',
   });
 
   assert.match(message, /Mrs. Ada/);
   assert.match(message, /Ada Okafor/);
   assert.match(message, /ABCD-1234/);
-  assert.match(message, /https:\/\/schoolbase.live\/parent\/results/);
+  assert.match(message, /https:\/\/schoolbase.live\/results\/check/);
+});
+
+test('resolvePublicResultsUrl replaces localhost with the public SchoolBase URL', () => {
+  assert.equal(resolvePublicResultsUrl('http://localhost:3000/results/check'), 'https://schoolbase.live/results/check');
+  assert.equal(resolvePublicResultsUrl('http://localhost:3000'), 'https://schoolbase.live/results/check');
+  assert.equal(resolvePublicResultsUrl('https://www.schoolbase.live'), 'https://www.schoolbase.live/results/check');
 });

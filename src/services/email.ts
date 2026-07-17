@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { resolvePublicResultsUrl } from './public-url.js';
 
 export function buildTransportConfig() {
   const port = parseInt(process.env.SMTP_PORT || '587', 10);
@@ -1129,7 +1130,7 @@ export async function sendResultsPublishedEmail(
 
     const schoolLogoInline = await fetchInlineLogo(schoolLogo);
     const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
-    const resolvedResultsUrl = resultsUrl || 'https://schoolbase.live/parent/results';
+    const resolvedResultsUrl = resolvePublicResultsUrl(resultsUrl);
     const content = buildResultsPublishedEmailContent({
       guardianName,
       pupilName,
@@ -1176,7 +1177,7 @@ export async function sendPinDeliveryEmail(
 
     const schoolLogoInline = await fetchInlineLogo(schoolLogo);
     const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
-    const resolvedResultsUrl = resultsUrl || 'https://schoolbase.live/parent/results';
+    const resolvedResultsUrl = resolvePublicResultsUrl(resultsUrl);
     const content = buildPinDeliveryEmailContent({
       guardianName,
       pupilName,

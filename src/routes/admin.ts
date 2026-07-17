@@ -15,6 +15,8 @@ import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../comm
 import { ResultsDomainService } from '../domain/results/ResultsDomainService.js';
 import requireActiveSubscription from '../middleware/subscriptionGuard.js';
 import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
+import { resolveGuardianNotificationTargets } from '../services/guardian-notification-recipients.js';
+import { resolvePublicResultsUrl } from '../services/public-url.js';
 import type { NextFunction } from 'express';
 
 const router = Router();
@@ -1474,16 +1476,15 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
           const className = pupil.class?.name || 'Unknown Class';
           const amount = (schedule.amount / 100).toFixed(2);
 
-          for (const guardianPupil of pupil.guardians) {
-            const guardian = guardianPupil.guardian;
-            const scheduleCurrency = normalizeCurrency(requestCurrency) || normalizeCurrency(school?.currency) || getDefaultCurrency();
-            const message = `Dear ${guardian.firstName}, this is to inform you that an invoice for ${school?.name || 'School'} fees has been issued for ${pupilName} (${className}). Amount: ${scheduleCurrency} ${amount}. Please contact the school for payment details.`;
-            const whatsappAddress = guardian.whatsapp || guardian.phone;
+          const guardianTargets = resolveGuardianNotificationTargets(
+            pupil.guardians.map((entry) => ({ guardian: entry.guardian })),
+          );
 
-            const recipients = [
-              ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
-              ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
-            ];
+          for (const target of guardianTargets) {
+            const guardian = target.guardian;
+            const recipients = target.recipients;
+            const scheduleCurrency = normalizeCurrency(requestCurrency) || normalizeCurrency(school?.currency) || getDefaultCurrency();
+            const message = `Dear ${guardian.firstName || 'Guardian'}, this is to inform you that an invoice for ${school?.name || 'School'} fees has been issued for ${pupilName} (${className}). Amount: ${scheduleCurrency} ${amount}. Please contact the school for payment details.`;
 
             if (recipients.length > 0) {
               try {
@@ -1501,7 +1502,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
                     currency: scheduleCurrency,
                     balance: amount,
                     schoolName: school?.name || 'School',
-                    recipientName: guardian.firstName,
+                    recipientName: guardian.firstName || 'Guardian',
                   },
                   metadata: {
                     studentName: pupilName,
@@ -1660,28 +1661,25 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
         continue;
       }
 
-      for (const guardianPupil of invoice.pupil.guardians) {
+      const guardianTargets = resolveGuardianNotificationTargets(
+        invoice.pupil.guardians.map((entry) => ({ guardian: entry.guardian })),
+      );
+
+      for (const target of guardianTargets) {
         processedGuardians++;
-        const guardian = guardianPupil.guardian;
+        const guardian = target.guardian;
+        const recipients = target.recipients;
         const normalizedRequestCurrency = normalizeCurrency(requestCurrency);
         const normalizedSchoolCurrency = normalizeCurrency(school.currency);
         const currency = normalizedRequestCurrency || normalizedSchoolCurrency || getDefaultCurrency();
         const cookiePresent = Boolean(req.cookies && req.cookies.country_v1);
         console.log(`[send-reminders] invoice=${invoice.id} guardian=${guardian.id} requestCurrency=${requestCurrency || '<none>'} normalizedRequestCurrency=${normalizedRequestCurrency || '<none>'} cookiePresent=${cookiePresent} schoolCurrency=${school.currency || '<none>'} normalizedSchoolCurrency=${normalizedSchoolCurrency || '<none>'} chosenCurrency=${currency}`);
-        const message = `Dear ${guardian.firstName}, this is a reminder that fee payment of ${currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
-        const whatsappAddress = guardian.whatsapp || guardian.phone;
-        const canSendWhatsApp = Boolean(whatsappAddress);
-        const canSendEmail = Boolean(guardian.email);
+        const message = `Dear ${guardian.firstName || 'Guardian'}, this is a reminder that fee payment of ${currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
 
-        if (!canSendWhatsApp && !canSendEmail) {
+        if (!recipients.length) {
           skippedCount++;
           continue;
         }
-
-        const recipients = [
-          ...(canSendWhatsApp ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress!, name: guardian.firstName }] : []),
-          ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
-        ];
 
         if (recipients.length > 0) {
           try {
@@ -1699,7 +1697,7 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
                 currency,
                 balance: outstanding.toFixed(2),
                 schoolName: school.name,
-                recipientName: guardian.firstName,
+                recipientName: guardian.firstName || 'Guardian',
               },
               metadata: {
                 studentName: pupilName,
@@ -2179,13 +2177,13 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
     const paymentCurrency = normalizeCurrency(school?.currency) || getDefaultCurrency();
     const paymentMessage = `Dear guardian, we have received payment of ${paymentCurrency} ${amountPaidFormatted} for ${pupilName} (${className}). Your updated balance is ${paymentCurrency} ${balance}. Thank you.`;
 
-    for (const guardianPupil of guardians) {
-      const guardian = guardianPupil.guardian;
-      const whatsappAddress = guardian.whatsapp || guardian.phone;
-      const recipients = [
-        ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
-        ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
-      ];
+    const guardianTargets = resolveGuardianNotificationTargets(
+      guardians.map((entry) => ({ guardian: entry.guardian })),
+    );
+
+    for (const target of guardianTargets) {
+      const guardian = target.guardian;
+      const recipients = target.recipients;
 
       if (recipients.length === 0) {
         continue;
@@ -2207,7 +2205,7 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
             paidAmount: newPaidAmountFormatted,
             balance,
             schoolName: school?.name || 'SchoolBase',
-            recipientName: guardian.firstName,
+            recipientName: guardian.firstName || 'Guardian',
           },
           metadata: {
             studentName: pupilName,
@@ -4557,7 +4555,7 @@ router.post('/assessments/:id/publish', requireSubscription, async (req: Request
         });
 
         const communicationService = createCommunicationService();
-        const resultsUrl = `${process.env.FRONTEND_URL || 'https://www.schoolbase.live'}/parent/results`;
+        const resultsUrl = resolvePublicResultsUrl(`${process.env.FRONTEND_URL || 'https://www.schoolbase.live'}/results/check`);
         const rules = communicationRulesRegistry.getRules(schoolId);
         const shouldSendResultsNotification = rules.ResultsPublished?.enabled !== false;
 
@@ -4565,20 +4563,20 @@ router.post('/assessments/:id/publish', requireSubscription, async (req: Request
           for (const pupil of pupils) {
             const pupilName = `${pupil.firstName} ${pupil.lastName}`;
 
-            for (const guardianPupil of pupil.guardians) {
-              const guardian = guardianPupil.guardian;
-              const whatsappAddress = guardian.whatsapp || guardian.phone;
-              const recipients = [
-                ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
-                ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
-              ];
+            const guardianTargets = resolveGuardianNotificationTargets(
+              pupil.guardians.map((entry) => ({ guardian: entry.guardian })),
+            );
+
+            for (const target of guardianTargets) {
+              const guardian = target.guardian;
+              const recipients = target.recipients;
 
               if (recipients.length === 0) {
                 continue;
               }
 
               const message = buildResultsPublishedWhatsAppMessage({
-                guardianName: guardian.firstName,
+                guardianName: guardian.firstName || 'Guardian',
                 pupilName,
                 assessmentName: updated.name || 'Assessment Results',
                 termName: assessmentWithDetails.term?.name || 'Current Term',
@@ -4599,7 +4597,7 @@ router.post('/assessments/:id/publish', requireSubscription, async (req: Request
                     assessmentName: updated.name || 'Assessment Results',
                     termName: assessmentWithDetails.term?.name || 'Current Term',
                     schoolName: school?.name || 'SchoolBase',
-                    recipientName: guardian.firstName,
+                    recipientName: guardian.firstName || 'Guardian',
                     resultsUrl,
                   },
                   metadata: {
@@ -4607,7 +4605,7 @@ router.post('/assessments/:id/publish', requireSubscription, async (req: Request
                     assessmentName: updated.name || 'Assessment Results',
                     termName: assessmentWithDetails.term?.name || 'Current Term',
                     schoolName: school?.name || 'SchoolBase',
-                    recipientName: guardian.firstName,
+                    recipientName: guardian.firstName || 'Guardian',
                     schoolLogoUrl: school?.logoUrl || undefined,
                     resultsUrl,
                     logoUrl: school?.logoUrl || undefined,

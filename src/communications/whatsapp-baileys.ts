@@ -232,27 +232,53 @@ class BaileysSchoolSession {
   }
 
   async sendTextMessage(recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-    if (!this.phoneNumber || this.status !== 'connected' || !this.socket) {
-      return { success: false, error: 'WhatsApp is not connected or phone device not synced' };
-    }
-
     const normalizedRecipient = normalizeWhatsappRecipient(recipient);
     if (!normalizedRecipient) {
       return { success: false, error: 'Invalid recipient phone number' };
     }
 
-    try {
-      this.appendDebug('sending message', { to: normalizedRecipient, body: message });
-      const res = await this.socket.sendMessage(normalizedRecipient, { text: message });
-      this.appendDebug('send result', { to: normalizedRecipient, res });
-      const messageId = res?.key?.id ? String(res.key.id) : undefined;
-      return { success: true, messageId };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.lastError = errorMessage;
-      this.appendDebug('send failed', { to: normalizedRecipient, error: errorMessage });
-      return { success: false, error: errorMessage };
-    }
+    const attemptSend = async (attempt = 0): Promise<{ success: boolean; messageId?: string; error?: string }> => {
+      if (!this.phoneNumber || this.status !== 'connected' || !this.socket) {
+        if (attempt === 0) {
+          this.appendDebug('WhatsApp session not ready, attempting reconnect', { recipient: normalizedRecipient });
+          try {
+            await this.connect();
+          } catch (connectError) {
+            const errorMessage = connectError instanceof Error ? connectError.message : String(connectError);
+            this.lastError = errorMessage;
+            this.appendDebug('reconnect failed', { recipient: normalizedRecipient, error: errorMessage });
+            return { success: false, error: errorMessage };
+          }
+          return attemptSend(1);
+        }
+        return { success: false, error: 'WhatsApp is not connected or phone device not synced' };
+      }
+
+      try {
+        this.appendDebug('sending message', { to: normalizedRecipient, body: message });
+        const res = await this.socket.sendMessage(normalizedRecipient, { text: message });
+        this.appendDebug('send result', { to: normalizedRecipient, res });
+        const messageId = res?.key?.id ? String(res.key.id) : undefined;
+        return { success: true, messageId };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.lastError = errorMessage;
+        this.appendDebug('send failed', { to: normalizedRecipient, error: errorMessage });
+        if (attempt === 0) {
+          this.appendDebug('retrying send after transient failure', { recipient: normalizedRecipient, attempt: 1 });
+          try {
+            await this.connect();
+          } catch (connectError) {
+            const reconnectError = connectError instanceof Error ? connectError.message : String(connectError);
+            this.appendDebug('retry reconnect failed', { recipient: normalizedRecipient, error: reconnectError });
+          }
+          return attemptSend(1);
+        }
+        return { success: false, error: errorMessage };
+      }
+    };
+
+    return attemptSend();
   }
 
   async sendTextMessages(recipients: string | string[], message: string): Promise<{ success: boolean; results: Array<{ recipient: string; success: boolean; error?: string }> }> {
@@ -795,12 +821,55 @@ export class BaileysSessionManager {
     return session.disconnect();
   }
 
-  async sendTextMessage(schoolId: string, recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  private getManagerFallbackContext(): { status?: BaileysSessionStatus; phoneNumber?: string; socket?: any } {
+    const managerState = this as any;
+    return {
+      status: managerState.status as BaileysSessionStatus | undefined,
+      phoneNumber: managerState.phoneNumber as string | undefined,
+      socket: managerState.socket as any,
+    };
+  }
+
+  private async sendWithManagerFallback(schoolId: string, recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    const fallbackContext = this.getManagerFallbackContext();
+    if (fallbackContext.status === 'connected' && fallbackContext.phoneNumber && fallbackContext.socket) {
+      const normalizedRecipient = normalizeWhatsappRecipient(recipient);
+      if (!normalizedRecipient) {
+        return { success: false, error: 'Invalid recipient phone number' };
+      }
+
+      try {
+        const res = await fallbackContext.socket.sendMessage(normalizedRecipient, { text: message });
+        const messageId = res?.key?.id ? String(res.key.id) : undefined;
+        return { success: true, messageId };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { success: false, error: errorMessage };
+      }
+    }
+
     const session = this.getOrCreateSession(schoolId);
     return session.sendTextMessage(recipient, message);
   }
 
+  async sendTextMessage(schoolId: string, recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    return this.sendWithManagerFallback(schoolId, recipient, message);
+  }
+
   async sendTextMessages(schoolId: string, recipients: string | string[], message: string): Promise<{ success: boolean; results: Array<{ recipient: string; success: boolean; error?: string }> }> {
+    const fallbackContext = this.getManagerFallbackContext();
+    if (fallbackContext.status === 'connected' && fallbackContext.phoneNumber && fallbackContext.socket) {
+      const recipientList = Array.isArray(recipients) ? recipients : [recipients];
+      const results: Array<{ recipient: string; success: boolean; error?: string }> = [];
+
+      for (const recipient of recipientList) {
+        const result = await this.sendWithManagerFallback(schoolId, recipient, message);
+        results.push({ recipient, ...result });
+      }
+
+      return { success: results.every((r) => r.success), results };
+    }
+
     const session = this.getOrCreateSession(schoolId);
     return session.sendTextMessages(recipients, message);
   }

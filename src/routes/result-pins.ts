@@ -7,6 +7,9 @@ import { CommunicationService, RulesEngine, TemplateEngine, RecipientResolver, D
 import baileysSessionManager from '../communications/whatsapp-baileys.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
 import { buildPinDeliveryEmailContent, buildPinDeliveryWhatsAppMessage, sendPinDeliveryEmail } from '../services/email.js';
+import { resolveGuardianNotificationTargets } from '../services/guardian-notification-recipients.js';
+import { buildBulkPinNotificationBatches, validateBulkPinNotificationRequest } from '../services/pin-notification-batch-guards.js';
+import { resolvePublicResultsUrl } from '../services/public-url.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -46,7 +49,7 @@ const sharedDriverManager = new DriverManager({
       admissionNumber: typeof metadata.admissionNumber === 'string' ? metadata.admissionNumber : undefined,
       sessionName: typeof metadata.sessionName === 'string' ? metadata.sessionName : undefined,
       termName: typeof metadata.termName === 'string' ? metadata.termName : undefined,
-      resultsUrl: typeof metadata.resultsUrl === 'string' ? metadata.resultsUrl : 'https://schoolbase.live/parent/results',
+      resultsUrl: typeof metadata.resultsUrl === 'string' ? resolvePublicResultsUrl(metadata.resultsUrl) : 'https://schoolbase.live/results/check',
     });
 
     const result = await baileysSessionManager.sendTextMessage(schoolId, recipient.address, message) as { success: boolean; messageId?: string; error?: string };
@@ -596,8 +599,20 @@ router.post('/pins/bulk/notify', async (req: Request, res: Response) => {
     }
 
     const ids = Array.isArray((req.body as any)?.ids) ? (req.body as any).ids : [];
+    const selectedGuardianIds = Array.isArray((req.body as any)?.guardianIds)
+      ? (req.body as any).guardianIds.filter(Boolean)
+      : [];
     if (!ids.length) {
       return res.status(400).json({ error: 'ids are required' });
+    }
+
+    const validation = validateBulkPinNotificationRequest({
+      pinCount: ids.length,
+      guardianCount: selectedGuardianIds.length > 0 ? selectedGuardianIds.length : 1,
+    });
+
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.reason });
     }
 
     const pins = await prisma.resultPin.findMany({
@@ -626,7 +641,7 @@ router.post('/pins/bulk/notify', async (req: Request, res: Response) => {
     });
 
     const communicationService = createCommunicationService();
-    const resultsUrl = `${process.env.FRONTEND_URL || 'https://www.schoolbase.live'}/parent/results`;
+    const resultsUrl = resolvePublicResultsUrl(`${process.env.FRONTEND_URL || 'https://www.schoolbase.live'}/results/check`);
     const rules = communicationRulesRegistry.getRules(schoolId);
     const shouldSendPinNotifications = rules.ResultsPublished?.enabled !== false;
 
@@ -634,101 +649,111 @@ router.post('/pins/bulk/notify', async (req: Request, res: Response) => {
       return res.json({ ok: true, sent: 0, skipped: pins.length, message: 'PIN delivery notifications are disabled for this school' });
     }
 
+    const pinBatches = buildBulkPinNotificationBatches({
+      pinIds: ids,
+      guardianCount: selectedGuardianIds.length > 0 ? selectedGuardianIds.length : 1,
+    });
+
     let sentCount = 0;
 
-    for (const pin of pins) {
-      if (!pin.studentId || !pin.student) continue;
+    for (const batch of pinBatches) {
+      const batchPins = pins.filter((pin) => batch.pinIds.includes(pin.id));
 
-      const pupilName = `${pin.student.firstName || ''} ${pin.student.lastName || ''}`.trim() || 'Student';
-      const guardians = await prisma.guardianPupil.findMany({
-        where: { pupilId: pin.studentId },
-        include: { guardian: true },
-      });
+      for (const pin of batchPins) {
+        if (!pin.studentId || !pin.student) continue;
 
-      for (const guardianPupil of guardians) {
-        const guardian = guardianPupil.guardian;
-        const whatsappAddress = guardian.whatsapp || guardian.phone;
-        const recipients = [
-          ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
-          ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
-        ];
-
-        if (!recipients.length) continue;
-
-        const message = buildPinDeliveryWhatsAppMessage({
-          guardianName: guardian.firstName,
-          pupilName,
-          pin: pin.pinValue || '—',
-          schoolName: school?.name || 'SchoolBase',
-          schoolCode: school?.slug || school?.initials || undefined,
-          admissionNumber: pin.student?.admissionNo || undefined,
-          sessionName: pin.term?.academicYear?.name || undefined,
-          termName: pin.term?.name || undefined,
-          resultsUrl,
+        const pupilName = `${pin.student.firstName || ''} ${pin.student.lastName || ''}`.trim() || 'Student';
+        const guardianLinks = await prisma.guardianPupil.findMany({
+          where: { pupilId: pin.studentId },
+          include: { guardian: true },
         });
 
-        try {
-          const dispatchResult = await communicationService.dispatch({
-            event: 'PinDelivered',
-            schoolId,
-            recipients,
-            template: 'Results',
-            subject: 'Result PIN Ready',
-            body: message,
-            data: {
-              pupilName,
-              pin: pin.pinValue || '—',
-              schoolName: school?.name || 'SchoolBase',
-              schoolCode: school?.slug || school?.initials || undefined,
-              admissionNumber: pin.student?.admissionNo || undefined,
-              sessionName: pin.term?.academicYear?.name || undefined,
-              termName: pin.term?.name || undefined,
-              recipientName: guardian.firstName,
-              resultsUrl,
-            },
-            metadata: {
-              pupilName,
-              pin: pin.pinValue || '—',
-              schoolName: school?.name || 'SchoolBase',
-              schoolCode: school?.slug || school?.initials || undefined,
-              admissionNumber: pin.student?.admissionNo || undefined,
-              sessionName: pin.term?.academicYear?.name || undefined,
-              termName: pin.term?.name || undefined,
-              recipientName: guardian.firstName,
-              schoolLogoUrl: school?.logoUrl || undefined,
-              resultsUrl,
-              guardianId: guardian.id,
-              logoUrl: school?.logoUrl || undefined,
-            },
+        const guardianTargets = resolveGuardianNotificationTargets(
+          guardianLinks.map((entry) => ({ guardian: entry.guardian })),
+          selectedGuardianIds,
+        );
+
+        for (const target of guardianTargets) {
+          const guardian = target.guardian;
+          const recipients = target.recipients;
+
+          if (!recipients.length) continue;
+
+          const message = buildPinDeliveryWhatsAppMessage({
+            guardianName: guardian.firstName || 'Guardian',
+            pupilName,
+            pin: pin.pinValue || '—',
+            schoolName: school?.name || 'SchoolBase',
+            schoolCode: school?.slug || school?.initials || undefined,
+            admissionNumber: pin.student?.admissionNo || undefined,
+            sessionName: pin.term?.academicYear?.name || undefined,
+            termName: pin.term?.name || undefined,
+            resultsUrl,
           });
 
-          for (const delivery of dispatchResult.deliveries) {
-            const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
-            await prisma.notification.create({
+          try {
+            const dispatchResult = await communicationService.dispatch({
+              event: 'PinDelivered',
+              schoolId,
+              recipients,
+              template: 'Results',
+              subject: 'Result PIN Ready',
+              body: message,
               data: {
-                schoolId,
+                pupilName,
+                pin: pin.pinValue || '—',
+                schoolName: school?.name || 'SchoolBase',
+                schoolCode: school?.slug || school?.initials || undefined,
+                admissionNumber: pin.student?.admissionNo || undefined,
+                sessionName: pin.term?.academicYear?.name || undefined,
+                termName: pin.term?.name || undefined,
+                recipientName: guardian.firstName,
+                resultsUrl,
+              },
+              metadata: {
+                pupilName,
+                pin: pin.pinValue || '—',
+                schoolName: school?.name || 'SchoolBase',
+                schoolCode: school?.slug || school?.initials || undefined,
+                admissionNumber: pin.student?.admissionNo || undefined,
+                sessionName: pin.term?.academicYear?.name || undefined,
+                termName: pin.term?.name || undefined,
+                recipientName: guardian.firstName,
+                schoolLogoUrl: school?.logoUrl || undefined,
+                resultsUrl,
                 guardianId: guardian.id,
-                type: 'RESULT_PIN_DELIVERED',
-                title: 'Result PIN Ready',
-                body: truncateNotificationBody(message),
-                channel: delivery.channel,
-                status,
-                sentAt: delivery.status === 'SENT' || delivery.status === 'QUEUED' ? new Date() : undefined,
-                failureReason: delivery.error,
-                relatedId: pin.id,
-                reference: pin.id,
+                logoUrl: school?.logoUrl || undefined,
               },
             });
-          }
 
-          sentCount += dispatchResult.deliveries.filter((delivery) => delivery.status === 'SENT' || delivery.status === 'QUEUED').length;
-        } catch (dispatchError) {
-          console.error(`[result-pins] Failed to dispatch PIN notification for guardian ${guardian.id}:`, dispatchError);
+            for (const delivery of dispatchResult.deliveries) {
+              const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
+              await prisma.notification.create({
+                data: {
+                  schoolId,
+                  guardianId: guardian.id,
+                  type: 'RESULT_PIN_DELIVERED',
+                  title: 'Result PIN Ready',
+                  body: truncateNotificationBody(message),
+                  channel: delivery.channel,
+                  status,
+                  sentAt: delivery.status === 'SENT' || delivery.status === 'QUEUED' ? new Date() : undefined,
+                  failureReason: delivery.error,
+                  relatedId: pin.id,
+                  reference: pin.id,
+                },
+              });
+            }
+
+            sentCount += dispatchResult.deliveries.filter((delivery) => delivery.status === 'SENT' || delivery.status === 'QUEUED').length;
+          } catch (dispatchError) {
+            console.error(`[result-pins] Failed to dispatch PIN notification for guardian ${guardian.id}:`, dispatchError);
+          }
         }
       }
     }
 
-    res.json({ ok: true, sent: sentCount, total: pins.length });
+    res.json({ ok: true, sent: sentCount, total: pins.length, batches: pinBatches.length });
   } catch (error) {
     console.error('[result-pins] Failed to notify PIN recipients', error);
     res.status(500).json({ error: 'Failed to notify PIN recipients' });
