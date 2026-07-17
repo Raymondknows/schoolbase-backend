@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync } from 'fs';
+import { shouldResetAuthStateForConnection } from '../whatsapp-baileys.js';
 import { normalizeWhatsappRecipient, readWhatsAppSessionSnapshotFromDisk, resolveWhatsAppSessionDirectory, resolveWhatsAppStateFile, shouldClearWhatsAppSession, writeWhatsAppSessionSnapshotToDisk } from '../whatsapp-utils.js';
 
 test('builds a per-school session directory', () => {
@@ -20,6 +21,12 @@ test('clears a WhatsApp auth session for auth-related disconnects', () => {
   assert.equal(shouldClearWhatsAppSession(419, 'Session expired'), true);
   assert.equal(shouldClearWhatsAppSession(500, 'Connection closed'), true);
   assert.equal(shouldClearWhatsAppSession(undefined, 'Connection Failure'), true);
+});
+
+test('forces a fresh Baileys auth reset after a connection failure or when requested explicitly', () => {
+  assert.equal(shouldResetAuthStateForConnection('error', false, 'Connection Failure'), true);
+  assert.equal(shouldResetAuthStateForConnection('connected', false, undefined), false);
+  assert.equal(shouldResetAuthStateForConnection('qr', true, undefined), true);
 });
 
 test('persists WhatsApp session state to disk and loads it back', () => {

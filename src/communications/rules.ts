@@ -47,6 +47,7 @@ export const DEFAULT_COMMUNICATION_RULES: Record<string, CommunicationRuleDefini
   FeePaymentReceived: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Receipt' },
   AttendanceMarked: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Attendance' },
   ResultsPublished: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Results' },
+  PinDelivered: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Results' },
   AdmissionCreated: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Admission' },
   AnnouncementCreated: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Announcement' },
 };

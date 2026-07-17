@@ -61,6 +61,25 @@ function makeConsolePinoLogger(): any {
   return base;
 }
 
+export function shouldResetAuthStateForConnection(
+  previousStatus?: BaileysSessionStatus | string,
+  usePairingCode = false,
+  lastError?: string,
+): boolean {
+  const normalizedStatus = String(previousStatus ?? '').toLowerCase();
+  const normalizedError = String(lastError ?? '').toLowerCase();
+
+  if (usePairingCode) return true;
+  if (normalizedStatus === 'error') return true;
+  if (normalizedStatus === 'disconnected') return true;
+
+  if (normalizedStatus === 'connecting' && /(connection failure|forbidden|session expired|logged out|unauthorized|401|403|440)/i.test(normalizedError)) {
+    return true;
+  }
+
+  return false;
+}
+
 class BaileysSchoolSession {
   private status: BaileysSessionStatus = 'disconnected';
   private statusMessage = 'Disconnected';
@@ -161,9 +180,7 @@ class BaileysSchoolSession {
       return this.getStatus();
     }
 
-    // Prefer reusing persisted auth state so automated scripts and restarts can reconnect
-    // without forcing a fresh QR unless explicitly required.
-    const shouldResetAuthState = false;
+    const shouldResetAuthState = shouldResetAuthStateForConnection(this.status, usePairingCode, this.lastError);
 
     this.debugLog = [];
     this.debugInfo = {};
@@ -172,17 +189,17 @@ class BaileysSchoolSession {
     this.qr = undefined;
     this.pairingCode = undefined;
     this.pairingMethod = undefined;
-    this.pairingMode = 'qr';
-    this.pairingPhoneNumber = undefined;
-    this.pairingCodeRequested = false;
+    this.pairingMode = usePairingCode ? 'code' : 'qr';
+    this.pairingPhoneNumber = this.normalizePairingPhoneNumber(pairingPhoneNumber) || undefined;
+    this.pairingCodeRequested = Boolean(usePairingCode);
     this.pairingReconnectAttempts = 0;
     this.pairingReconnectPending = false;
     this.lastError = undefined;
     this.appendDebug('connect() requested', {
-      pairingPhoneNumber: this.normalizePairingPhoneNumber(pairingPhoneNumber) || null,
+      pairingPhoneNumber: this.pairingPhoneNumber || null,
       pairingMode: this.pairingMode,
       pairingCodeRequested: Boolean(usePairingCode),
-      note: 'pairing-code flow is disabled for debugging; QR is the active method',
+      shouldResetAuthState,
     });
 
     if (this.socket?.end || this.socket?.logout) {
@@ -356,7 +373,7 @@ class BaileysSchoolSession {
       });
 
       this.socket = sock;
-      this.appendDebug('QR-only pairing mode enabled for debugging', { activeMode: this.pairingMode });
+      this.appendDebug('Pairing mode selected', { activeMode: this.pairingMode });
       this.updateDebugInfo((info) => {
         info.socketCreated = true;
         info.authFolder = authFolder;
@@ -436,6 +453,9 @@ class BaileysSchoolSession {
             });
             this.appendDebug('connection open', { phoneNumber: this.phoneNumber });
             console.log('[baileys] connection open, phone:', this.phoneNumber);
+            if (this.pairingMode === 'code' && this.pairingPhoneNumber) {
+              void this.requestPairingCodeAfterHandshake(sock, this.pairingPhoneNumber);
+            }
             this.startKeepalive();
           }
 
@@ -483,14 +503,15 @@ class BaileysSchoolSession {
               return;
             }
 
-            if (statusCode === 401 || statusCode === 440) {
+            const shouldClearAuthState = statusCode === 401 || statusCode === 403 || statusCode === 440 || /connection failure|forbidden|logged out|session expired|unauthorized/i.test(String(errorMessage).toLowerCase());
+            if (shouldClearAuthState) {
               this.status = 'error';
-              this.statusMessage = 'WhatsApp disconnected or logged out';
-              this.lastError = errorMessage;
+              this.statusMessage = 'WhatsApp connection failed. Please try again to start a fresh session.';
+              this.lastError = errorMessage || 'Connection Failure';
               try {
                 const schoolAuthFolder = path.join(sessionDirectory, this.schoolId, 'auth_info');
                 fs.rmSync(schoolAuthFolder, { recursive: true, force: true });
-                this.appendDebug('Cleared stale auth state after unauthorized close', { authFolder: schoolAuthFolder, statusCode, errorMessage });
+                this.appendDebug('Cleared stale auth state after failed close', { authFolder: schoolAuthFolder, statusCode, errorMessage });
               } catch (cleanupError) {
                 this.appendDebug('Failed to clear stale auth state', cleanupError);
               }

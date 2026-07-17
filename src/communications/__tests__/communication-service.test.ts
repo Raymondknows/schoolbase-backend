@@ -47,6 +47,14 @@ test('dispatches a notification through the communication engine', async () => {
   assert.equal(result.deliveries[0]?.channel, 'EMAIL');
 });
 
+test('treats PIN delivery notifications as multi-channel communication', () => {
+  const rulesEngine = new RulesEngine();
+  const ruleSet = rulesEngine.evaluate('PinDelivered', 'school-1');
+
+  assert.equal(ruleSet.template, 'Results');
+  assert.deepEqual(ruleSet.channels, ['EMAIL', 'WHATSAPP']);
+});
+
 test('delivery queue schedules retries for failed sends', async () => {
   const failedSend = async () => ({
     channel: 'WHATSAPP' as const,
