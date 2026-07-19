@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { getDistinctStudentCount } from './report-card-statistics.js';
 
 interface SubjectResult {
   subjectId: string;
@@ -22,6 +23,11 @@ interface ReportCardData {
     dateOfBirth: string | null;
     photoUrl: string | null;
   };
+  gradingScale: Array<{
+    grade: string;
+    minScore: number;
+    maxScore: number;
+  }>;
   school: {
     id: string;
     name: string;
@@ -47,6 +53,7 @@ interface ReportCardData {
   totalSubjects: number;
   teacherRemark: string | null;
   principalRemark: string | null;
+  publishedAt?: string | null;
   statistics: {
     highestScore: number;
     lowestScore: number;
@@ -381,6 +388,28 @@ class ReportCardService {
       results.find((r) => r.teacherRemark)?.teacherRemark ||
       results[0]?.comment ||
       null;
+    const publishedAt = results.find((r) => r.publishedAt)?.publishedAt?.toISOString() ?? null;
+
+    const gradingScaleRows = await this.prisma.gradingScale.findMany({
+      where: { schoolId },
+      orderBy: { minScore: 'desc' },
+      select: { grade: true, minScore: true, maxScore: true },
+    });
+
+    const gradingScale = gradingScaleRows.length > 0
+      ? gradingScaleRows.map((scale) => ({
+          grade: scale.grade,
+          minScore: scale.minScore,
+          maxScore: scale.maxScore,
+        }))
+      : [
+          { grade: 'A', minScore: 70, maxScore: 100 },
+          { grade: 'B', minScore: 60, maxScore: 69 },
+          { grade: 'C', minScore: 50, maxScore: 59 },
+          { grade: 'D', minScore: 45, maxScore: 49 },
+          { grade: 'E', minScore: 40, maxScore: 44 },
+          { grade: 'F', minScore: 0, maxScore: 39 },
+        ];
 
     return {
       student: {
@@ -405,6 +434,7 @@ class ReportCardService {
         name: classInfo.name,
         phase: classInfo.phase,
       },
+      gradingScale,
       term: {
         name: assessment.term?.name || 'Unknown',
         session: assessment.term?.academicYear?.name || 'Unknown',
@@ -416,6 +446,7 @@ class ReportCardService {
       totalSubjects: subjects.length,
       teacherRemark,
       principalRemark,
+      publishedAt,
       statistics: {
         highestScore: validScores.length > 0 ? Math.max(...validScores) : 0,
         lowestScore: validScores.length > 0 ? Math.min(...validScores) : 0,
@@ -564,10 +595,12 @@ class ReportCardService {
       .filter((r) => r.computedTotal !== null)
       .map((r) => r.computedTotal!);
 
+    const distinctStudentCount = getDistinctStudentCount(results);
+
     if (scores.length === 0) {
       return {
         assessmentId,
-        totalStudents: results.length,
+        totalStudents: distinctStudentCount,
         totalResults: results.length,
         statistics: {
           highestScore: 0,
@@ -608,7 +641,7 @@ class ReportCardService {
 
     return {
       assessmentId,
-      totalStudents: results.length,
+      totalStudents: distinctStudentCount,
       totalResults: results.length,
       statistics: {
         highestScore: Math.max(...scores),
