@@ -18,6 +18,7 @@ import { checkSubscription, requireSubscription } from '../middleware/subscripti
 import { buildGuardianNotificationRecipients, resolveGuardianNotificationTargets } from '../services/guardian-notification-recipients.js';
 import { resolvePublicResultsUrl } from '../services/public-url.js';
 import { normalizeGuardianProfileData } from '../services/student-guardian-profile.js';
+import { buildStudentUpdateData } from '../services/student-update-profile.js';
 import type { NextFunction } from 'express';
 
 const router = Router();
@@ -2778,26 +2779,64 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
       photoUrl = `/uploads/photos/${req.file.filename}`;
     }
 
+    const currentStudentProfile = {
+      firstName: existingPupil.firstName,
+      middleName: existingPupil.middleName,
+      lastName: existingPupil.lastName,
+      classId: existingPupil.classId,
+      status: existingPupil.status,
+      admissionDate: existingPupil.admissionDate,
+      gender: existingPupil.gender,
+      dateOfBirth: existingPupil.dateOfBirth,
+      studentEmail: existingPupil.studentEmail,
+      studentPhone: existingPupil.studentPhone,
+      address: existingPupil.address,
+      bloodGroup: existingPupil.bloodGroup,
+      genotype: existingPupil.genotype,
+      medicalNotes: existingPupil.medicalNotes,
+      previousSchool: existingPupil.previousSchool,
+      previousClass: existingPupil.previousClass,
+    };
+
+    const mergedStudentData = buildStudentUpdateData({
+      firstName,
+      middleName,
+      lastName,
+      classId,
+      status,
+      admissionDate,
+      gender,
+      dateOfBirth,
+      studentEmail,
+      studentPhone,
+      address,
+      bloodGroup,
+      genotype,
+      medicalNotes,
+      previousSchool,
+      previousClass,
+    }, currentStudentProfile);
+
     // Update pupil
     const updatedPupil = await prisma.pupil.update({
       where: { id },
       data: {
-        firstName: firstName || undefined,
-        middleName: middleName || undefined,
-        lastName: lastName || undefined,
-        classId: classId || undefined,
-        status: status || undefined,
-        admissionDate: admissionDate ? new Date(admissionDate) : undefined,
-        gender: gender || undefined,
-        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
-        studentEmail: studentEmail || undefined,
-        studentPhone: studentPhone || undefined,
-        address: address || undefined,
-        bloodGroup: bloodGroup || undefined,
-        genotype: genotype || undefined,
-        medicalNotes: medicalNotes || undefined,
-        previousSchool: previousSchool || undefined,
-        previousClass: previousClass || undefined,
+        firstName: mergedStudentData.firstName,
+        middleName: mergedStudentData.middleName,
+        lastName: mergedStudentData.lastName,
+        classId: mergedStudentData.classId,
+        status: mergedStudentData.status,
+        admissionDate: mergedStudentData.admissionDate,
+        gender: mergedStudentData.gender,
+        dateOfBirth: mergedStudentData.dateOfBirth,
+        studentEmail: mergedStudentData.studentEmail,
+        studentPhone: mergedStudentData.studentPhone,
+        address: mergedStudentData.address,
+        bloodGroup: mergedStudentData.bloodGroup,
+        genotype: mergedStudentData.genotype,
+        medicalNotes: mergedStudentData.medicalNotes,
+        previousSchool: mergedStudentData.previousSchool,
+        previousClass: mergedStudentData.previousClass,
         photoUrl,
       },
       include: {

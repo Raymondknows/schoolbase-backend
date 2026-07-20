@@ -37,3 +37,14 @@ test('keeps explicit guardian contact values intact', () => {
   assert.equal(payload.email, 'john@example.com');
   assert.equal(payload.occupation, 'Engineer');
 });
+
+test('treats blank guardian phone values as absent so existing data is preserved', () => {
+  const payload = normalizeGuardianProfileData({
+    guardianFirst: 'Jane',
+    guardianLast: 'Doe',
+    guardianPhone: '',
+  });
+
+  assert.equal(payload.phone, null);
+  assert.equal(payload.firstName, 'Jane');
+});

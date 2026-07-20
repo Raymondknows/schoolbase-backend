@@ -16,7 +16,7 @@ export function normalizeGuardianProfileData(input: {
     firstName: normalizeField(input.guardianFirst),
     lastName: normalizeField(input.guardianLast),
     email: normalizeField(input.guardianEmail),
-    phone: normalizeField(input.guardianPhone, ''),
+    phone: normalizeField(input.guardianPhone),
     altPhone: normalizeField(input.guardianAltPhone),
     occupation: normalizeField(input.guardianOccupation),
   };
