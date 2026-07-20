@@ -301,6 +301,8 @@ router.post('/results/check', async (req: Request, res: Response) => {
       });
     }
 
+    const effectiveTermId = termId && termId !== 'latest' ? termId : null;
+
     const candidates = await prisma.resultPin.findMany({
       where: {
         schoolId: school.id,
@@ -309,7 +311,7 @@ router.post('/results/check', async (req: Request, res: Response) => {
           { studentId: pupil.id },
           { studentId: null },
         ],
-        ...(termId ? { termId } : {}),
+        ...(effectiveTermId ? { termId: effectiveTermId } : {}),
       },
       select: {
         id: true,
@@ -353,8 +355,11 @@ router.post('/results/check', async (req: Request, res: Response) => {
 
     const where: any = { ...publishedAssessmentWhere };
 
-    if (termId && termId !== 'latest') {
-      where.termId = termId;
+    const pinTermId = matchedPin?.termId && matchedPin.termId !== 'latest' ? matchedPin.termId : null;
+    const resolvedTermId = effectiveTermId || pinTermId;
+
+    if (resolvedTermId) {
+      where.termId = resolvedTermId;
     }
 
     const assessments = await prisma.assessment.findMany({

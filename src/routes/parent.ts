@@ -531,7 +531,7 @@ async function ensureResultPinAccess(childId: string, suppliedPin?: string | nul
   });
 
   if (!school || !school.resultAccessPinEnabled) {
-    return { allowed: true, requiresPin: false };
+    return { allowed: true, requiresPin: false, matchedPinTermId: null };
   }
 
   const mode = school.resultAccessMode || 'NONE';
@@ -543,7 +543,7 @@ async function ensureResultPinAccess(childId: string, suppliedPin?: string | nul
   // If no PIN is supplied, request one
   const normalizedPin = String(suppliedPin ?? '').trim();
   if (!normalizedPin) {
-    return { allowed: false, requiresPin: true, error: 'Result PIN required' };
+    return { allowed: false, requiresPin: true, error: 'Result PIN required', matchedPinTermId: null };
   }
 
   const candidates = await prisma.resultPin.findMany({
@@ -582,11 +582,11 @@ async function ensureResultPinAccess(childId: string, suppliedPin?: string | nul
         });
       }
 
-      return { allowed: true, requiresPin: false };
+      return { allowed: true, requiresPin: false, matchedPinTermId: candidate.termId ?? null };
     }
   }
 
-  return { allowed: false, requiresPin: false, error: 'Invalid result PIN' };
+  return { allowed: false, requiresPin: false, error: 'Invalid result PIN', matchedPinTermId: null };
 }
 
 // Get child results by term and assessment
@@ -637,6 +637,8 @@ router.get('/results', async (req: Request, res: Response) => {
       return res.status(403).json({ error: accessCheck.error || 'Result PIN validation failed', requiresPin: false });
     }
 
+    const effectiveTermId = termId && termId !== 'latest' ? termId : accessCheck.matchedPinTermId || null;
+
     // Get child's school and phase
     const child = await prisma.pupil.findUnique({
       where: { id: childId },
@@ -658,9 +660,9 @@ router.get('/results', async (req: Request, res: Response) => {
       status: 'PUBLISHED',
     };
 
-    // If termId is specified, filter by term
-    if (termId && termId !== 'latest') {
-      where.termId = termId;
+    // If a term was explicitly selected, or the PIN corresponds to a specific term, filter to it.
+    if (effectiveTermId && effectiveTermId !== 'latest') {
+      where.termId = effectiveTermId;
     }
 
     // Get the assessments (and their results for this child)
@@ -691,27 +693,31 @@ router.get('/results', async (req: Request, res: Response) => {
     let selectedTerm = null;
     let filteredAssessments = assessments;
 
-    if (!termId || termId === 'latest') {
+    if (!effectiveTermId || effectiveTermId === 'latest') {
       // Group by term and get latest
-      const groupedByTerm = new Map();
-      assessments.forEach(a => {
+      const groupedByTerm = new Map<string, any[]>();
+      assessments.forEach((a) => {
         if (a.term) {
           if (!groupedByTerm.has(a.term.id)) {
             groupedByTerm.set(a.term.id, []);
           }
-          groupedByTerm.get(a.term.id).push(a);
+          groupedByTerm.get(a.term.id)!.push(a);
         }
       });
 
-      // Get first (latest) term
-      if (groupedByTerm.size > 0) {
-        const firstTermId = groupedByTerm.keys().next().value;
-        selectedTerm = assessments.find(a => a.term?.id === firstTermId)?.term || null;
-        filteredAssessments = groupedByTerm.get(firstTermId);
+      // Get the latest term by sort order when no explicit term has been requested.
+      const latestTerm = assessments
+        .map((assessment) => assessment.term)
+        .filter((term): term is { id: string; name: string; sortOrder?: number | null } => Boolean(term))
+        .sort((a, b) => (b.sortOrder ?? 0) - (a.sortOrder ?? 0))[0] ?? null;
+
+      if (latestTerm) {
+        selectedTerm = latestTerm;
+        filteredAssessments = assessments.filter((assessment) => assessment.term?.id === latestTerm.id);
       }
     } else {
-      selectedTerm = assessments[0]?.term || null;
-      filteredAssessments = assessments.filter(a => a.term?.id === termId);
+      selectedTerm = assessments.find((assessment) => assessment.term?.id === effectiveTermId)?.term || null;
+      filteredAssessments = assessments.filter((assessment) => assessment.term?.id === effectiveTermId);
     }
 
     // Transform results - flatten assessment results into subjects
