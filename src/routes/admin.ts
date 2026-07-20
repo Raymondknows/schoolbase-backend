@@ -17,6 +17,7 @@ import requireActiveSubscription from '../middleware/subscriptionGuard.js';
 import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
 import { buildGuardianNotificationRecipients, resolveGuardianNotificationTargets } from '../services/guardian-notification-recipients.js';
 import { resolvePublicResultsUrl } from '../services/public-url.js';
+import { normalizeGuardianProfileData } from '../services/student-guardian-profile.js';
 import type { NextFunction } from 'express';
 
 const router = Router();
@@ -2719,6 +2720,9 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
     // Verify student exists and belongs to school
     const existingPupil = await prisma.pupil.findFirst({
       where: { id, schoolId },
+      include: {
+        guardians: { include: { guardian: true } },
+      },
     });
 
     if (!existingPupil) {
@@ -2751,6 +2755,15 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
       guardianAltPhone,
       guardianOccupation,
     } = req.body;
+
+    const normalizedGuardianProfile = normalizeGuardianProfileData({
+      guardianFirst,
+      guardianLast,
+      guardianEmail,
+      guardianPhone,
+      guardianAltPhone,
+      guardianOccupation,
+    });
 
     // Prepare photo URL if file was uploaded
     let photoUrl = existingPupil.photoUrl;
@@ -2792,6 +2805,43 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
         guardians: { include: { guardian: true } },
       },
     });
+
+    const guardianLink = existingPupil.guardians?.[0] ?? (updatedPupil.guardians?.[0] ?? null);
+    const existingGuardian = guardianLink?.guardian ?? null;
+
+    if (existingGuardian && (normalizedGuardianProfile.firstName || normalizedGuardianProfile.lastName || normalizedGuardianProfile.phone || normalizedGuardianProfile.altPhone || normalizedGuardianProfile.email || normalizedGuardianProfile.occupation)) {
+      await prisma.guardian.update({
+        where: { id: existingGuardian.id },
+        data: {
+          firstName: normalizedGuardianProfile.firstName ?? existingGuardian.firstName,
+          lastName: normalizedGuardianProfile.lastName ?? existingGuardian.lastName,
+          phone: normalizedGuardianProfile.phone ?? existingGuardian.phone,
+          altPhone: normalizedGuardianProfile.altPhone ?? existingGuardian.altPhone ?? null,
+          email: normalizedGuardianProfile.email ?? existingGuardian.email ?? null,
+          occupation: normalizedGuardianProfile.occupation ?? existingGuardian.occupation ?? null,
+        },
+      });
+    } else if (normalizedGuardianProfile.firstName && normalizedGuardianProfile.lastName) {
+      const guardian = await prisma.guardian.create({
+        data: {
+          schoolId,
+          firstName: normalizedGuardianProfile.firstName,
+          lastName: normalizedGuardianProfile.lastName,
+          phone: normalizedGuardianProfile.phone || '',
+          altPhone: normalizedGuardianProfile.altPhone ?? null,
+          email: normalizedGuardianProfile.email ?? null,
+          occupation: normalizedGuardianProfile.occupation ?? null,
+        },
+      });
+
+      await prisma.guardianPupil.create({
+        data: {
+          guardianId: guardian.id,
+          pupilId: id,
+          relation: guardianRelationship || 'Parent',
+        },
+      });
+    }
 
     res.json(updatedPupil);
   } catch (error) {
