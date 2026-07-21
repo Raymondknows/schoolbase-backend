@@ -1489,6 +1489,79 @@ router.delete('/videos/:videoId', async (req: Request, res: Response) => {
   }
 });
 
+// POST /schoolbase-admin/api/campaigns/send - Send a campaign to manually entered recipients
+router.post('/campaigns/send', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const { recipients, emailType, subject, body } = req.body as {
+      recipients?: unknown;
+      emailType?: string;
+      subject?: string;
+      body?: string;
+    };
+
+    const MAX_RECIPIENTS = 100;
+    const allowedEmailTypes = new Set([
+      'CONSULTANT_PARTNERSHIP', 'SCHOOL_PARTNERSHIP_INTRODUCTION', 'PARTNERSHIP_FOLLOW_UP',
+      'PRODUCT_UPDATE', 'PRICE_UPDATE', 'SUBSCRIPTION_THANK_YOU', 'SUPPORT_UPDATE',
+      'ONBOARDING_GUIDANCE', 'BEST_PRACTICE_TIP', 'MANUAL_ANNOUNCEMENT',
+      'POLICY_UPDATE', 'ACCOUNT_SECURITY',
+    ]);
+    const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ message: 'At least one recipient email is required.' });
+    }
+    if (recipients.length > MAX_RECIPIENTS) {
+      return res.status(400).json({ message: `A campaign can contain at most ${MAX_RECIPIENTS} recipients.` });
+    }
+    if (!emailType || !allowedEmailTypes.has(emailType)) {
+      return res.status(400).json({ message: 'A valid campaign template is required.' });
+    }
+    if (!subject?.trim() || !body?.trim()) {
+      return res.status(400).json({ message: 'Subject and body are required.' });
+    }
+
+    const normalizedRecipients = Array.from(new Set(
+      recipients
+        .filter((recipient): recipient is string => typeof recipient === 'string')
+        .map((recipient) => recipient.trim().toLowerCase())
+        .filter(Boolean),
+    ));
+    const invalidRecipients = normalizedRecipients.filter((recipient) => !isValidEmail(recipient));
+    if (invalidRecipients.length > 0) {
+      return res.status(400).json({ message: `Invalid email address(es): ${invalidRecipients.join(', ')}` });
+    }
+
+    const { sendPlatformCommunicationEmail } = await import('../services/email.js');
+    const sent: string[] = [];
+    const failed: { email: string; error: string }[] = [];
+
+    for (const recipient of normalizedRecipients) {
+      try {
+        await sendPlatformCommunicationEmail(recipient, 'there', 'SchoolBase', emailType, subject.trim(), body.trim());
+        sent.push(recipient);
+        await (prisma as any).emailLog.create({
+          data: { recipientEmail: recipient, recipientName: null, emailType, subject: subject.trim(), sentAt: new Date(), status: 'SENT', metadata: JSON.stringify({ campaign: true }) },
+        }).catch(() => {});
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Email delivery failed';
+        failed.push({ email: recipient, error: message });
+        await (prisma as any).emailLog.create({
+          data: { recipientEmail: recipient, recipientName: null, emailType, subject: subject.trim(), sentAt: new Date(), status: 'FAILED', error: message, metadata: JSON.stringify({ campaign: true }) },
+        }).catch(() => {});
+      }
+    }
+
+    return res.json({ success: failed.length === 0, sent, failed, sentCount: sent.length, failedCount: failed.length, total: normalizedRecipients.length });
+  } catch (error) {
+    console.error('Error sending campaign:', error);
+    return res.status(500).json({ message: error instanceof Error ? error.message : 'Failed to send campaign' });
+  }
+});
+
 // POST /schoolbase-admin/api/emails/send - Send platform communication emails
 router.post('/emails/send', async (req: Request, res: Response) => {
   const session = await requirePlatformAdminSession(req, res);
