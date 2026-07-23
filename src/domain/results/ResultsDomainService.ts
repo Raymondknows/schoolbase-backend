@@ -418,7 +418,8 @@ export class ResultsDomainService {
   async unlockResults(
     assessmentId: string,
     userId: string,
-    schoolId: string
+    schoolId: string,
+    reason?: string
   ): Promise<void> {
     const assessment = await this.prisma.assessment.findFirst({
       where: { id: assessmentId, schoolId },
@@ -445,6 +446,13 @@ export class ResultsDomainService {
     });
 
     if (results.length > 0) {
+      const baseChanges: Record<string, any> = {
+        operation: 'unlock_all_results',
+        timestamp: now.toISOString(),
+      };
+
+      if (reason) baseChanges.reason = reason;
+
       await this.prisma.resultAudit.createMany({
         data: results.map((result) => ({
           schoolId,
@@ -452,7 +460,7 @@ export class ResultsDomainService {
           resultId: result.id,
           pupilId: result.pupilId,
           action: 'BATCH_UNLOCKED',
-          changes: JSON.stringify({ operation: 'unlock_all_results', timestamp: now.toISOString() }),
+          changes: JSON.stringify(baseChanges),
           changedBy: userId,
           changedAt: now,
         })),

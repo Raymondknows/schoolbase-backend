@@ -492,7 +492,7 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
       assessments: assessments.map((assessment) => ({
         ...assessment,
         isLocked: assessment.results.some((result) => result.lockedAt !== null),
-        canEdit: assessment.status === 'DRAFT' && !assessment.results.some((result) => result.lockedAt !== null),
+        canEdit: !assessment.results.some((result) => result.lockedAt !== null) && assessment.status !== 'PUBLISHED',
         studentCount: studentsByPhase.get(assessment.phase)?.size ?? 0,
         entryCount: assessment._count.results,
         subjectCount: teacherSubjects.length,
@@ -821,7 +821,7 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
         phase: assessment.phase,
         status: assessment.status,
         isLocked,
-        canEdit: assessment.status === 'DRAFT' && !isLocked,
+        canEdit: !isLocked && assessment.status !== 'PUBLISHED',
         studentCount: uniqueStudentCount,
         entryCount: filteredResults.length,
         subjectCount: resultSubjects.length,

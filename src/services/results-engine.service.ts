@@ -375,7 +375,8 @@ export default class ResultsEngineService {
   async unlockResults(
     assessmentId: string,
     userId: string,
-    schoolId: string
+    schoolId: string,
+    reason?: string
   ): Promise<void> {
     const now = new Date();
 
@@ -401,8 +402,8 @@ export default class ResultsEngineService {
       },
     });
 
-    // Note: Batch unlocking is not individually audited (affects multiple results)
-    // Each result's lockedAt/lockedBy reset serves as audit trail
+    // Note: Batch unlocking is not individually audited here (domain layer handles audits).
+    // The optional `reason` parameter is accepted for API parity.
   }
 
   /**

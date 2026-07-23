@@ -363,7 +363,8 @@ router.post('/unlock/:assessmentId', async (req: Request, res: Response) => {
     }
 
     // Unlock results (domain layer handles validation)
-    await resultsDomain.unlockResults(assessmentId, userId, schoolId);
+    const reason = req.body && (req.body as any).reason ? String((req.body as any).reason) : undefined;
+    await resultsDomain.unlockResults(assessmentId, userId, schoolId, reason);
     const workflowState = await resultsDomain.calculateNextState(assessmentId, schoolId);
 
     res.json({
