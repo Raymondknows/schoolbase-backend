@@ -1014,7 +1014,10 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
       select: { lockedAt: true },
     });
 
-    if (assessment.status !== 'DRAFT' || existingAssessmentResults.some((result) => result.lockedAt !== null)) {
+    const assessmentIsLocked = existingAssessmentResults.some((result) => result.lockedAt !== null);
+    const assessmentIsPublished = assessment.status === 'PUBLISHED';
+
+    if (assessmentIsPublished || assessmentIsLocked) {
       return res.status(403).json({ error: 'This assessment is locked and can no longer be edited.' });
     }
 
