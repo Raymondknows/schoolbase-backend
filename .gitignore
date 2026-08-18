@@ -1,0 +1,13 @@
+node_modules
+dist
+.env
+uploads
+*.log
+.baileys-session/
+
+.whatsapp-sessions/
+.DS_Store
+
+.git-backup/
+.whatsapp-session-state/
+prisma.zip
