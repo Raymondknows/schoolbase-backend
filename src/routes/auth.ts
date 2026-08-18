@@ -108,13 +108,13 @@ router.post('/platform-login', async (req: Request, res: Response) => {
 // POST /api/auth/school-login
 // School admin, staff, parent login
 // ============================================
-router.post('/school-login', async (req: Request, res: Response) => {
+async function handleSchoolLogin(req: Request, res: Response) {
   try {
     const { email, password } = req.body ?? {};
-    
+
     if (!email || !password) {
-      return res.status(400).json({ 
-        error: 'Email and password are required.' 
+      return res.status(400).json({
+        error: 'Email and password are required.',
       });
     }
 
@@ -133,18 +133,18 @@ router.post('/school-login', async (req: Request, res: Response) => {
     // User not found - check if there's a pending OTP
     if (!user || !user.passwordHash) {
       const normalizedEmail = String(email).trim().toLowerCase();
-      
+
       // Check if this email has a pending OTP waiting to be verified
       if (await hasPendingOtp(normalizedEmail)) {
         const pendingSignup = await getSignupOtp(normalizedEmail);
 
         // Resend OTP for this pending signup
         console.log(`[AUTH] Resending OTP for pending signup: ${normalizedEmail}`);
-        
+
         // Generate new OTP and store it
         const otp = generateOtp();
         await resendSignupOtp(normalizedEmail, otp);
-        
+
         // Send email asynchronously
         sendSignupOtpEmail(normalizedEmail, otp, pendingSignup?.schoolName || 'Your School')
           .then(() => {
@@ -153,26 +153,26 @@ router.post('/school-login', async (req: Request, res: Response) => {
           .catch((error) => {
             console.error('[AUTH] OTP resend failed (non-blocking):', error);
           });
-        
+
         // Return special response indicating verification needed
-        return res.status(401).json({ 
+        return res.status(401).json({
           error: 'Please verify your email first',
           needsVerification: true,
           email: normalizedEmail,
         });
       }
-      
+
       // No pending OTP - standard "not found" response
-      return res.status(401).json({ 
-        error: 'Invalid email or password.' 
+      return res.status(401).json({
+        error: 'Invalid email or password.',
       });
     }
 
     // Password invalid
     const valid = await bcrypt.compare(String(password), user.passwordHash);
     if (!valid) {
-      return res.status(401).json({ 
-        error: 'Invalid email or password.' 
+      return res.status(401).json({
+        error: 'Invalid email or password.',
       });
     }
 
@@ -180,8 +180,8 @@ router.post('/school-login', async (req: Request, res: Response) => {
     // REQUIRED: School users MUST have a schoolId
     if (user.role !== 'PLATFORM_ADMIN' && !user.schoolId) {
       console.error(`[AUTH] School user has no schoolId: ${email} (${user.role})`);
-      return res.status(403).json({ 
-        error: 'This account is not assigned to a school.' 
+      return res.status(403).json({
+        error: 'This account is not assigned to a school.',
       });
     }
 
@@ -191,7 +191,7 @@ router.post('/school-login', async (req: Request, res: Response) => {
       role: user.role,
       email: user.email,
       name: user.name,
-      schoolId: user.schoolId || null, // Platform admin has null schoolId
+      schoolId: user.schoolId || null,
     })
       .setProtectedHeader({ alg: 'HS256' })
       .setIssuedAt()
@@ -205,10 +205,10 @@ router.post('/school-login', async (req: Request, res: Response) => {
       sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       path: '/',
       domain: process.env.NODE_ENV === 'production' ? '.schoolbase.live' : undefined,
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    res.json({
+    return res.json({
       success: true,
       token,
       role: user.role,
@@ -219,9 +219,13 @@ router.post('/school-login', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('[AUTH] School login error:', error);
-    res.status(500).json({ error: 'Login failed' });
+    return res.status(500).json({ error: 'Login failed' });
   }
-});
+}
+
+router.post('/school-login', handleSchoolLogin);
+router.post('/login', handleSchoolLogin);
+router.post('/admin-login', handleSchoolLogin);
 
 // ============================================
 // POST /api/auth/verify
