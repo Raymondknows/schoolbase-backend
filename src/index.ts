@@ -108,6 +108,8 @@ async function loadRoutes() {
     console.log('✓ Loaded dashboard routes');
     const { default: teacherRoutes } = await import('./routes/teacher.js');
     console.log('✓ Loaded teacher routes');
+    const { default: timetableRoutes } = await import('./routes/timetable.js');
+    console.log('✓ Loaded timetable routes');
     const { default: authRoutes } = await import('./routes/auth.js');
     console.log('✓ Loaded auth routes');
     const { default: adminComponentsRoutes } = await import('./routes/admin-components.js');
@@ -141,6 +143,7 @@ async function loadRoutes() {
     app.use('/api/parent', parentRoutes);
     app.use('/api/admin', dashboardRoutes);
     app.use('/api/teacher', teacherRoutes);
+    app.use('/api', timetableRoutes);
     app.use('/api/auth', authRoutes);
     app.use('/schoolbase-admin/api', schoolbaseAdminRoutes);
     
