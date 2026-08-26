@@ -173,10 +173,12 @@ router.post('/admin/timetable/configs/:configId/periods', verifyAuth, requireAdm
     const schoolId = schoolIdFromRequest(req);
     const config = await getConfig(schoolId, req.params.configId);
     if (!config) return res.status(404).json({ error: 'Timetable configuration not found.' });
+    if (config.status === 'PUBLISHED') return res.status(409).json({ error: 'Return the timetable to draft before changing periods.' });
     const periods = Array.isArray(req.body?.periods) ? req.body.periods : [];
     if (!periods.length) return res.status(400).json({ error: 'At least one period is required.' });
 
     const normalized = periods.map((period, index) => ({
+      id: requiredString(period.id),
       dayOfWeek: Number(period.dayOfWeek),
       name: requiredString(period.name),
       startsAt: requiredString(period.startsAt),
@@ -187,13 +189,25 @@ router.post('/admin/timetable/configs/:configId/periods', verifyAuth, requireAdm
       return res.status(400).json({ error: 'Each period needs a valid day, name, start time, and end time.' });
     }
 
-    const entries = await prisma.timetableEntry.count({ where: { configId: config.id } });
-    if (entries) return res.status(409).json({ error: 'Remove timetable entries before replacing periods.' });
+    const existingPeriods = await prisma.timetablePeriod.findMany({ where: { configId: config.id }, select: { id: true } });
+    const incomingIds = new Set(normalized.flatMap((period) => period.id ? [period.id] : []));
+    const removedIds = existingPeriods.map((period) => period.id).filter((id) => !incomingIds.has(id));
+    if (removedIds.length) {
+      const entries = await prisma.timetableEntry.count({ where: { configId: config.id, periodId: { in: removedIds } } });
+      if (entries) return res.status(409).json({ error: 'Move or remove lessons assigned to a period before deleting it.' });
+    }
 
-    await prisma.$transaction([
-      prisma.timetablePeriod.deleteMany({ where: { configId: config.id } }),
-      prisma.timetablePeriod.createMany({ data: normalized.map((period) => ({ ...period, configId: config.id })) }),
-    ]);
+    await prisma.$transaction(async (transaction) => {
+      if (removedIds.length) await transaction.timetablePeriod.deleteMany({ where: { configId: config.id, id: { in: removedIds } } });
+      for (const period of normalized) {
+        const data = { dayOfWeek: period.dayOfWeek, name: period.name, startsAt: period.startsAt, endsAt: period.endsAt, sortOrder: period.sortOrder };
+        if (period.id && existingPeriods.some((existing) => existing.id === period.id)) {
+          await transaction.timetablePeriod.update({ where: { id: period.id }, data });
+        } else {
+          await transaction.timetablePeriod.create({ data: { ...data, configId: config.id } });
+        }
+      }
+    });
     const savedPeriods = await prisma.timetablePeriod.findMany({ where: { configId: config.id }, orderBy: [{ dayOfWeek: 'asc' }, { sortOrder: 'asc' }] });
     res.json({ periods: savedPeriods });
   } catch (error) {
