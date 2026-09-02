@@ -7,6 +7,8 @@ const router = Router();
 const prisma = new PrismaClient();
 
 const timetableInclude = {
+  academicYear: { select: { name: true } },
+  term: { select: { name: true, startsOn: true, endsOn: true } },
   periods: { orderBy: [{ dayOfWeek: 'asc' }, { sortOrder: 'asc' }] },
   entries: {
     include: {

@@ -1,0 +1,1 @@
+-- This migration directory was committed without schema changes.

@@ -2,6 +2,9 @@ import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { jwtVerify, SignJWT } from 'jose';
 import axios from 'axios';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 import { sendSetupReminderEmail } from '../services/email.js';
 import { getPlatformSettings, serializePlatformSettingValue, normalizeEmailList, parsePlatformSettingValue, platformSettingDefaults } from '../services/platform-settings.js';
 import { sendWelcomeEmail, sendInternalSignupNotification } from '../services/email.js';
@@ -9,6 +12,7 @@ import { generateOtp } from '../services/otp.js';
 
 const router = Router();
 const prisma = new PrismaClient();
+const supportDb = prisma as any;
 
 async function getSchoolSetupChecklistData(schoolId: string) {
   const [school, enabledPhases, academicYears, classes, subjects, teacherClasses, feeSchedules] = await Promise.all([
@@ -1241,6 +1245,33 @@ router.post('/impersonate/exchange', async (req: Request, res: Response) => {
   }
 });
 
+const supportUploadDir = path.join(process.cwd(), 'uploads', 'support');
+if (!fs.existsSync(supportUploadDir)) {
+  fs.mkdirSync(supportUploadDir, { recursive: true });
+}
+
+const supportStorage = multer.diskStorage({
+  destination: supportUploadDir,
+  filename: (req, file, cb) => {
+    const extension = path.extname(file.originalname) || '.bin';
+    const uniqueName = `${Date.now()}-${Math.random().toString(36).substring(7)}${extension}`;
+    cb(null, uniqueName);
+  },
+});
+
+const supportUpload = multer({
+  storage: supportStorage,
+  limits: { fileSize: 12 * 1024 * 1024 },
+  fileFilter: (req: any, file: any, cb: any) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'image/jpg', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv', 'text/plain'];
+    if (allowed.includes(file.mimetype) || file.originalname.match(/\.(csv|xlsx|xls|doc|docx|pdf|png|jpg|jpeg|webp|txt)$/i)) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error('Unsupported file type. Upload images, PDFs, documents, or CSV files.'));
+  },
+});
+
 const allowedSupportStatuses = new Set(['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'] as const);
 
 function normalizeSupportStatus(value: unknown): 'OPEN' | 'IN_PROGRESS' | 'RESOLVED' | 'CLOSED' | undefined {
@@ -1252,16 +1283,182 @@ function normalizeSupportStatus(value: unknown): 'OPEN' | 'IN_PROGRESS' | 'RESOL
     : undefined;
 }
 
+router.get('/support/agents', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const agents = await prisma.user.findMany({
+      where: { role: 'PLATFORM_ADMIN' },
+      select: { id: true, name: true, email: true },
+      orderBy: { name: 'asc' },
+    });
+    res.json({ agents });
+  } catch (error) {
+    res.status(500).json({ message: (error as Error).message || 'Failed to fetch support agents' });
+  }
+});
+
+router.get('/support/tasks', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const tasks = await supportDb.supportTeamTask.findMany({
+      orderBy: [{ status: 'asc' }, { dueAt: 'asc' }, { createdAt: 'desc' }],
+      include: {
+        assignee: { select: { id: true, name: true, email: true } },
+        creator: { select: { id: true, name: true, email: true } },
+      },
+    });
+    res.json({ tasks });
+  } catch (error) {
+    res.status(500).json({ message: (error as Error).message || 'Failed to fetch support tasks' });
+  }
+});
+
+router.post('/support/tasks', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const { title, description, priority = 'MEDIUM', assignedTo, dueAt } = req.body as Record<string, string | undefined>;
+    if (!title?.trim()) return res.status(400).json({ message: 'Task title is required' });
+
+    const task = await supportDb.supportTeamTask.create({
+      data: {
+        title: title.trim(),
+        description: description?.trim() || null,
+        priority: priority || 'MEDIUM',
+        assignedTo: assignedTo || null,
+        createdBy: session,
+        dueAt: dueAt ? new Date(dueAt) : null,
+      },
+      include: { assignee: { select: { id: true, name: true, email: true } }, creator: { select: { id: true, name: true, email: true } } },
+    });
+    res.status(201).json({ task });
+  } catch (error) {
+    res.status(500).json({ message: (error as Error).message || 'Failed to create support task' });
+  }
+});
+
+router.patch('/support/tasks/:taskId', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const { title, description, status, priority, assignedTo, dueAt } = req.body as Record<string, string | null | undefined>;
+    const task = await supportDb.supportTeamTask.update({
+      where: { id: req.params.taskId },
+      data: {
+        ...(title !== undefined ? { title: title?.trim() || undefined } : {}),
+        ...(description !== undefined ? { description: description?.trim() || null } : {}),
+        ...(status !== undefined ? { status: status || 'OPEN' } : {}),
+        ...(priority !== undefined ? { priority: priority || 'MEDIUM' } : {}),
+        ...(assignedTo !== undefined ? { assignedTo: assignedTo || null } : {}),
+        ...(dueAt !== undefined ? { dueAt: dueAt ? new Date(dueAt) : null } : {}),
+      },
+      include: { assignee: { select: { id: true, name: true, email: true } }, creator: { select: { id: true, name: true, email: true } } },
+    });
+    res.json({ task });
+  } catch (error) {
+    res.status(500).json({ message: (error as Error).message || 'Failed to update support task' });
+  }
+});
+
+router.delete('/support/tasks/:taskId', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    await supportDb.supportTeamTask.delete({ where: { id: req.params.taskId } });
+    res.json({ message: 'Support task deleted' });
+  } catch (error) {
+    res.status(500).json({ message: (error as Error).message || 'Failed to delete support task' });
+  }
+});
+
+router.get('/support/requests/:requestId/notes', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const notes = await supportDb.supportInternalNote.findMany({
+      where: { supportRequestId: req.params.requestId },
+      orderBy: { createdAt: 'asc' },
+      include: { author: { select: { id: true, name: true, email: true } } },
+    });
+    res.json({ notes });
+  } catch (error) {
+    res.status(500).json({ message: (error as Error).message || 'Failed to fetch internal notes' });
+  }
+});
+
+router.post('/support/requests/:requestId/notes', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
+    if (!body) return res.status(400).json({ message: 'Note cannot be empty' });
+
+    const note = await supportDb.supportInternalNote.create({
+      data: { supportRequestId: req.params.requestId, authorId: session, body },
+      include: { author: { select: { id: true, name: true, email: true } } },
+    });
+    res.status(201).json({ note });
+  } catch (error) {
+    res.status(500).json({ message: (error as Error).message || 'Failed to create internal note' });
+  }
+});
+
+router.delete('/support/notes/:noteId', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    await supportDb.supportInternalNote.delete({ where: { id: req.params.noteId } });
+    res.json({ message: 'Internal note deleted' });
+  } catch (error) {
+    res.status(500).json({ message: (error as Error).message || 'Failed to delete internal note' });
+  }
+});
+
+router.post('/support/upload', supportUpload.array('files', 10), async (req: Request, res: Response) => {
+  try {
+    const files = Array.isArray(req.files) ? req.files : [];
+    const forwardedProto = String(req.get('x-forwarded-proto') || req.protocol).split(',')[0].trim();
+    const publicBaseUrl = process.env.PUBLIC_API_URL || `${forwardedProto === 'https' || process.env.NODE_ENV === 'production' ? 'https' : 'http'}://${req.get('host')}`;
+    const attachments = files.map((file: any) => ({
+      id: `local-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+      fileName: file.filename,
+      originalName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      url: `${publicBaseUrl}/uploads/support/${file.filename}`,
+    }));
+
+    res.json({ attachments });
+  } catch (error) {
+    console.error('Error uploading support files:', error);
+    res.status(500).json({ error: 'Failed to upload support files' });
+  }
+});
+
 // GET /schoolbase-admin/api/support - Get all support requests from all schools
 router.get('/support', async (req: Request, res: Response) => {
   const session = await requirePlatformAdminSession(req, res);
   if (!session) return;
 
   try {
-    const supportRequests = await prisma.supportRequest.findMany({
+    const supportRequests = await supportDb.supportRequest.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
-        messages: { orderBy: { createdAt: 'asc' } },
+        messages: {
+          orderBy: { createdAt: 'asc' },
+          include: { attachments: { orderBy: { createdAt: 'asc' } } },
+        },
+        attachments: { orderBy: { createdAt: 'asc' } },
         school: { select: { id: true, name: true, country: true } }
       },
     });
@@ -1282,6 +1479,15 @@ router.get('/support', async (req: Request, res: Response) => {
             senderEmail: message.senderEmail,
             body: message.body,
             createdAt: message.createdAt.toISOString(),
+            attachments: ((message.attachments || []) as any[]).map((attachment: any) => ({
+              id: attachment.id,
+              fileName: attachment.fileName,
+              originalName: attachment.originalName,
+              mimeType: attachment.mimeType,
+              size: attachment.size,
+              url: attachment.url,
+              createdAt: attachment.createdAt.toISOString(),
+            })),
           };
         });
 
@@ -1306,6 +1512,15 @@ router.get('/support', async (req: Request, res: Response) => {
           createdAt: request.createdAt.toISOString(),
           updatedAt: request.updatedAt.toISOString(),
           messages,
+          attachments: ((request as any).attachments || []).map((attachment: any) => ({
+            id: attachment.id,
+            fileName: attachment.fileName,
+            originalName: attachment.originalName,
+            mimeType: attachment.mimeType,
+            size: attachment.size,
+            url: attachment.url,
+            createdAt: attachment.createdAt.toISOString(),
+          })),
           school: request.school ? {
             id: request.school.id,
             name: request.school.name,
@@ -1326,15 +1541,16 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
   if (!session) return;
 
   try {
-    const { requestId, response: responseText, status } = req.body as {
+    const { requestId, response: responseText, status, attachments = [] } = req.body as {
       requestId: string;
       response?: string;
       status?: string;
+      attachments?: Array<{ url: string; fileName?: string; originalName?: string; mimeType?: string; size?: number }>;
     };
 
     const normalizedStatus = normalizeSupportStatus(status);
 
-    const supportRequest = await prisma.supportRequest.findUnique({
+    const supportRequest: any = await prisma.supportRequest.findUnique({
       where: { id: requestId },
       include: { school: { select: { id: true, name: true, country: true, email: true } } },
     });
@@ -1354,14 +1570,15 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
 
     const shouldNotifyStatus = Boolean(normalizedStatus && ['RESOLVED', 'CLOSED'].includes(normalizedStatus) && normalizedStatus !== supportRequest.status);
 
-    const updated = await prisma.$transaction(async (tx) => {
+    const updated: any = await prisma.$transaction(async (tx) => {
       await tx.supportRequest.update({
         where: { id: requestId },
         data: updateData,
       });
 
+      let createdMessage = null;
       if (responseText) {
-        await tx.supportRequestMessage.create({
+        createdMessage = await tx.supportRequestMessage.create({
           data: {
             supportRequestId: requestId,
             senderRole: 'PLATFORM_ADMIN',
@@ -1370,14 +1587,32 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
             body: responseText,
           },
         });
+
+        if (Array.isArray(attachments) && attachments.length > 0) {
+          await (tx as any).supportAttachment.createMany({
+            data: attachments.map((attachment) => ({
+              supportRequestId: requestId,
+              supportMessageId: createdMessage!.id,
+              fileName: attachment.fileName || 'support-file',
+              originalName: attachment.originalName || attachment.fileName || 'support-file',
+              mimeType: attachment.mimeType || 'application/octet-stream',
+              size: Number(attachment.size || 0),
+              url: attachment.url,
+            })),
+          });
+        }
       }
 
-      return tx.supportRequest.findUniqueOrThrow({
+      return (tx as any).supportRequest.findUniqueOrThrow({
         where: { id: requestId },
         include: {
-          messages: { orderBy: { createdAt: 'asc' } },
+          messages: {
+            orderBy: { createdAt: 'asc' },
+            include: { attachments: { orderBy: { createdAt: 'asc' } } },
+          },
+          attachments: { orderBy: { createdAt: 'asc' } },
           school: { select: { id: true, name: true, country: true, email: true } },
-        },
+        } as any,
       });
     });
 
@@ -1432,6 +1667,15 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
         senderEmail: message.senderEmail,
         body: message.body,
         createdAt: message.createdAt.toISOString(),
+        attachments: ((message.attachments || []) as any[]).map((attachment: any) => ({
+          id: attachment.id,
+          fileName: attachment.fileName,
+          originalName: attachment.originalName,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+          url: attachment.url,
+          createdAt: attachment.createdAt.toISOString(),
+        })),
       };
     });
 
@@ -1459,6 +1703,15 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
         createdAt: updated.createdAt.toISOString(),
         updatedAt: updated.updatedAt.toISOString(),
         messages,
+        attachments: ((updated as any).attachments || []).map((attachment: any) => ({
+          id: attachment.id,
+          fileName: attachment.fileName,
+          originalName: attachment.originalName,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+          url: attachment.url,
+          createdAt: attachment.createdAt.toISOString(),
+        })),
         school: updated.school,
       }
     });

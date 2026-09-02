@@ -389,6 +389,9 @@ model User {
   teacherClasses    TeacherClass[]
   teacherSubjects   TeacherSubject[]
   platformAuditLogs PlatformAuditLog[]
+  supportNotes      SupportInternalNote[] @relation("SupportNoteAuthor")
+  createdTasks      SupportTeamTask[]     @relation("SupportTaskCreator")
+  assignedTasks     SupportTeamTask[]     @relation("SupportTaskAssignee")
   timetableEntries  TimetableEntry[]
   school            School?            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
@@ -426,6 +429,8 @@ model SupportRequest {
   updatedAt    DateTime               @updatedAt
   school       School                 @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   messages     SupportRequestMessage[]
+  attachments  SupportAttachment[]
+  internalNotes SupportInternalNote[]
 
   @@index([schoolId], map: "SupportRequest_schoolId_fkey")
 }
@@ -440,8 +445,60 @@ model SupportRequestMessage {
   createdAt        DateTime                 @default(now())
   updatedAt        DateTime                 @updatedAt
   supportRequest   SupportRequest           @relation(fields: [supportRequestId], references: [id], onDelete: Cascade)
+  attachments      SupportAttachment[]
 
   @@index([supportRequestId], map: "SupportRequestMessage_supportRequestId_fkey")
+}
+
+model SupportAttachment {
+  id               String                 @id @default(cuid())
+  supportRequestId String
+  supportMessageId String?
+  fileName         String
+  originalName     String
+  mimeType         String
+  size             Int
+  url              String
+  createdAt        DateTime               @default(now())
+  supportRequest   SupportRequest         @relation(fields: [supportRequestId], references: [id], onDelete: Cascade)
+  supportMessage   SupportRequestMessage? @relation(fields: [supportMessageId], references: [id], onDelete: SetNull)
+
+  @@index([supportRequestId], map: "SupportAttachment_supportRequestId_fkey")
+  @@index([supportMessageId], map: "SupportAttachment_supportMessageId_fkey")
+}
+
+model SupportInternalNote {
+  id               String         @id @default(cuid())
+  supportRequestId String
+  authorId         String?
+  body             String         @db.LongText
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  supportRequest   SupportRequest @relation(fields: [supportRequestId], references: [id], onDelete: Cascade)
+  author           User?          @relation("SupportNoteAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([supportRequestId])
+  @@index([authorId])
+}
+
+model SupportTeamTask {
+  id          String    @id @default(cuid())
+  title       String
+  description String?   @db.LongText
+  status      String    @default("OPEN")
+  priority    String    @default("MEDIUM")
+  assignedTo  String?
+  createdBy   String?
+  dueAt       DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  assignee    User?     @relation("SupportTaskAssignee", fields: [assignedTo], references: [id], onDelete: SetNull)
+  creator     User?     @relation("SupportTaskCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([assignedTo])
+  @@index([createdBy])
+  @@index([dueAt])
 }
 
 model PlatformAuditLog {

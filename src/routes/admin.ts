@@ -75,6 +75,15 @@ async function notifyApplicantOnAdmissionStatusChange(
 
 const router = Router();
 const prisma = new PrismaClient();
+const passwordResetStore = new Map<string, {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: Date;
+  attempts: number;
+  usedAt?: Date | null;
+  createdAt: Date;
+}>();
 const resultsDomain = new ResultsDomainService(prisma);
 const communicationRulesRegistry = new CommunicationRulesRegistry(DEFAULT_COMMUNICATION_RULES);
 
@@ -293,6 +302,40 @@ const settingsUpload = multer({
   limits: { fileSize: 4 * 1024 * 1024 },
 });
 
+const supportUploadDir = path.join(process.cwd(), 'uploads', 'support');
+if (!fs.existsSync(supportUploadDir)) {
+  fs.mkdirSync(supportUploadDir, { recursive: true });
+}
+
+const supportStorage = multer.diskStorage({
+  destination: supportUploadDir,
+  filename: (req, file, cb) => {
+    const extension = path.extname(file.originalname) || '.bin';
+    const uniqueName = `${Date.now()}-${Math.random().toString(36).substring(7)}${extension}`;
+    cb(null, uniqueName);
+  },
+});
+
+const supportUpload = multer({
+  storage: supportStorage,
+  limits: { fileSize: 12 * 1024 * 1024 },
+  fileFilter: (req: any, file: any, cb: any) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'image/jpg', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv', 'text/plain'];
+    if (allowed.includes(file.mimetype) || file.originalname.match(/\.(csv|xlsx|xls|doc|docx|pdf|png|jpg|jpeg|webp|txt)$/i)) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error('Unsupported file type. Upload images, PDFs, documents, or CSV files.'));
+  },
+});
+
+const parseSupportUpload = (req: Request, res: Response, next: NextFunction) => {
+  supportUpload.array('files', 10)(req, res, (error: any) => {
+    if (error) return res.status(400).json({ error: error.message || 'Unable to upload support files' });
+    next();
+  });
+};
+
 const importUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB for larger CSV imports
@@ -431,6 +474,7 @@ router.use((req: Request, res: Response, next: any) => {
     '/paystack',
     '/platform',
     '/impersonate',
+    '/support',
   ];
 
   // Allow exact or prefix matches for the allowlist
@@ -3947,6 +3991,34 @@ router.get('/website/data', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/support/upload', parseSupportUpload, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+      uploadedFiles.forEach((file: any) => fs.unlink(file.path, () => {}));
+      return res.status(401).json({ error: 'School session required' });
+    }
+
+    const files = Array.isArray(req.files) ? req.files : [];
+    const forwardedProto = String(req.get('x-forwarded-proto') || req.protocol).split(',')[0].trim();
+    const publicBaseUrl = process.env.PUBLIC_API_URL || `${forwardedProto === 'https' || process.env.NODE_ENV === 'production' ? 'https' : 'http'}://${req.get('host')}`;
+    const attachments = files.map((file: any) => ({
+      id: `local-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+      fileName: file.filename,
+      originalName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      url: `${publicBaseUrl}/uploads/support/${file.filename}`,
+    }));
+
+    res.json({ attachments });
+  } catch (error) {
+    console.error('Error uploading support files:', error);
+    res.status(500).json({ error: 'Failed to upload support files' });
+  }
+});
+
 // GET /api/admin/support/data - Get support requests
 router.get('/support/data', async (req: Request, res: Response) => {
   try {
@@ -3956,7 +4028,13 @@ router.get('/support/data', async (req: Request, res: Response) => {
     const supportRequests = await prisma.supportRequest.findMany({
       where: { schoolId },
       orderBy: { createdAt: 'desc' },
-      include: { messages: { orderBy: { createdAt: 'asc' } } } as any,
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+          include: { attachments: { orderBy: { createdAt: 'asc' } } },
+        },
+        attachments: { orderBy: { createdAt: 'asc' } },
+      } as any,
     });
 
     const school = await prisma.school.findUnique({ where: { id: schoolId } });
@@ -3977,6 +4055,15 @@ router.get('/support/data', async (req: Request, res: Response) => {
             senderEmail: message.senderEmail,
             body: message.body,
             createdAt: message.createdAt.toISOString(),
+            attachments: ((message.attachments || []) as any[]).map((attachment: any) => ({
+              id: attachment.id,
+              fileName: attachment.fileName,
+              originalName: attachment.originalName,
+              mimeType: attachment.mimeType,
+              size: attachment.size,
+              url: attachment.url,
+              createdAt: attachment.createdAt.toISOString(),
+            })),
           };
         });
 
@@ -4001,6 +4088,15 @@ router.get('/support/data', async (req: Request, res: Response) => {
           createdAt: request.createdAt.toISOString(),
           updatedAt: request.updatedAt.toISOString(),
           messages,
+          attachments: ((request as any).attachments || []).map((attachment: any) => ({
+            id: attachment.id,
+            fileName: attachment.fileName,
+            originalName: attachment.originalName,
+            mimeType: attachment.mimeType,
+            size: attachment.size,
+            url: attachment.url,
+            createdAt: attachment.createdAt.toISOString(),
+          })),
           school: {
             id: schoolId,
             name: school?.name,
@@ -4021,11 +4117,13 @@ router.post('/support', async (req: Request, res: Response) => {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
-    const { subject, message, priority = 'MEDIUM' } = req.body;
+    const { subject, message, priority = 'MEDIUM', attachments = [] } = req.body;
 
-    if (!subject || !message) {
-      return res.status(400).json({ error: 'Subject and message are required' });
+    if (!subject || (!message && (!Array.isArray(attachments) || attachments.length === 0))) {
+      return res.status(400).json({ error: 'Add a message or attach a file before submitting' });
     }
+
+    const supportMessage = message || 'Attachment included.';
 
     const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { id: true, name: true, country: true } });
 
@@ -4034,13 +4132,13 @@ router.post('/support', async (req: Request, res: Response) => {
         data: {
           schoolId,
           subject,
-          message,
+          message: supportMessage,
           priority,
           status: 'OPEN',
         },
       });
 
-      await tx.supportRequestMessage.create({
+      const createdMessage = await tx.supportRequestMessage.create({
         data: {
           supportRequestId: createdRequest.id,
           senderRole: 'SCHOOL',
@@ -4050,16 +4148,35 @@ router.post('/support', async (req: Request, res: Response) => {
         },
       });
 
-      return createdRequest;
+      if (Array.isArray(attachments) && attachments.length > 0) {
+        await tx.supportAttachment.createMany({
+          data: attachments.map((attachment: any) => ({
+            supportRequestId: createdRequest.id,
+            supportMessageId: createdMessage.id,
+            fileName: attachment.fileName || attachment.name || 'support-file',
+            originalName: attachment.originalName || attachment.name || 'support-file',
+            mimeType: attachment.mimeType || 'application/octet-stream',
+            size: Number(attachment.size || 0),
+            url: attachment.url,
+          })),
+        });
+      }
+
+      return { createdRequest, createdMessage };
+    });
+
+    const persistedAttachments = await prisma.supportAttachment.findMany({
+      where: { supportRequestId: supportRequest.createdRequest.id },
+      orderBy: { createdAt: 'asc' },
     });
 
     // Notify support team (non-blocking)
     try {
       const { sendSupportRequestNotification } = await import('../services/email.js');
       sendSupportRequestNotification(
-        supportRequest.id,
-        supportRequest.subject,
-        supportRequest.message,
+        supportRequest.createdRequest.id,
+        supportRequest.createdRequest.subject,
+        supportRequest.createdRequest.message,
         (school && school.name) || undefined,
         school?.email,
       )
@@ -4071,22 +4188,24 @@ router.post('/support', async (req: Request, res: Response) => {
 
     res.status(201).json({ 
       supportRequest: {
-        id: supportRequest.id,
-        subject: supportRequest.subject,
-        message: supportRequest.message,
-        response: supportRequest.response,
-        status: supportRequest.status,
-        priority: supportRequest.priority,
-        createdAt: supportRequest.createdAt.toISOString(),
-        updatedAt: supportRequest.updatedAt.toISOString(),
+        id: supportRequest.createdRequest.id,
+        subject: supportRequest.createdRequest.subject,
+        message: supportRequest.createdRequest.message,
+        response: supportRequest.createdRequest.response,
+        status: supportRequest.createdRequest.status,
+        priority: supportRequest.createdRequest.priority,
+        createdAt: supportRequest.createdRequest.createdAt.toISOString(),
+        updatedAt: supportRequest.createdRequest.updatedAt.toISOString(),
         messages: [{
-          id: `${supportRequest.id}-initial`,
+          id: supportRequest.createdMessage.id,
           senderRole: 'SCHOOL',
           senderName: school?.name || 'School',
           senderEmail: null,
-          body: supportRequest.message,
-          createdAt: supportRequest.createdAt.toISOString(),
+          body: supportRequest.createdRequest.message,
+          createdAt: supportRequest.createdRequest.createdAt.toISOString(),
+          attachments: persistedAttachments,
         }],
+        attachments: persistedAttachments,
         school: school ? {
           id: school.id,
           name: school.name,
@@ -4107,11 +4226,13 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
-    const { requestId, response: responseText } = req.body;
+    const { requestId, response: responseText, attachments = [] } = req.body;
 
-    if (!requestId || !responseText) {
-      return res.status(400).json({ error: 'Request ID and response are required' });
+    if (!requestId || (!responseText && (!Array.isArray(attachments) || attachments.length === 0))) {
+      return res.status(400).json({ error: 'Write a reply or attach a file before sending' });
     }
+
+    const supportResponse = responseText || 'Attachment included.';
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
@@ -4131,32 +4252,52 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
       await tx.supportRequest.update({
         where: { id: requestId },
         data: {
-          response: responseText,
+          response: supportResponse,
           status: 'IN_PROGRESS',
           updatedAt: new Date(),
         },
       });
 
-      await tx.supportRequestMessage.create({
+      const createdMessage = await tx.supportRequestMessage.create({
         data: {
           supportRequestId: requestId,
           senderRole: 'SCHOOL',
           senderName: school?.name || 'School',
           senderEmail: null,
-          body: responseText,
+          body: supportResponse,
         },
       });
 
+      if (Array.isArray(attachments) && attachments.length > 0) {
+        await tx.supportAttachment.createMany({
+          data: attachments.map((attachment: any) => ({
+            supportRequestId: requestId,
+            supportMessageId: createdMessage.id,
+            fileName: attachment.fileName || attachment.name || 'support-file',
+            originalName: attachment.originalName || attachment.name || 'support-file',
+            mimeType: attachment.mimeType || 'application/octet-stream',
+            size: Number(attachment.size || 0),
+            url: attachment.url,
+          })),
+        });
+      }
+
       return tx.supportRequest.findUniqueOrThrow({
         where: { id: requestId },
-        include: { messages: { orderBy: { createdAt: 'asc' } } } as any,
+        include: {
+          messages: {
+            orderBy: { createdAt: 'asc' },
+            include: { attachments: { orderBy: { createdAt: 'asc' } } },
+          },
+          attachments: { orderBy: { createdAt: 'asc' } },
+        } as any,
       });
     });
 
     // Notify support team about the follow-up message (non-blocking)
     try {
       const { sendSupportFollowupNotification } = await import('../services/email.js');
-      sendSupportFollowupNotification(requestId, responseText, (school && school.name) || undefined, school?.email)
+      sendSupportFollowupNotification(requestId, supportResponse, (school && school.name) || undefined, school?.email)
         .then(() => console.log('Support followup notification queued'))
         .catch((err) => console.warn('Support followup notification failed (non-blocking):', err));
     } catch (err) {
@@ -4177,6 +4318,15 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
         senderEmail: message.senderEmail,
         body: message.body,
         createdAt: message.createdAt.toISOString(),
+        attachments: ((message.attachments || []) as any[]).map((attachment: any) => ({
+          id: attachment.id,
+          fileName: attachment.fileName,
+          originalName: attachment.originalName,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+          url: attachment.url,
+          createdAt: attachment.createdAt.toISOString(),
+        })),
       };
     }));
 
@@ -4191,6 +4341,15 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
         createdAt: updated.createdAt.toISOString(),
         updatedAt: updated.updatedAt.toISOString(),
         messages,
+        attachments: ((updated.attachments || []) as any[]).map((attachment: any) => ({
+          id: attachment.id,
+          fileName: attachment.fileName,
+          originalName: attachment.originalName,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+          url: attachment.url,
+          createdAt: attachment.createdAt.toISOString(),
+        })),
         school: null,
       },
       message: 'Reply sent successfully'
@@ -6202,13 +6361,15 @@ router.post('/request-password-reset', async (req: Request, res: Response) => {
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-    // Save to database
-    await prisma.passwordReset.create({
-      data: {
-        userId: user.id,
-        tokenHash,
-        expiresAt,
-      },
+    const resetId = `${user.id}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    passwordResetStore.set(resetId, {
+      id: resetId,
+      userId: user.id,
+      tokenHash,
+      expiresAt,
+      attempts: 0,
+      usedAt: null,
+      createdAt: new Date(),
     });
 
     // Send email
@@ -6246,13 +6407,8 @@ router.post('/reset-password', async (req: Request, res: Response) => {
 
     // Find valid reset token
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-    const resetRecord = await prisma.passwordReset.findFirst({
-      where: {
-        userId: user.id,
-        tokenHash,
-        expiresAt: { gt: new Date() },
-        usedAt: null,
-      },
+    const resetRecord = Array.from(passwordResetStore.values()).find((entry) => {
+      return entry.userId === user.id && entry.tokenHash === tokenHash && entry.expiresAt > new Date() && !entry.usedAt;
     });
 
     if (!resetRecord) {
@@ -6268,16 +6424,13 @@ router.post('/reset-password', async (req: Request, res: Response) => {
     const passwordHash = await bcrypt.hash(password, 10);
 
     // Update user and mark token as used
-    await Promise.all([
-      prisma.user.update({
-        where: { id: user.id },
-        data: { passwordHash },
-      }),
-      prisma.passwordReset.update({
-        where: { id: resetRecord.id },
-        data: { usedAt: new Date() },
-      }),
-    ]);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash },
+    });
+
+    resetRecord.usedAt = new Date();
+    passwordResetStore.set(resetRecord.id, { ...resetRecord });
 
     res.json({ success: true, message: 'Password reset successful' });
   } catch (error) {
