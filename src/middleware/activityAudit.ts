@@ -49,7 +49,7 @@ export function activityAuditMiddleware(req: Request, res: Response, next: NextF
   }
 
   const path = req.originalUrl || req.path;
-  if (path.includes('/audit-logs') || path.includes('/health')) {
+  if (path.includes('/audit-logs') || path.includes('/health') || path.includes('/api/admin/verify')) {
     next();
     return;
   }
