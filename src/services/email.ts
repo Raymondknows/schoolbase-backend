@@ -362,6 +362,51 @@ export async function sendSignupOtpEmail(email: string, otp: string, schoolName:
   }
 }
 
+export async function sendPendingSignupReminderEmail(
+  email: string,
+  adminName: string,
+  schoolName: string,
+  otp: string,
+) {
+  if (!isValidEmail(email)) {
+    throw new Error(`Invalid email address: ${email}`);
+  }
+
+  const verificationUrl = `https://schoolbase.live/signup/verify?email=${encodeURIComponent(email)}`;
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+    to: email,
+    subject: `Complete your SchoolBase signup - ${schoolName}`,
+    text: `Hi ${adminName},\n\nYou started creating a SchoolBase account for ${schoolName}, but your signup is still waiting for email verification.\n\nUse this verification code to complete your signup: ${otp}\n\nThis code expires in 10 minutes. Continue here: ${verificationUrl}\n\nIf you need help, contact support@schoolbase.live.`,
+    html: `
+      <!DOCTYPE html>
+      <html>
+        <head><meta charset="utf-8"><style>${EMAIL_STYLES}</style></head>
+        <body>
+          <div class="email-container">
+            <div class="header">
+              <img src="https://schoolbase.live/logo.png" alt="SchoolBase Logo" class="logo" />
+              <h1>SchoolBase</h1>
+              <p class="header-subtitle">Complete Your Signup</p>
+            </div>
+            <div class="content">
+              <p>Hi ${adminName},</p>
+              <p>You started creating a SchoolBase account for <strong>${schoolName}</strong>, but your signup is still waiting for email verification.</p>
+              <p>Use this verification code to complete your signup:</p>
+              <div style="text-align: center;"><div class="otp-code">${otp}</div></div>
+              <p style="text-align: center; font-size: 13px; color: ${BRAND.textMuted};">This code expires in 10 minutes.</p>
+              <div class="button-container"><a href="${verificationUrl}" class="button">Continue Signup</a></div>
+              <div class="warning-box"><p><strong>Security tip:</strong> Never share this code with anyone. SchoolBase staff will never ask for it.</p></div>
+              <p>Need help? <a href="https://schoolbase.live/help" style="color: ${BRAND.primary};">Contact Support</a></p>
+            </div>
+            <div class="footer"><p class="footer-text">&copy; 2026 SchoolBase. All rights reserved.</p><p class="footer-text">Questions? <a href="mailto:support@schoolbase.live">support@schoolbase.live</a></p></div>
+          </div>
+        </body>
+      </html>
+    `,
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEMPLATE 2: WELCOME EMAIL (ADMIN)
 // ═══════════════════════════════════════════════════════════════════════════════

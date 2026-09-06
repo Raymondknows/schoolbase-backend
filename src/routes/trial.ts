@@ -85,6 +85,9 @@ router.post('/request-otp', async (req: Request, res: Response) => {
       slug,
       country,
       adminName,
+      tagline,
+      address,
+      phone,
       password,
       otp,
     });
@@ -136,9 +139,6 @@ router.post('/verify-otp', async (req: Request, res: Response) => {
 
     const adminEmail = String(req.body.adminEmail ?? '').trim().toLowerCase();
     const otp = String(req.body.otp ?? '').trim();
-    const tagline = String(req.body.tagline ?? '').trim();
-    const address = String(req.body.address ?? '').trim();
-    const phone = String(req.body.phone ?? '').trim();
 
     if (!adminEmail || !otp) {
       return res.status(400).json({ 
@@ -166,9 +166,9 @@ router.post('/verify-otp', async (req: Request, res: Response) => {
       data: {
         name: signupOtp.schoolName,
         slug: signupOtp.slug,
-        tagline: tagline || null,
-        address: address || null,
-        phone: phone || null,
+        tagline: signupOtp.tagline || null,
+        address: signupOtp.address || null,
+        phone: signupOtp.phone || null,
         country: signupOtp.country,
         email: adminEmail,
         status: 'TRIAL',

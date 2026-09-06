@@ -7,8 +7,8 @@ import path from 'path';
 import fs from 'fs';
 import { sendSetupReminderEmail } from '../services/email.js';
 import { getPlatformSettings, serializePlatformSettingValue, normalizeEmailList, parsePlatformSettingValue, platformSettingDefaults } from '../services/platform-settings.js';
-import { sendWelcomeEmail, sendInternalSignupNotification } from '../services/email.js';
-import { generateOtp } from '../services/otp.js';
+import { sendPendingSignupReminderEmail, sendWelcomeEmail, sendInternalSignupNotification } from '../services/email.js';
+import { generateOtp, resendSignupOtp } from '../services/otp.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -711,6 +711,7 @@ router.get('/email-logs', async (req: Request, res: Response) => {
 
   try {
     const emailType = req.query.emailType as string;
+    const campaignOnly = req.query.campaignOnly === 'true';
     const limit = parseInt(req.query.limit as string) || 50;
     const page = parseInt(req.query.page as string) || 1;
     const skip = (page - 1) * limit;
@@ -749,6 +750,9 @@ router.get('/email-logs', async (req: Request, res: Response) => {
         });
       }
       where.emailType = normalizedEmailType;
+    }
+    if (campaignOnly) {
+      where.metadata = { contains: '"campaign":true' };
     }
 
     const [logs, total] = await Promise.all([
@@ -2090,6 +2094,7 @@ router.get('/signups/pending', async (req: Request, res: Response) => {
           schoolName: true,
           slug: true,
           adminName: true,
+          phone: true,
           country: true,
           attempts: true,
           expiresAt: true,
@@ -2111,6 +2116,46 @@ router.get('/signups/pending', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Error listing pending signups:', err);
     res.status(500).json({ message: 'Failed to list pending signups', details: String(err) });
+  }
+});
+
+// POST /schoolbase-admin/api/signups/remind - follow up on incomplete signups
+router.post('/signups/remind', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const requestedEmail = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : null;
+    const pendingSignups = await prisma.signupOtp.findMany({
+      where: { verifiedAt: null, ...(requestedEmail ? { email: requestedEmail } : {}) },
+      select: { email: true, schoolName: true, adminName: true },
+    });
+
+    if (requestedEmail && pendingSignups.length === 0) {
+      return res.status(404).json({ message: 'Pending signup not found or already verified' });
+    }
+
+    let sentCount = 0;
+    let skippedCount = 0;
+    for (const signup of pendingSignups) {
+      try {
+        const otp = generateOtp();
+        if (!(await resendSignupOtp(signup.email, otp))) {
+          skippedCount += 1;
+          continue;
+        }
+        await sendPendingSignupReminderEmail(signup.email, signup.adminName, signup.schoolName, otp);
+        sentCount += 1;
+      } catch (error) {
+        skippedCount += 1;
+        console.error(`Failed to send pending signup reminder to ${signup.email}:`, error);
+      }
+    }
+
+    return res.json({ success: true, sentCount, skippedCount, total: pendingSignups.length });
+  } catch (error: any) {
+    console.error('Error sending pending signup reminders:', error);
+    return res.status(500).json({ message: error.message || 'Failed to send pending signup reminders' });
   }
 });
 
@@ -2145,6 +2190,9 @@ router.post('/signups/approve', async (req: Request, res: Response) => {
       data: {
         name: otpEntry.schoolName,
         slug,
+        tagline: otpEntry.tagline,
+        address: otpEntry.address,
+        phone: otpEntry.phone,
         country: otpEntry.country,
         email: normalizedEmail,
         status: 'TRIAL',

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { SignJWT, jwtVerify } from 'jose';
 import { PrismaClient } from '@prisma/client';
+import { recordActivity } from '../middleware/activityAudit.js';
 import bcrypt from 'bcryptjs';
 import { resolveSupportedCurrency } from '../services/currency.js';
 
@@ -154,12 +155,14 @@ router.post('/login', async (req: Request, res: Response) => {
           phone: guardianRecord.whatsapp || guardianRecord.phone || '',
         });
 
+        await recordActivity({ event: 'PARENT_LOGIN_SUCCESS', details: `Parent login succeeded for ${schoolSlug || 'school portal'}`, schoolId: matchedPupil?.schoolId ?? guardianRecord.schoolId }).catch(() => {});
         return res.json({ success: true, token });
       }
     }
 
     const phoneCandidates = buildLoginPhoneCandidates(phone, country);
     if (phoneCandidates.length === 0) {
+      await recordActivity({ event: 'PARENT_LOGIN_FAILED', details: `Parent login failed: invalid phone input for ${schoolSlug || 'school portal'}` }).catch(() => {});
       return res.status(400).json({ error: 'Phone number not found. Contact the school.' });
     }
 
@@ -178,6 +181,7 @@ router.post('/login', async (req: Request, res: Response) => {
     });
 
     if (!guardian) {
+      await recordActivity({ event: 'PARENT_LOGIN_FAILED', details: `Parent login failed: guardian not found for ${schoolSlug || 'school portal'}` }).catch(() => {});
       return res.status(404).json({ error: 'Phone number not found. Contact the school.' });
     }
 
@@ -193,6 +197,7 @@ router.post('/login', async (req: Request, res: Response) => {
       });
 
       if (!admissionMatch) {
+        await recordActivity({ event: 'PARENT_LOGIN_FAILED', details: `Parent login failed: admission mismatch for ${schoolSlug || 'school portal'}`, schoolId: guardian.schoolId }).catch(() => {});
         return res.status(400).json({ error: 'Admission number does not match this phone.' });
       }
     }
@@ -204,6 +209,7 @@ router.post('/login', async (req: Request, res: Response) => {
       phone: guardian.whatsapp || guardian.phone || '',
     });
 
+    await recordActivity({ event: 'PARENT_LOGIN_SUCCESS', details: `Parent login succeeded for ${schoolSlug || 'school portal'}`, schoolId: guardian.schoolId }).catch(() => {});
     res.json({ success: true, token });
   } catch (error) {
     console.error('Parent login error:', error);

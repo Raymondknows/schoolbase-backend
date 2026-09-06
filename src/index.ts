@@ -7,6 +7,7 @@ import { PrismaClient } from '@prisma/client';
 import { initializeSubscriptionExpiryJob, stopSubscriptionExpiryJob } from './jobs/checkSubscriptionExpiry.js';
 import { initializeSubscriptionEmailJob, stopSubscriptionEmailJob } from './jobs/subscriptionEmails.js';
 import { ensurePlatformPaymentPlans } from './services/platform-settings.js';
+import { activityAuditMiddleware } from './middleware/activityAudit.js';
 
 dotenv.config();
 
@@ -64,6 +65,7 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(cookieParser());
+app.use(activityAuditMiddleware);
 
 // Serve static files from uploads directory
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));

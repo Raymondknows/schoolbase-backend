@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { hasPendingOtp, resendSignupOtp, generateOtp, getSignupOtp } from '../services/otp.js';
 import { sendSignupOtpEmail } from '../services/email.js';
+import { recordActivity } from '../middleware/activityAudit.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -15,6 +16,10 @@ function secret() {
   return new TextEncoder().encode(
     process.env.SESSION_SECRET || 'your-secret-key'
   );
+}
+
+function loginDetails(email: unknown, result: string) {
+  return `Login ${result} for ${String(email ?? '').trim().toLowerCase() || 'unknown account'}`;
 }
 
 // ============================================
@@ -45,6 +50,7 @@ router.post('/platform-login', async (req: Request, res: Response) => {
 
     // User not found
     if (!user || !user.passwordHash) {
+      await recordActivity({ event: 'LOGIN_FAILED', details: loginDetails(email, 'failed: account not found') }).catch(() => {});
       return res.status(401).json({ 
         error: 'Invalid email or password.' 
       });
@@ -53,6 +59,7 @@ router.post('/platform-login', async (req: Request, res: Response) => {
     // Password invalid
     const valid = await bcrypt.compare(String(password), user.passwordHash);
     if (!valid) {
+      await recordActivity({ event: 'LOGIN_FAILED', details: loginDetails(email, 'failed: invalid password') }).catch(() => {});
       return res.status(401).json({ 
         error: 'Invalid email or password.' 
       });
@@ -60,6 +67,7 @@ router.post('/platform-login', async (req: Request, res: Response) => {
 
     // CRITICAL: PLATFORM_ADMIN only
     if (user.role !== 'PLATFORM_ADMIN') {
+      await recordActivity({ event: 'LOGIN_FAILED', details: loginDetails(email, 'failed: platform role required'), userId: user.id, schoolId: user.schoolId || undefined }).catch(() => {});
       console.warn(`[AUTH] Non-platform admin tried to login to platform: ${email} (${user.role})`);
       return res.status(403).json({ 
         error: 'Only platform admins can access this portal.' 
@@ -88,6 +96,8 @@ router.post('/platform-login', async (req: Request, res: Response) => {
       domain: process.env.NODE_ENV === 'production' ? '.schoolbase.live' : undefined,
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
+
+    await recordActivity({ event: 'LOGIN_SUCCESS', details: loginDetails(user.email, 'succeeded'), userId: user.id });
 
     res.json({
       success: true,
@@ -163,6 +173,7 @@ async function handleSchoolLogin(req: Request, res: Response) {
       }
 
       // No pending OTP - standard "not found" response
+      await recordActivity({ event: 'LOGIN_FAILED', details: loginDetails(email, 'failed: account not found') }).catch(() => {});
       return res.status(401).json({
         error: 'Invalid email or password.',
       });
@@ -171,6 +182,7 @@ async function handleSchoolLogin(req: Request, res: Response) {
     // Password invalid
     const valid = await bcrypt.compare(String(password), user.passwordHash);
     if (!valid) {
+      await recordActivity({ event: 'LOGIN_FAILED', details: loginDetails(email, 'failed: invalid password') }).catch(() => {});
       return res.status(401).json({
         error: 'Invalid email or password.',
       });
@@ -179,6 +191,7 @@ async function handleSchoolLogin(req: Request, res: Response) {
     // ALLOW: PLATFORM_ADMIN can login through this endpoint (they just have no schoolId)
     // REQUIRED: School users MUST have a schoolId
     if (user.role !== 'PLATFORM_ADMIN' && !user.schoolId) {
+      await recordActivity({ event: 'LOGIN_FAILED', details: loginDetails(email, 'failed: school assignment missing'), userId: user.id }).catch(() => {});
       console.error(`[AUTH] School user has no schoolId: ${email} (${user.role})`);
       return res.status(403).json({
         error: 'This account is not assigned to a school.',
@@ -207,6 +220,8 @@ async function handleSchoolLogin(req: Request, res: Response) {
       domain: process.env.NODE_ENV === 'production' ? '.schoolbase.live' : undefined,
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
+
+    await recordActivity({ event: 'LOGIN_SUCCESS', details: loginDetails(user.email, 'succeeded'), userId: user.id, schoolId: user.schoolId || undefined });
 
     return res.json({
       success: true,
