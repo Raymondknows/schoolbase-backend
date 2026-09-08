@@ -946,6 +946,10 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentAccountName: true,
         manualPaymentAccountNumber: true,
         manualPaymentBankName: true,
+        paymentAccounts: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
         admissionsEnabled: true,
         admissionsOpeningDate: true,
         admissionsClosingDate: true,
@@ -987,6 +991,7 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentAccountName: school.manualPaymentAccountName,
         manualPaymentAccountNumber: school.manualPaymentAccountNumber,
         manualPaymentBankName: school.manualPaymentBankName,
+        paymentAccounts: school.paymentAccounts,
         admissionsEnabled: Boolean(school.admissionsEnabled),
         admissionsOpeningDate: school.admissionsOpeningDate ? school.admissionsOpeningDate.toISOString() : null,
         admissionsClosingDate: school.admissionsClosingDate ? school.admissionsClosingDate.toISOString() : null,
@@ -1031,6 +1036,7 @@ router.post('/settings', async (req: Request, res: Response) => {
       manualPaymentAccountName,
       manualPaymentAccountNumber,
       manualPaymentBankName,
+      paymentAccounts,
       principalSignatureUrl,
       stampUrl,
       logoUrl,
@@ -1088,6 +1094,32 @@ router.post('/settings', async (req: Request, res: Response) => {
         paystackSecretEncrypted: paystackSecret || null,
       },
     });
+
+    if (Array.isArray(paymentAccounts)) {
+      const normalizedAccounts = paymentAccounts
+        .map((account: any, index: number) => ({
+          label: String(account?.label || '').trim(),
+          bankName: String(account?.bankName || '').trim(),
+          accountName: String(account?.accountName || '').trim(),
+          accountNumber: String(account?.accountNumber || '').trim(),
+          branchName: String(account?.branchName || '').trim() || null,
+          currency: String(account?.currency || '').trim() || null,
+          purpose: String(account?.purpose || '').trim() || null,
+          isDefault: Boolean(account?.isDefault),
+          isActive: account?.isActive !== false,
+          sortOrder: Number.isFinite(Number(account?.sortOrder)) ? Number(account.sortOrder) : index,
+        }))
+        .filter((account: any) => account.label && account.bankName && account.accountName && account.accountNumber);
+      const defaultIndex = normalizedAccounts.findIndex((account: any) => account.isDefault);
+      await prisma.paymentAccount.deleteMany({ where: { schoolId } });
+      await prisma.paymentAccount.createMany({
+        data: normalizedAccounts.map((account: any, index: number) => ({
+          schoolId,
+          ...account,
+          isDefault: defaultIndex === -1 ? index === 0 : index === defaultIndex,
+        })),
+      });
+    }
 
     res.json({ success: true, school });
   } catch (error) {
@@ -1159,6 +1191,10 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         manualPaymentAccountName: true,
         manualPaymentAccountNumber: true,
         manualPaymentBankName: true,
+        paymentAccounts: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
         admissionsEnabled: true,
         admissionsOpeningDate: true,
         admissionsClosingDate: true,
@@ -1207,6 +1243,7 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         manualPaymentAccountName: school.manualPaymentAccountName,
         manualPaymentAccountNumber: school.manualPaymentAccountNumber,
         manualPaymentBankName: school.manualPaymentBankName,
+        paymentAccounts: school.paymentAccounts,
         admissionsEnabled: Boolean(school.admissionsEnabled),
         admissionsOpeningDate: school.admissionsOpeningDate ? school.admissionsOpeningDate.toISOString() : null,
         admissionsClosingDate: school.admissionsClosingDate ? school.admissionsClosingDate.toISOString() : null,
@@ -1811,7 +1848,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
 
     const requestCurrency = (req.body && req.body.currency) ? String(req.body.currency).trim() : undefined;
 
-    const { termId } = req.body;
+    const { termId, bulkApproval } = req.body;
     if (!termId) {
       return res.status(400).json({ error: 'Term ID required' });
     }
@@ -1829,6 +1866,33 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       return res.status(400).json({ error: 'No fee schedules found for this term' });
     }
 
+    const audienceAddresses = new Set<string>();
+    for (const schedule of feeSchedules) {
+      const eligiblePupils = await prisma.pupil.findMany({
+        where: schedule.classId
+          ? { schoolId, classId: schedule.classId, isActive: true }
+          : { schoolId, isActive: true },
+        select: { guardians: { select: { guardian: { select: { whatsapp: true, phone: true, altPhone: true } } } } },
+      });
+      for (const pupil of eligiblePupils) {
+        for (const link of pupil.guardians) {
+          const address = link.guardian.whatsapp || link.guardian.phone || link.guardian.altPhone;
+          if (address?.trim()) audienceAddresses.add(address.trim());
+        }
+      }
+    }
+
+    const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
+    const policyEvaluation = evaluateSchoolWhatsAppSend(policy, {
+      recipientCount: audienceAddresses.size,
+      approvedForBulk: bulkApproval === true || bulkApproval === 'true',
+      now: new Date(),
+      timezone: policy.timezone,
+    });
+    if (!policyEvaluation.allowed) {
+      return res.status(409).json({ error: policyEvaluation.reason || 'Fee invoice WhatsApp delivery is blocked by school policy' });
+    }
+
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
       select: { name: true, logoUrl: true, currency: true },
@@ -1837,6 +1901,9 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
     const communicationService = createCommunicationService();
     let createdCount = 0;
     let notificationsCount = 0;
+    let whatsappSentCount = 0;
+    let whatsappFailedCount = 0;
+    let queuedCount = 0;
     const errors: string[] = [];
 
     // For each fee schedule, create invoices for eligible pupils
@@ -1846,7 +1913,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       if (schedule.classId) {
         // Schedule is for specific class
         eligiblePupils = await prisma.pupil.findMany({
-          where: { classId: schedule.classId, isActive: true },
+          where: { schoolId, classId: schedule.classId, isActive: true },
           include: { 
             guardians: { include: { guardian: true } },
             class: true,
@@ -1952,6 +2019,11 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
 
                 for (const delivery of dispatchResult.deliveries) {
                   const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
+                    if (delivery.channel === 'WHATSAPP') {
+                      if (status === 'SENT') whatsappSentCount++;
+                      if (status === 'FAILED') whatsappFailedCount++;
+                    }
+                    if (status === 'PENDING') queuedCount++;
                   await prisma.notification.create({
                     data: {
                       schoolId,
@@ -2002,6 +2074,9 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       message: `Created ${createdCount} invoices for term`,
       created: createdCount,
       notificationsSent: notificationsCount,
+      whatsappSent: whatsappSentCount,
+      whatsappFailed: whatsappFailedCount,
+      queued: queuedCount,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
@@ -2302,6 +2377,10 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
         manualPaymentAccountName: true,
         manualPaymentAccountNumber: true,
         manualPaymentBankName: true,
+        paymentAccounts: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
       },
     });
 

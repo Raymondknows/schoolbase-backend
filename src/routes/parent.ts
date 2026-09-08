@@ -1085,6 +1085,10 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
         principalName: true,
         tagline: true,
         principalComment: true,
+        paymentAccounts: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
       },
     });
 

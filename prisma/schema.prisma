@@ -75,6 +75,7 @@ model School {
   behaviourAssessments          BehaviourAssessment[]
   classes                       Class[]
   feeSchedules                  FeeSchedule[]
+  paymentAccounts               PaymentAccount[]
   gradingScales                 GradingScale[]
   guardians                     Guardian[]
   invoices                      Invoice[]
@@ -628,6 +629,27 @@ model AttendanceRecord {
   @@unique([pupilId, date])
   @@index([classId], map: "AttendanceRecord_classId_fkey")
   @@index([schoolId], map: "AttendanceRecord_schoolId_fkey")
+}
+
+model PaymentAccount {
+  id            String   @id @default(cuid())
+  schoolId      String
+  label         String
+  bankName      String
+  accountName   String
+  accountNumber String
+  branchName    String?
+  currency      String?
+  purpose       String?
+  isDefault     Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  school        School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, isActive, sortOrder])
+  @@index([schoolId, isDefault])
 }
 
 model FeeSchedule {
