@@ -8,6 +8,7 @@ import { initializeSubscriptionExpiryJob, stopSubscriptionExpiryJob } from './jo
 import { initializeSubscriptionEmailJob, stopSubscriptionEmailJob } from './jobs/subscriptionEmails.js';
 import { ensurePlatformPaymentPlans } from './services/platform-settings.js';
 import { activityAuditMiddleware } from './middleware/activityAudit.js';
+import baileysSessionManager from './communications/whatsapp-baileys.js';
 
 dotenv.config();
 
@@ -161,6 +162,13 @@ async function start() {
   try {
     await ensurePlatformPaymentPlans(prisma);
     await loadRoutes();
+
+    try {
+      const restoredWhatsAppSessions = await baileysSessionManager.restorePersistedSessions();
+      console.log('[baileys] Restored persisted school sessions:', restoredWhatsAppSessions);
+    } catch (error) {
+      console.error('[baileys] Failed to restore persisted school sessions:', error);
+    }
     
     // Initialize background jobs
     try {

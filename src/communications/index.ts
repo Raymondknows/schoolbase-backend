@@ -81,7 +81,7 @@ export interface CommunicationRuleSet {
 export class RulesEngine {
   constructor(private readonly ruleRegistry: CommunicationRulesRegistry = new CommunicationRulesRegistry(DEFAULT_COMMUNICATION_RULES)) {}
 
-  evaluate(event: string, schoolId?: string): CommunicationRuleSet {
+  async evaluate(event: string, schoolId?: string): Promise<CommunicationRuleSet> {
     const defaultRule: CommunicationRuleSet = (() => {
       switch (event) {
         case 'FeeInvoiceCreated':
@@ -109,7 +109,8 @@ export class RulesEngine {
       return defaultRule;
     }
 
-    const registryRule = this.ruleRegistry.getRules(schoolId)[event];
+    const registryRules = await this.ruleRegistry.loadRules(schoolId);
+    const registryRule = registryRules[event];
     if (!registryRule) {
       return defaultRule;
     }
@@ -232,8 +233,12 @@ export class DeliveryQueue {
     return outcome;
   }
 
-  getQueueSummary(): DeliveryQueueSummary {
-    const tasks = this.queue.map((task) => ({
+  getQueueSummary(schoolId?: string): DeliveryQueueSummary {
+    const normalizedSchoolId = schoolId?.trim();
+    const visibleTasks = normalizedSchoolId
+      ? this.queue.filter((task) => task.request.schoolId === normalizedSchoolId)
+      : this.queue;
+    const tasks = visibleTasks.map((task) => ({
       id: task.id,
       channel: task.recipient.channel,
       recipient: task.recipient.address,
@@ -242,7 +247,7 @@ export class DeliveryQueue {
       lastError: task.lastError,
     }));
 
-    const nextRunAt = this.queue.reduce<number | undefined>((next, task) => {
+    const nextRunAt = visibleTasks.reduce<number | undefined>((next, task) => {
       if (next === undefined || task.nextAttemptAt < next) {
         return task.nextAttemptAt;
       }
@@ -250,7 +255,7 @@ export class DeliveryQueue {
     }, undefined);
 
     return {
-      pendingCount: this.queue.length,
+      pendingCount: visibleTasks.length,
       nextRunAt: nextRunAt ? new Date(nextRunAt).toISOString() : undefined,
       tasks,
     };
@@ -280,6 +285,7 @@ export class DeliveryQueue {
       this.scheduledTimer = null;
       await this.processQueue();
     }, delay);
+    this.scheduledTimer.unref?.();
   }
 
   private async processQueue() {
@@ -417,7 +423,7 @@ export class CommunicationService {
   ) {}
 
   async dispatch(request: CommunicationRequest): Promise<DispatchResult> {
-    const ruleSet = this.dependencies.rulesEngine.evaluate(request.event, request.schoolId);
+    const ruleSet = await this.dependencies.rulesEngine.evaluate(request.event, request.schoolId);
     const recipients = this.dependencies.recipientResolver.resolve(request.recipients, request.data);
     const resolvedRecipients: CommunicationRecipient[] = recipients.length > 0
       ? recipients

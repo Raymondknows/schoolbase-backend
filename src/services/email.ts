@@ -1,4 +1,6 @@
 import nodemailer from 'nodemailer';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { resolvePublicResultsUrl } from './public-url.js';
 import { getPlatformSettingValue, normalizeEmailList } from './platform-settings.js';
@@ -77,13 +79,39 @@ function getLogoExtension(contentType: string): string {
   return 'img';
 }
 
+function getLogoContentType(value: string): string {
+  const extension = path.extname(value).toLowerCase();
+  if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg';
+  if (extension === '.webp') return 'image/webp';
+  if (extension === '.gif') return 'image/gif';
+  return 'image/png';
+}
+
 async function fetchInlineLogo(value?: string | null) {
-  const assetUrl = buildAssetUrl(value);
-  if (!assetUrl) return null;
+  let assetUrl: string | null = null;
 
   try {
+    if (value && value.startsWith('/') && !/^https?:\/\//.test(value)) {
+      const localPath = path.join(process.cwd(), value.replace(/^\/+/, ''));
+      const content = await readFile(localPath);
+      const cid = `school-logo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      return {
+        src: `cid:${cid}`,
+        attachment: {
+          filename: `school-logo${path.extname(localPath) || '.png'}`,
+          content,
+          cid,
+          contentType: getLogoContentType(localPath),
+        },
+      };
+    }
+
+    assetUrl = buildAssetUrl(value);
+    if (!assetUrl) return null;
+
     const response = await fetch(assetUrl);
-    if (!response.ok) return { src: assetUrl };
+    if (!response.ok) return null;
 
     const buffer = Buffer.from(await response.arrayBuffer());
     const contentType = response.headers.get('content-type') || 'image/png';
@@ -99,7 +127,7 @@ async function fetchInlineLogo(value?: string | null) {
       },
     };
   } catch {
-    return { src: assetUrl };
+    return null;
   }
 }
 

@@ -47,9 +47,9 @@ test('dispatches a notification through the communication engine', async () => {
   assert.equal(result.deliveries[0]?.channel, 'EMAIL');
 });
 
-test('treats PIN delivery notifications as multi-channel communication', () => {
+test('treats PIN delivery notifications as multi-channel communication', async () => {
   const rulesEngine = new RulesEngine();
-  const ruleSet = rulesEngine.evaluate('PinDelivered', 'school-1');
+  const ruleSet = await rulesEngine.evaluate('PinDelivered', 'school-1');
 
   assert.equal(ruleSet.template, 'Results');
   assert.deepEqual(ruleSet.channels, ['EMAIL', 'WHATSAPP']);
@@ -79,4 +79,26 @@ test('delivery queue schedules retries for failed sends', async () => {
   assert.equal(outcome.status, 'FAILED');
   assert.equal(deliveryQueue.getQueueSummary().pendingCount, 1);
   assert.ok(deliveryQueue.getQueueSummary().nextRunAt);
+});
+
+test('delivery queue summaries are isolated by school', async () => {
+  const deliveryQueue = new DeliveryQueue(async (request) => ({
+    channel: 'WHATSAPP' as const,
+    recipient: request.schoolId === 'school-a' ? '+2347000000001' : '+2347000000002',
+    status: 'FAILED' as const,
+    provider: 'wa-test',
+    error: 'temporary failure',
+  }));
+
+  for (const schoolId of ['school-a', 'school-b']) {
+    await deliveryQueue.enqueue(
+      { event: 'AnnouncementCreated', schoolId },
+      { channel: 'WHATSAPP', address: '+2347000000000' },
+      { subject: 'Test', body: 'Test message' },
+    );
+  }
+
+  assert.equal(deliveryQueue.getQueueSummary('school-a').pendingCount, 1);
+  assert.equal(deliveryQueue.getQueueSummary('school-b').pendingCount, 1);
+  assert.equal(deliveryQueue.getQueueSummary().pendingCount, 2);
 });

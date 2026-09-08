@@ -22,6 +22,9 @@ import { normalizeGuardianProfileData } from '../services/student-guardian-profi
 import { buildStudentUpdateData } from '../services/student-update-profile.js';
 import { normalizeAdmissionStatus } from './admissions-utils.js';
 import { buildBulkStudentImportRows, parseCsvText } from '../services/student-import.js';
+import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
+import { getDefaultWhatsAppPolicyRecord } from '../communications/rules.js';
+import { evaluateSchoolWhatsAppSend, readSchoolWhatsAppPolicy } from '../services/whatsapp-policy.js';
 import type { NextFunction } from 'express';
 import resolveReportSignatory from '../services/signatory-resolver.js';
 
@@ -85,7 +88,7 @@ const passwordResetStore = new Map<string, {
   createdAt: Date;
 }>();
 const resultsDomain = new ResultsDomainService(prisma);
-const communicationRulesRegistry = new CommunicationRulesRegistry(DEFAULT_COMMUNICATION_RULES);
+const communicationRulesRegistry = new CommunicationRulesRegistry(DEFAULT_COMMUNICATION_RULES, prisma);
 
 // Temporary debug endpoint: inspect signatory resolution for a pupil
 router.get('/api/admin/debug/signatory', async (req: Request, res: Response) => {
@@ -220,7 +223,71 @@ const sharedDriverManager = new DriverManager({
   }),
   WHATSAPP: new WhatsAppDriver(async ({ recipient, request, content }) => {
     const schoolId = request.schoolId ?? '';
+    if (!schoolId) {
+      return {
+        channel: 'WHATSAPP',
+        recipient: recipient.address,
+        status: 'FAILED',
+        provider: 'baileys',
+        error: 'Missing authenticated schoolId for WhatsApp send',
+      } as const;
+    }
+
+    const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
+    const evaluation = evaluateSchoolWhatsAppSend(policy, {
+      recipientCount: request.recipients?.length ?? 1,
+      now: new Date(),
+      timezone: policy.timezone,
+    });
+
+    if (!evaluation.allowed) {
+      return {
+        channel: 'WHATSAPP',
+        recipient: recipient.address,
+        status: 'FAILED',
+        provider: 'baileys',
+        error: evaluation.reason ?? 'WhatsApp send blocked by school policy',
+      } as const;
+    }
+
+    let deliveryId: string | undefined;
+
+    if (schoolId) {
+      try {
+        const delivery = await whatsappDeliveryStore.upsertSchoolDelivery({
+          schoolId,
+          event: request.event,
+          recipientAddress: recipient.address,
+          recipientName: recipient.name,
+          messageBody: content.body,
+          guardianId: typeof request.metadata?.guardianId === 'string' ? request.metadata.guardianId : null,
+          status: 'SENDING',
+          provider: 'baileys',
+          attemptCount: 1,
+        });
+        deliveryId = delivery?.id;
+      } catch (auditError) {
+        console.warn('[WhatsApp] Could not create durable delivery record:', auditError);
+      }
+    }
+
     const result = await baileysSessionManager.sendTextMessage(schoolId, recipient.address, content.body) as { success: boolean; messageId?: string; error?: string };
+
+    if (deliveryId) {
+      try {
+        await whatsappDeliveryStore.updateById(deliveryId, {
+          status: result.success ? 'SENT' : 'FAILED',
+          provider: 'baileys',
+          providerMessageId: result.messageId ?? undefined,
+          attemptCount: 1,
+          lastError: result.success ? null : result.error ?? null,
+          sentAt: result.success ? new Date() : undefined,
+          nextAttemptAt: new Date(),
+        });
+      } catch (auditError) {
+        console.warn('[WhatsApp] Could not update durable delivery record:', auditError);
+      }
+    }
 
     if (!result.success) {
       return {
@@ -2008,6 +2075,9 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
     }
 
     let sentCount = 0;
+    let whatsappSentCount = 0;
+    let whatsappFailedCount = 0;
+    let queuedCount = 0;
     let skippedCount = 0;
     let processedGuardians = 0;
     const errors: string[] = [];
@@ -2106,6 +2176,11 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
 
             for (const delivery of dispatchResult.deliveries) {
               const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
+              if (delivery.channel === 'WHATSAPP') {
+                if (status === 'SENT') whatsappSentCount++;
+                if (status === 'FAILED') whatsappFailedCount++;
+              }
+              if (status === 'PENDING') queuedCount++;
               await prisma.notification.create({
                 data: {
                   schoolId,
@@ -2159,6 +2234,9 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
       success: true,
       message: `Sent ${sentCount} reminders`,
       sent: sentCount,
+      whatsappSent: whatsappSentCount,
+      whatsappFailed: whatsappFailedCount,
+      queued: queuedCount,
       skipped: skippedCount,
       totalInvoices: invoices.length,
       totalGuardians: processedGuardians,
@@ -3063,6 +3141,7 @@ router.post('/students/import', importUpload.single('file'), async (req: Request
               firstName: row.guardianFirst,
               lastName: row.guardianLast,
               phone: row.guardianPhone || '',
+              whatsapp: row.guardianPhone || null,
               email: row.guardianEmail ?? null,
             },
           });
@@ -3229,6 +3308,8 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
       },
     });
 
+    const admissionNotificationOutcomes: Array<{ channel: string; status: string; error?: string }> = [];
+
     // Create or find guardian and link to pupil
     if (guardianFirst && guardianLast) {
       const guardian = await prisma.guardian.create({
@@ -3237,6 +3318,7 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
           firstName: guardianFirst,
           lastName: guardianLast,
           phone: normalizedGuardianPhone || '',
+          whatsapp: normalizedGuardianPhone || null,
           altPhone: normalizedGuardianAltPhone,
           email: normalizedGuardianEmail,
           occupation: normalizedGuardianOccupation,
@@ -3288,6 +3370,7 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
 
           for (const delivery of dispatchResult.deliveries) {
             const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
+            admissionNotificationOutcomes.push({ channel: delivery.channel, status, ...(delivery.error ? { error: delivery.error } : {}) });
             await prisma.notification.create({
               data: {
                 schoolId,
@@ -3320,6 +3403,11 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
               reference: String(pupil.admissionNo || 'N/A'),
             },
           });
+          admissionNotificationOutcomes.push({
+            channel: guardian.whatsapp ? 'WHATSAPP' : 'EMAIL',
+            status: 'FAILED',
+            error: dispatchError instanceof Error ? dispatchError.message : String(dispatchError),
+          });
         }
       }
     }
@@ -3333,7 +3421,7 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
       },
     });
 
-    res.status(201).json(updatedPupil);
+    res.status(201).json({ ...updatedPupil, notificationOutcomes: admissionNotificationOutcomes });
   } catch (error) {
     if (req.file) {
       try {
@@ -3541,6 +3629,7 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
           firstName: normalizedGuardianProfile.firstName ?? existingGuardian.firstName,
           lastName: normalizedGuardianProfile.lastName ?? existingGuardian.lastName,
           phone: normalizedGuardianProfile.phone ?? existingGuardian.phone,
+          whatsapp: normalizedGuardianProfile.phone ?? existingGuardian.whatsapp ?? existingGuardian.phone ?? null,
           altPhone: normalizedGuardianProfile.altPhone ?? existingGuardian.altPhone ?? null,
           email: normalizedGuardianProfile.email ?? existingGuardian.email ?? null,
           occupation: normalizedGuardianProfile.occupation ?? existingGuardian.occupation ?? null,
@@ -3553,6 +3642,7 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
           firstName: normalizedGuardianProfile.firstName,
           lastName: normalizedGuardianProfile.lastName,
           phone: normalizedGuardianProfile.phone || '',
+          whatsapp: normalizedGuardianProfile.phone || null,
           altPhone: normalizedGuardianProfile.altPhone ?? null,
           email: normalizedGuardianProfile.email ?? null,
           occupation: normalizedGuardianProfile.occupation ?? null,
@@ -4585,11 +4675,88 @@ router.get('/communications/rules', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      rules: communicationRulesRegistry.getRules(schoolId),
+      rules: await communicationRulesRegistry.loadRules(schoolId),
     });
   } catch (error) {
     console.error('Error fetching communication rules:', error);
     res.status(500).json({ error: 'Failed to fetch communication rules' });
+  }
+});
+
+// GET /api/admin/communications/whatsapp-policy - Get school WhatsApp policy
+router.get('/communications/whatsapp-policy', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const policy = await prisma.whatsAppPolicy.findUnique({ where: { schoolId } });
+    const fallback = getDefaultWhatsAppPolicyRecord(schoolId);
+
+    res.json({
+      success: true,
+      policy: policy
+        ? {
+            ...fallback,
+            ...policy,
+            updatedAt: policy.updatedAt,
+          }
+        : fallback,
+    });
+  } catch (error) {
+    console.error('Error fetching WhatsApp policy:', error);
+    res.status(500).json({ error: 'Failed to fetch WhatsApp policy' });
+  }
+});
+
+// PUT /api/admin/communications/whatsapp-policy - Update school WhatsApp policy
+router.put('/communications/whatsapp-policy', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const payload = req.body as Record<string, unknown>;
+    const current = await prisma.whatsAppPolicy.upsert({
+      where: { schoolId },
+      create: {
+        schoolId,
+        enabled: Boolean(payload.enabled ?? true),
+        messagesPerMinute: Number(payload.messagesPerMinute ?? 10),
+        messagesPerHour: Number(payload.messagesPerHour ?? 100),
+        messagesPerDay: Number(payload.messagesPerDay ?? 300),
+        batchSize: Number(payload.batchSize ?? 25),
+        batchCooldownSeconds: Number(payload.batchCooldownSeconds ?? 120),
+        quietHoursStart: String(payload.quietHoursStart ?? '21:00'),
+        quietHoursEnd: String(payload.quietHoursEnd ?? '07:00'),
+        requireApprovalForBulk: Boolean(payload.requireApprovalForBulk ?? true),
+        allowAutomaticRetries: Boolean(payload.allowAutomaticRetries ?? true),
+        timezone: String(payload.timezone ?? 'Africa/Lagos'),
+      },
+      update: {
+        enabled: Boolean(payload.enabled ?? true),
+        messagesPerMinute: Number(payload.messagesPerMinute ?? 10),
+        messagesPerHour: Number(payload.messagesPerHour ?? 100),
+        messagesPerDay: Number(payload.messagesPerDay ?? 300),
+        batchSize: Number(payload.batchSize ?? 25),
+        batchCooldownSeconds: Number(payload.batchCooldownSeconds ?? 120),
+        quietHoursStart: String(payload.quietHoursStart ?? '21:00'),
+        quietHoursEnd: String(payload.quietHoursEnd ?? '07:00'),
+        requireApprovalForBulk: Boolean(payload.requireApprovalForBulk ?? true),
+        allowAutomaticRetries: Boolean(payload.allowAutomaticRetries ?? true),
+        timezone: String(payload.timezone ?? 'Africa/Lagos'),
+      },
+    });
+
+    res.json({
+      success: true,
+      policy: {
+        ...getDefaultWhatsAppPolicyRecord(schoolId),
+        ...current,
+        updatedAt: current.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error('Error updating WhatsApp policy:', error);
+    res.status(500).json({ error: 'Failed to update WhatsApp policy' });
   }
 });
 
@@ -4604,8 +4771,8 @@ router.put('/communications/rules', requireSubscription, async (req: Request, re
       return res.status(400).json({ error: 'event and enabled are required' });
     }
 
-    communicationRulesRegistry.setRuleEnabled(schoolId, event, enabled);
-    res.json({ success: true, rules: communicationRulesRegistry.getRules(schoolId) });
+    await communicationRulesRegistry.setRuleEnabled(schoolId, event, enabled);
+    res.json({ success: true, rules: await communicationRulesRegistry.loadRules(schoolId) });
   } catch (error) {
     console.error('Error updating communication rules:', error);
     res.status(500).json({ error: 'Failed to update communication rules' });
@@ -4623,7 +4790,7 @@ router.get('/whatsapp/data', async (req: Request, res: Response) => {
       successCount: 0,
       failureCount: 0,
       session: baileysSessionManager.getStatus(schoolId),
-      queue: sharedDeliveryQueue.getQueueSummary(),
+      queue: sharedDeliveryQueue.getQueueSummary(schoolId),
     });
   } catch (error) {
     console.error('Error fetching whatsapp data:', error);
@@ -4648,10 +4815,51 @@ router.post('/whatsapp/connect', requireSubscription, async (req: Request, res: 
 // GET /api/admin/whatsapp/queue - Get pending WhatsApp delivery retry queue
 router.get('/whatsapp/queue', requireSubscription, async (req: Request, res: Response) => {
   try {
-    res.json({ success: true, queue: sharedDeliveryQueue.getQueueSummary() });
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+    res.json({ success: true, queue: sharedDeliveryQueue.getQueueSummary(schoolId) });
   } catch (error) {
     console.error('Error fetching whatsapp queue:', error);
     res.status(500).json({ error: 'Failed to fetch WhatsApp queue' });
+  }
+});
+
+// GET /api/admin/whatsapp/deliveries - Durable school-scoped WhatsApp delivery history
+router.get('/whatsapp/deliveries', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const requestedLimit = Number(req.query.limit ?? 50);
+    const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 200) : 50;
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+
+    const deliveries = await prisma.whatsAppDelivery.findMany({
+      where: { schoolId, ...(status ? { status } : {}) },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        event: true,
+        recipientAddress: true,
+        recipientName: true,
+        messagePreview: true,
+        status: true,
+        provider: true,
+        providerMessageId: true,
+        attemptCount: true,
+        sentAt: true,
+        nextAttemptAt: true,
+        lastError: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    res.json({ success: true, deliveries });
+  } catch (error) {
+    console.error('Error fetching WhatsApp delivery history:', error);
+    res.status(500).json({ error: 'Failed to fetch WhatsApp delivery history' });
   }
 });
 
@@ -5480,7 +5688,7 @@ router.post('/assessments/:id/publish', requireSubscription, async (req: Request
 
         const communicationService = createCommunicationService();
         const resultsUrl = resolvePublicResultsUrl(`${process.env.FRONTEND_URL || 'https://www.schoolbase.live'}/results/check`);
-        const rules = communicationRulesRegistry.getRules(schoolId);
+        const rules = await communicationRulesRegistry.loadRules(schoolId);
         const shouldSendResultsNotification = rules.ResultsPublished?.enabled !== false;
 
         if (shouldSendResultsNotification) {
@@ -6472,10 +6680,26 @@ router.post('/announcements', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const { title, body, publish, academicYearId, termId } = req.body;
+    const { title, body, publish, academicYearId, termId, bulkApproval } = req.body;
 
     if (!title || !body) {
       return res.status(400).json({ error: 'Title and body are required' });
+    }
+
+    if (publish === true || publish === 'true') {
+      const bulkRecipientCount = await prisma.guardian.count({
+        where: { schoolId, pupils: { some: { pupil: { schoolId } } } },
+      });
+      const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
+      const policyEvaluation = evaluateSchoolWhatsAppSend(policy, {
+        recipientCount: bulkRecipientCount,
+        approvedForBulk: bulkApproval === true || bulkApproval === 'true',
+        now: new Date(),
+        timezone: policy.timezone,
+      });
+      if (!policyEvaluation.allowed) {
+        return res.status(409).json({ error: policyEvaluation.reason || 'Announcement WhatsApp delivery is blocked by school policy' });
+      }
     }
 
     let resolvedAcademicYearId: string | undefined = undefined;

@@ -2,6 +2,7 @@ import * as dns from 'dns';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { SchoolWhatsAppRateLimiter } from '../services/whatsapp-rate-limiter.js';
 
 export type BaileysSessionStatus = 'idle' | 'connecting' | 'qr' | 'connected' | 'disconnected' | 'error';
 
@@ -49,6 +50,12 @@ function normalizeWhatsappRecipient(value?: string): string {
   return digits ? `${digits}@s.whatsapp.net` : '';
 }
 
+function maskWhatsappRecipient(value: string): string {
+  const localPart = value.split('@')[0] || value;
+  if (localPart.length <= 4) return '****';
+  return `${localPart.slice(0, 3)}****${localPart.slice(-2)}@s.whatsapp.net`;
+}
+
 function makeConsolePinoLogger(): any {
   const base: any = {
     child: () => base,
@@ -80,6 +87,16 @@ export function shouldResetAuthStateForConnection(
   return false;
 }
 
+export function shouldReconnectAfterClose(statusCode?: number, errorMessage?: string): boolean {
+  const normalizedError = String(errorMessage ?? '').toLowerCase();
+  return !(
+    statusCode === 401 ||
+    statusCode === 403 ||
+    statusCode === 440 ||
+    /forbidden|logged out|session expired|unauthorized|connection failure/.test(normalizedError)
+  );
+}
+
 class BaileysSchoolSession {
   private status: BaileysSessionStatus = 'disconnected';
   private statusMessage = 'Disconnected';
@@ -94,12 +111,17 @@ class BaileysSchoolSession {
   private pairingReconnectPending = false;
   private streamErrorReconnectAttempts = 0;
   private streamErrorReconnectPending = false;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private reconnectAttempts = 0;
+  private intentionalDisconnect = false;
   private lastError?: string;
   private connectingPromise: Promise<void> | null = null;
   private socket: any = null;
   private debugLog: string[] = [];
   private debugInfo: Record<string, unknown> = {};
   private keepaliveTimer: NodeJS.Timeout | null = null;
+  private sendChain: Promise<void> = Promise.resolve();
+  private nextSendAt = 0;
   private schoolId: string;
 
   constructor(schoolId: string) {
@@ -170,7 +192,7 @@ class BaileysSchoolSession {
     };
   }
 
-  async connect(pairingPhoneNumber?: string, usePairingCode = false): Promise<BaileysSessionSnapshot> {
+  async connect(pairingPhoneNumber?: string, usePairingCode = false, preserveAuthState = false): Promise<BaileysSessionSnapshot> {
     if (this.status === 'connected') {
       return this.getStatus();
     }
@@ -180,8 +202,15 @@ class BaileysSchoolSession {
       return this.getStatus();
     }
 
-    const shouldResetAuthState = shouldResetAuthStateForConnection(this.status, usePairingCode, this.lastError);
+    const shouldResetAuthState = preserveAuthState
+      ? false
+      : shouldResetAuthStateForConnection(this.status, usePairingCode, this.lastError);
 
+    this.intentionalDisconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.debugLog = [];
     this.debugInfo = {};
     this.status = 'connecting';
@@ -199,6 +228,7 @@ class BaileysSchoolSession {
       pairingPhoneNumber: this.pairingPhoneNumber || null,
       pairingMode: this.pairingMode,
       pairingCodeRequested: Boolean(usePairingCode),
+      preserveAuthState,
       shouldResetAuthState,
     });
 
@@ -226,6 +256,12 @@ class BaileysSchoolSession {
   }
 
   async disconnect(): Promise<BaileysSessionSnapshot> {
+    this.intentionalDisconnect = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
     this.stopKeepalive();
     try {
       if (this.socket?.logout) {
@@ -248,7 +284,34 @@ class BaileysSchoolSession {
     return this.getStatus();
   }
 
-  async sendTextMessage(recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  private scheduleReconnect(errorMessage: string): void {
+    const maxAttempts = Math.max(1, Number(process.env.WHATSAPP_RECONNECT_MAX_ATTEMPTS || 10));
+    if (this.intentionalDisconnect || this.reconnectTimer || this.connectingPromise || this.reconnectAttempts >= maxAttempts) {
+      return;
+    }
+
+    this.reconnectAttempts += 1;
+    const delayMs = Math.min(
+      60_000,
+      Math.max(2_000, Number(process.env.WHATSAPP_RECONNECT_BASE_DELAY_MS || 2_000) * 2 ** (this.reconnectAttempts - 1)),
+    );
+    this.status = 'connecting';
+    this.statusMessage = `WhatsApp disconnected. Reconnecting in ${Math.ceil(delayMs / 1000)} seconds…`;
+    this.lastError = errorMessage;
+    this.socket = null;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.intentionalDisconnect || this.status === 'connected') return;
+      void this.connect(undefined, false, true).catch((error) => {
+        const reconnectError = error instanceof Error ? error.message : String(error);
+        this.appendDebug('Automatic reconnect failed', reconnectError);
+      });
+    }, delayMs);
+    this.reconnectTimer.unref?.();
+    this.appendDebug('Scheduled automatic reconnect', { attempt: this.reconnectAttempts, delayMs, errorMessage });
+  }
+
+  private async sendTextMessageInternal(recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
     const normalizedRecipient = normalizeWhatsappRecipient(recipient);
     if (!normalizedRecipient) {
       return { success: false, error: 'Invalid recipient phone number' };
@@ -272,17 +335,20 @@ class BaileysSchoolSession {
       }
 
       try {
-        this.appendDebug('sending message', { to: normalizedRecipient, body: message });
+        this.appendDebug('sending message', {
+          to: maskWhatsappRecipient(normalizedRecipient),
+          bodyLength: message.length,
+        });
         const res = await this.socket.sendMessage(normalizedRecipient, { text: message });
-        this.appendDebug('send result', { to: normalizedRecipient, res });
+        this.appendDebug('send result', { to: maskWhatsappRecipient(normalizedRecipient) });
         const messageId = res?.key?.id ? String(res.key.id) : undefined;
         return { success: true, messageId };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.lastError = errorMessage;
-        this.appendDebug('send failed', { to: normalizedRecipient, error: errorMessage });
+        this.appendDebug('send failed', { to: maskWhatsappRecipient(normalizedRecipient), error: errorMessage });
         if (attempt === 0) {
-          this.appendDebug('retrying send after transient failure', { recipient: normalizedRecipient, attempt: 1 });
+          this.appendDebug('retrying send after transient failure', { recipient: maskWhatsappRecipient(normalizedRecipient), attempt: 1 });
           try {
             await this.connect();
           } catch (connectError) {
@@ -296,6 +362,29 @@ class BaileysSchoolSession {
     };
 
     return attemptSend();
+  }
+
+  async sendTextMessage(recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    const minimumIntervalMs = Math.max(0, Number(process.env.WHATSAPP_MIN_SEND_INTERVAL_MS || 3000));
+    let result: { success: boolean; messageId?: string; error?: string } = {
+      success: false,
+      error: 'WhatsApp send was not started',
+    };
+
+    const run = async () => {
+      const waitMs = Math.max(0, this.nextSendAt - Date.now());
+      if (waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+
+      result = await this.sendTextMessageInternal(recipient, message);
+      this.nextSendAt = Date.now() + minimumIntervalMs;
+    };
+
+    const previous = this.sendChain;
+    this.sendChain = previous.then(run, run);
+    await this.sendChain;
+    return result;
   }
 
   async sendTextMessages(recipients: string | string[], message: string): Promise<{ success: boolean; results: Array<{ recipient: string; success: boolean; error?: string }> }> {
@@ -447,6 +536,7 @@ class BaileysSchoolSession {
             this.phoneNumber = sock.user?.id || undefined;
             this.streamErrorReconnectAttempts = 0;
             this.streamErrorReconnectPending = false;
+            this.reconnectAttempts = 0;
             this.updateDebugInfo((info) => {
               info.streamErrorRetrying = false;
               info.streamErrorReconnectAttempts = 0;
@@ -465,6 +555,10 @@ class BaileysSchoolSession {
             const errorMessage = lastDisconnect?.error?.message || 'Connection closed';
             this.appendDebug('connection closed', { statusCode, error: errorMessage });
             console.log('[baileys] connection closed, statusCode:', statusCode, 'error:', errorMessage);
+
+            if (this.intentionalDisconnect) {
+              return;
+            }
 
             if (this.qr && statusCode === 515 && !this.streamErrorReconnectPending && this.streamErrorReconnectAttempts < 2) {
               this.status = 'qr';
@@ -503,7 +597,7 @@ class BaileysSchoolSession {
               return;
             }
 
-            const shouldClearAuthState = statusCode === 401 || statusCode === 403 || statusCode === 440 || /connection failure|forbidden|logged out|session expired|unauthorized/i.test(String(errorMessage).toLowerCase());
+            const shouldClearAuthState = !shouldReconnectAfterClose(statusCode, errorMessage);
             if (shouldClearAuthState) {
               this.status = 'error';
               this.statusMessage = 'WhatsApp connection failed. Please try again to start a fresh session.';
@@ -519,6 +613,7 @@ class BaileysSchoolSession {
               this.status = 'error';
               this.statusMessage = errorMessage || 'WhatsApp disconnected';
               this.lastError = errorMessage;
+              this.scheduleReconnect(errorMessage);
             }
           }
         } catch (error) {
@@ -819,6 +914,12 @@ class BaileysSchoolSession {
 
 export class BaileysSessionManager {
   private sessions = new Map<string, BaileysSchoolSession>();
+  private readonly rateLimiter = new SchoolWhatsAppRateLimiter({
+    minIntervalMs: Number(process.env.WHATSAPP_MIN_SEND_INTERVAL_MS || 3000),
+    perMinuteLimit: Number(process.env.WHATSAPP_PER_MINUTE_LIMIT || 10),
+    perHourLimit: Number(process.env.WHATSAPP_PER_HOUR_LIMIT || 100),
+    perDayLimit: Number(process.env.WHATSAPP_PER_DAY_LIMIT || 300),
+  });
 
   private getOrCreateSession(schoolId: string): BaileysSchoolSession {
     if (!this.sessions.has(schoolId)) {
@@ -837,36 +938,48 @@ export class BaileysSessionManager {
     return session.connect(pairingPhoneNumber, usePairingCode);
   }
 
+  async restorePersistedSessions(): Promise<{ attempted: number; restored: number }> {
+    if (!fs.existsSync(sessionDirectory)) {
+      return { attempted: 0, restored: 0 };
+    }
+
+    const schoolIds = fs.readdirSync(sessionDirectory, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .filter((entry) => fs.existsSync(path.join(sessionDirectory, entry.name, 'auth_info')))
+      .map((entry) => entry.name);
+
+    let restored = 0;
+    for (const schoolId of schoolIds) {
+      try {
+        const status = await this.getOrCreateSession(schoolId).connect(undefined, false, true);
+        if (status.status === 'connecting' || status.status === 'connected' || status.status === 'qr') {
+          restored += 1;
+        }
+      } catch (error) {
+        console.warn(`[baileys] Failed to restore session for school ${schoolId}:`, error);
+      }
+    }
+
+    return { attempted: schoolIds.length, restored };
+  }
+
   async disconnect(schoolId: string): Promise<BaileysSessionSnapshot> {
     const session = this.getOrCreateSession(schoolId);
     return session.disconnect();
   }
 
-  private getManagerFallbackContext(): { status?: BaileysSessionStatus; phoneNumber?: string; socket?: any } {
-    const managerState = this as any;
-    return {
-      status: managerState.status as BaileysSessionStatus | undefined,
-      phoneNumber: managerState.phoneNumber as string | undefined,
-      socket: managerState.socket as any,
-    };
-  }
+  private async sendForSchool(schoolId: string, recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    const normalizedSchoolId = String(schoolId || '').trim();
+    if (!normalizedSchoolId) {
+      return { success: false, error: 'Missing authenticated schoolId for WhatsApp send' };
+    }
 
-  private async sendWithManagerFallback(schoolId: string, recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-    const fallbackContext = this.getManagerFallbackContext();
-    if (fallbackContext.status === 'connected' && fallbackContext.phoneNumber && fallbackContext.socket) {
-      const normalizedRecipient = normalizeWhatsappRecipient(recipient);
-      if (!normalizedRecipient) {
-        return { success: false, error: 'Invalid recipient phone number' };
-      }
-
-      try {
-        const res = await fallbackContext.socket.sendMessage(normalizedRecipient, { text: message });
-        const messageId = res?.key?.id ? String(res.key.id) : undefined;
-        return { success: true, messageId };
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return { success: false, error: errorMessage };
-      }
+    const rateLimited = await this.rateLimiter.tryAcquire(normalizedSchoolId);
+    if (!rateLimited) {
+      return {
+        success: false,
+        error: `School ${normalizedSchoolId} has exceeded the WhatsApp send rate limit. Please retry later.`,
+      };
     }
 
     const session = this.getOrCreateSession(schoolId);
@@ -874,25 +987,34 @@ export class BaileysSessionManager {
   }
 
   async sendTextMessage(schoolId: string, recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-    return this.sendWithManagerFallback(schoolId, recipient, message);
+    return this.sendForSchool(schoolId, recipient, message);
   }
 
   async sendTextMessages(schoolId: string, recipients: string | string[], message: string): Promise<{ success: boolean; results: Array<{ recipient: string; success: boolean; error?: string }> }> {
-    const fallbackContext = this.getManagerFallbackContext();
-    if (fallbackContext.status === 'connected' && fallbackContext.phoneNumber && fallbackContext.socket) {
-      const recipientList = Array.isArray(recipients) ? recipients : [recipients];
-      const results: Array<{ recipient: string; success: boolean; error?: string }> = [];
+    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
+    const results: Array<{ recipient: string; success: boolean; error?: string }> = [];
 
-      for (const recipient of recipientList) {
-        const result = await this.sendWithManagerFallback(schoolId, recipient, message);
-        results.push({ recipient, ...result });
+    for (const [index, recipient] of recipientList.entries()) {
+      if (index > 0 && !(await this.rateLimiter.waitForNextSlot(schoolId))) {
+        results.push({
+          recipient,
+          success: false,
+          error: 'WhatsApp send quota reached. Please retry later.',
+        });
+        continue;
       }
-
-      return { success: results.every((r) => r.success), results };
+      const result = await this.sendForSchool(schoolId, recipient, message);
+      results.push({
+        recipient,
+        success: result.success,
+        ...(result.error ? { error: result.error } : {}),
+      });
     }
 
-    const session = this.getOrCreateSession(schoolId);
-    return session.sendTextMessages(recipients, message);
+    return {
+      success: results.every((result) => result.success),
+      results,
+    };
   }
 
   async runDeepDebugProbe(): Promise<BaileysDebugProbeResult> {

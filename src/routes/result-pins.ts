@@ -10,6 +10,7 @@ import { buildPinDeliveryEmailContent, buildPinDeliveryWhatsAppMessage, sendPinD
 import { buildGuardianNotificationRecipients, resolveGuardianNotificationTargets } from '../services/guardian-notification-recipients.js';
 import { buildBulkPinNotificationBatches, validateBulkPinNotificationRequest } from '../services/pin-notification-batch-guards.js';
 import { resolvePublicResultsUrl } from '../services/public-url.js';
+import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -51,8 +52,39 @@ const sharedDriverManager = new DriverManager({
       termName: typeof metadata.termName === 'string' ? metadata.termName : undefined,
       resultsUrl: typeof metadata.resultsUrl === 'string' ? resolvePublicResultsUrl(metadata.resultsUrl) : 'https://schoolbase.live/results/check',
     });
+    let deliveryId: string | undefined;
+    try {
+      const delivery = await whatsappDeliveryStore.upsertSchoolDelivery({
+        schoolId,
+        event: request.event,
+        guardianId: typeof metadata.guardianId === 'string' ? metadata.guardianId : null,
+        recipientAddress: recipient.address,
+        recipientName: recipient.name,
+        messageBody: message,
+        status: 'SENDING',
+        provider: 'baileys',
+        attemptCount: 1,
+      });
+      deliveryId = delivery?.id;
+    } catch (auditError) {
+      console.warn('[result-pins] Could not create durable WhatsApp delivery record:', auditError);
+    }
 
     const result = await baileysSessionManager.sendTextMessage(schoolId, recipient.address, message) as { success: boolean; messageId?: string; error?: string };
+
+    if (deliveryId) {
+      try {
+        await whatsappDeliveryStore.updateById(deliveryId, {
+          status: result.success ? 'SENT' : 'FAILED',
+          providerMessageId: result.messageId ?? null,
+          lastError: result.success ? null : result.error ?? null,
+          sentAt: result.success ? new Date() : null,
+          nextAttemptAt: new Date(),
+        });
+      } catch (auditError) {
+        console.warn('[result-pins] Could not update durable WhatsApp delivery record:', auditError);
+      }
+    }
 
     if (!result.success) {
       return { channel: 'WHATSAPP', recipient: recipient.address, status: 'FAILED', provider: 'baileys', error: result.error } as const;
