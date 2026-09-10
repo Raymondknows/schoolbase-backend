@@ -14,7 +14,7 @@ import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../comm
 import { ResultsDomainService } from '../domain/results/ResultsDomainService.js';
 import requireActiveSubscription from '../middleware/subscriptionGuard.js';
 import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
-import { normalizeAdmissionNo, validateUniqueAdmissionNo } from '../services/student-admission.js';
+import { getNextAdmissionNo, normalizeAdmissionNo, validateUniqueAdmissionNo } from '../services/student-admission.js';
 import type { NextFunction } from 'express';
 
 const router = Router();
@@ -2625,29 +2625,18 @@ router.get('/students/data', async (req: Request, res: Response) => {
       }),
     ]);
 
-    // Calculate next admission number
-    let prefix = "SCH";
-    if (school?.initials && typeof school.initials === "string" && school.initials.trim()) {
-      prefix = school.initials.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
-    } else if (school?.name) {
-      const words = school.name.split(/[^A-Za-z0-9]+/).filter(Boolean);
-      let letters = words.slice(0, 3).map((w: string) => w[0]).join("").toUpperCase();
-      if (letters.length < 3 && words[0]) {
-        const remaining = words[0].slice(1).replace(/[^A-Za-z0-9]/g, "");
-        for (const ch of remaining) {
-          letters += ch.toUpperCase();
-          if (letters.length >= 3) break;
-        }
-      }
-      prefix = (letters || "SCH").replace(/[^A-Z0-9]/g, "").slice(0, 6);
-    }
-
     const year = new Date().getFullYear();
-    const existingCount = await prisma.pupil.count({
-      where: { schoolId, admissionNo: { startsWith: `${prefix}-${year}-` } },
+    const nextAdmissionNo = getNextAdmissionNo({
+      schoolId,
+      schoolName: school?.name ?? null,
+      schoolInitials: school?.initials ?? null,
+      year,
+      existingRecords: pupils.map((pupil) => ({
+        id: pupil.id,
+        schoolId: pupil.schoolId,
+        admissionNo: pupil.admissionNo,
+      })),
     });
-    const nextSeq = String(existingCount + 1).padStart(4, "0");
-    const nextAdmissionNo = `${prefix}-${year}-${nextSeq}`;
 
     res.json({ pupils, classes, nextAdmissionNo });
   } catch (error) {
