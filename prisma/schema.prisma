@@ -75,8 +75,10 @@ model School {
   behaviourAssessments          BehaviourAssessment[]
   classes                       Class[]
   feeSchedules                  FeeSchedule[]
+  feeScheduleItems              FeeScheduleItem[]
   paymentAccounts               PaymentAccount[]
   gradingScales                 GradingScale[]
+  studentFeeAdjustments         StudentFeeAdjustment[]
   guardians                     Guardian[]
   invoices                      Invoice[]
   notifications                 Notification[]
@@ -346,7 +348,9 @@ model Pupil {
   results                Result[]
   historicalTermTotals   HistoricalTermTotal[]
   resultPins             ResultPin[]
+  studentFeeAdjustments  StudentFeeAdjustment[]
 
+  @@unique([schoolId, admissionNo])
   @@index([classId], map: "Pupil_classId_fkey")
   @@index([schoolId], map: "Pupil_schoolId_fkey")
 }
@@ -663,11 +667,32 @@ model FeeSchedule {
   school    School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   term      Term      @relation(fields: [termId], references: [id], onDelete: Cascade)
   class     Class?    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  items     FeeScheduleItem[]
   invoices  Invoice[]
 
   @@index([schoolId], map: "FeeSchedule_schoolId_fkey")
   @@index([termId], map: "FeeSchedule_termId_fkey")
   @@index([classId], map: "FeeSchedule_classId_fkey")
+}
+
+model FeeScheduleItem {
+  id            String    @id @default(cuid())
+  schoolId      String
+  feeScheduleId String
+  name          String
+  amount        Int
+  isRequired    Boolean   @default(true)
+  sortOrder     Int       @default(0)
+  description   String?
+  createdAt     DateTime  @default(now())
+
+  school       School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  feeSchedule  FeeSchedule        @relation(fields: [feeScheduleId], references: [id], onDelete: Cascade)
+  invoiceItems InvoiceItem[]
+  adjustments  StudentFeeAdjustment[]
+
+  @@index([feeScheduleId])
+  @@index([schoolId])
 }
 
 model Invoice {
@@ -687,11 +712,69 @@ model Invoice {
   feeSchedule        FeeSchedule   @relation(fields: [feeScheduleId], references: [id])
   pupil              Pupil         @relation(fields: [pupilId], references: [id], onDelete: Cascade)
   school             School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  items              InvoiceItem[]
+  adjustments        StudentFeeAdjustment[]
   payments           Payment[]
 
   @@unique([schoolId, invoiceNo])
   @@index([feeScheduleId], map: "Invoice_feeScheduleId_fkey")
   @@index([pupilId], map: "Invoice_pupilId_fkey")
+}
+
+model InvoiceItem {
+  id                String   @id @default(cuid())
+  invoiceId         String
+  feeScheduleItemId String?
+  name              String
+  amount            Int
+  quantity          Int      @default(1)
+  description       String?
+  createdAt         DateTime @default(now())
+
+  invoice         Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  feeScheduleItem FeeScheduleItem? @relation(fields: [feeScheduleItemId], references: [id], onDelete: SetNull)
+
+  @@index([invoiceId])
+  @@index([feeScheduleItemId])
+}
+
+model StudentFeeAdjustment {
+  id                String            @id @default(cuid())
+  schoolId          String
+  studentId         String
+  invoiceId         String?
+  feeScheduleItemId String?
+  adjustmentType    FeeAdjustmentType
+  amount            Int?
+  percentage        Float?
+  reason            String?
+  status            AdjustmentStatus  @default(ACTIVE)
+  approvedBy        String?
+  createdAt         DateTime          @default(now())
+
+  school          School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  student         Pupil           @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  invoice         Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  feeScheduleItem FeeScheduleItem? @relation(fields: [feeScheduleItemId], references: [id], onDelete: SetNull)
+
+  @@index([schoolId, studentId])
+  @@index([invoiceId])
+  @@index([feeScheduleItemId])
+}
+
+enum FeeAdjustmentType {
+  SCHOLARSHIP
+  DISCOUNT
+  WAIVER
+  BURSARY
+  EXEMPTION
+}
+
+enum AdjustmentStatus {
+  ACTIVE
+  APPROVED
+  REJECTED
+  EXPIRED
 }
 
 model Payment {

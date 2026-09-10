@@ -1,114 +1,26 @@
 // @ts-nocheck
 import { Router, Request, Response } from 'express';
 import { jwtVerify, SignJWT } from 'jose';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendFeePaymentReceiptEmail, sendAnnouncementEmail, sendPlatformCommunicationEmail, sendSubscriptionPaymentSuccessEmail, sendResultsPublishedEmail, sendPinDeliveryEmail, buildResultsPublishedWhatsAppMessage, buildPinDeliveryWhatsAppMessage } from '../services/email.js';
-import { normalizeCurrency, getDefaultCurrency } from '../services/currency.js';
+import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendFeePaymentReceiptEmail, sendAnnouncementEmail, sendPlatformCommunicationEmail, sendSubscriptionPaymentSuccessEmail } from '../services/email.js';
 import { CommunicationService, RulesEngine, TemplateEngine, RecipientResolver, DeliveryQueue, DriverManager, EmailDriver, WhatsAppDriver } from '../communications/index.js';
 import baileysSessionManager from '../communications/whatsapp-baileys.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
 import { ResultsDomainService } from '../domain/results/ResultsDomainService.js';
 import requireActiveSubscription from '../middleware/subscriptionGuard.js';
 import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
-import { buildGuardianNotificationRecipients, resolveGuardianNotificationTargets } from '../services/guardian-notification-recipients.js';
-import { getConfiguredPaymentPlans } from '../services/platform-settings.js';
-import { resolvePublicResultsUrl } from '../services/public-url.js';
-import { normalizeGuardianProfileData } from '../services/student-guardian-profile.js';
-import { buildStudentUpdateData } from '../services/student-update-profile.js';
-import { normalizeAdmissionStatus } from './admissions-utils.js';
-import { buildBulkStudentImportRows, parseCsvText } from '../services/student-import.js';
-import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
-import { getDefaultWhatsAppPolicyRecord } from '../communications/rules.js';
-import { evaluateSchoolWhatsAppSend, readSchoolWhatsAppPolicy } from '../services/whatsapp-policy.js';
+import { normalizeAdmissionNo, validateUniqueAdmissionNo } from '../services/student-admission.js';
 import type { NextFunction } from 'express';
-import resolveReportSignatory from '../services/signatory-resolver.js';
-
-async function notifyApplicantOnAdmissionStatusChange(
-  application: {
-    firstName: string | null;
-    lastName: string | null;
-    email: string | null;
-    guardianEmail: string | null;
-    childName: string | null;
-    intendedClass: string | null;
-    status: string;
-  },
-  school: { id: string; name: string | null },
-) {
-  const recipientEmails = new Set<string>();
-  if (application.guardianEmail) recipientEmails.add(application.guardianEmail);
-  if (application.email) recipientEmails.add(application.email);
-  if (recipientEmails.size === 0) return;
-
-  const applicantName = `${application.firstName ?? ''} ${application.lastName ?? ''}`.trim() || 'Applicant';
-  const studentName = application.childName ?? 'your child';
-  const schoolName = school.name ?? 'your school';
-  const status = normalizeAdmissionStatus(application.status);
-  const subject = `Admission status updated: ${status}`;
-  let body = `Hello ${applicantName},\n\n`;
-
-  if (status === 'UNDER_REVIEW') {
-    body += `Your admission application for ${studentName} has been received and is now under review by ${schoolName}. We will contact you once a decision has been made.`;
-  } else if (status === 'APPROVED') {
-    body += `Congratulations! Your admission application for ${studentName} has been approved by ${schoolName}. Please await further instructions from the admissions team.`;
-  } else if (status === 'REJECTED') {
-    body += `We’re sorry to inform you that your admission application for ${studentName} has been rejected by ${schoolName}. If you have questions or would like to appeal, please contact the school directly.`;
-  } else {
-    body += `Your admission application for ${studentName} has been updated to ${status}. The admissions team will follow up with any next steps.`;
-  }
-
-  body += `\n\nApplication details:\nStudent: ${studentName}\nClass: ${application.intendedClass ?? 'N/A'}\nCurrent status: ${status}\n\nThank you for applying to ${schoolName}.`;
-
-  for (const recipientEmail of recipientEmails) {
-    await sendPlatformCommunicationEmail(
-      recipientEmail,
-      applicantName,
-      schoolName,
-      subject,
-      subject,
-      body,
-    );
-  }
-}
 
 const router = Router();
 const prisma = new PrismaClient();
-const passwordResetStore = new Map<string, {
-  id: string;
-  userId: string;
-  tokenHash: string;
-  expiresAt: Date;
-  attempts: number;
-  usedAt?: Date | null;
-  createdAt: Date;
-}>();
 const resultsDomain = new ResultsDomainService(prisma);
-const communicationRulesRegistry = new CommunicationRulesRegistry(DEFAULT_COMMUNICATION_RULES, prisma);
-
-// Temporary debug endpoint: inspect signatory resolution for a pupil
-router.get('/api/admin/debug/signatory', async (req: Request, res: Response) => {
-  try {
-    const schoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string) || null;
-    const pupilId = req.query.pupilId as string | undefined;
-    if (!schoolId) return res.status(400).json({ error: 'missing schoolId (query or x-school-id header)' });
-    if (!pupilId) return res.status(400).json({ error: 'missing pupilId' });
-
-    const pupil = await prisma.pupil.findUnique({ where: { id: pupilId }, include: { class: true } });
-    const signatories = await prisma.signatory.findMany({ where: { schoolId }, orderBy: { createdAt: 'desc' } });
-    const resolved = await resolveReportSignatory({ prisma, schoolId, pupilId });
-
-    return res.json({ pupil: { id: pupil?.id ?? null, classPhase: pupil?.class?.phase ?? null }, signatories, resolved });
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error('debug signatory error', err);
-    return res.status(500).json({ error: 'internal' });
-  }
-});
+const communicationRulesRegistry = new CommunicationRulesRegistry(DEFAULT_COMMUNICATION_RULES);
 
 const sharedDriverManager = new DriverManager({
   EMAIL: new EmailDriver(async ({ recipient, request }) => {
@@ -133,13 +45,11 @@ const sharedDriverManager = new DriverManager({
         logoUrl,
       );
     } else if (request.event === 'FeePaymentReceived') {
-      const currency = String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN');
       await sendFeePaymentReceiptEmail(
         recipient.address,
         recipient.name ?? 'Guardian',
         studentName,
         className,
-        currency,
         amount,
         paidAmount,
         outstanding,
@@ -176,36 +86,13 @@ const sharedDriverManager = new DriverManager({
         String(metadata.customMessage ?? ''),
         logoUrl,
       );
-    } else if (request.event === 'ResultsPublished') {
-      await sendResultsPublishedEmail(
-        recipient.address,
-        recipient.name ?? 'Guardian',
-        String(metadata.studentName ?? 'Student'),
-        String(metadata.assessmentName ?? 'Assessment Results'),
-        String(metadata.termName ?? 'Current Term'),
-        schoolName,
-        logoUrl,
-        typeof metadata.resultsUrl === 'string' ? metadata.resultsUrl : undefined,
-      );
-    } else if (request.event === 'PinDelivered') {
-      await sendPinDeliveryEmail(
-        recipient.address,
-        recipient.name ?? 'Guardian',
-        String(metadata.pupilName ?? 'Student'),
-        String(metadata.pin ?? ''),
-        schoolName,
-        logoUrl,
-        typeof metadata.resultsUrl === 'string' ? metadata.resultsUrl : undefined,
-      );
     } else {
-      const currency = String(metadata.currency ?? metadata.schoolCurrency ?? 'NGN');
       await sendFeeReminderEmail(
         recipient.address,
         recipient.name ?? 'Guardian',
         studentName,
         className,
         termName,
-        currency,
         amount,
         paidAmount,
         outstanding,
@@ -223,71 +110,7 @@ const sharedDriverManager = new DriverManager({
   }),
   WHATSAPP: new WhatsAppDriver(async ({ recipient, request, content }) => {
     const schoolId = request.schoolId ?? '';
-    if (!schoolId) {
-      return {
-        channel: 'WHATSAPP',
-        recipient: recipient.address,
-        status: 'FAILED',
-        provider: 'baileys',
-        error: 'Missing authenticated schoolId for WhatsApp send',
-      } as const;
-    }
-
-    const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
-    const evaluation = evaluateSchoolWhatsAppSend(policy, {
-      recipientCount: request.recipients?.length ?? 1,
-      now: new Date(),
-      timezone: policy.timezone,
-    });
-
-    if (!evaluation.allowed) {
-      return {
-        channel: 'WHATSAPP',
-        recipient: recipient.address,
-        status: 'FAILED',
-        provider: 'baileys',
-        error: evaluation.reason ?? 'WhatsApp send blocked by school policy',
-      } as const;
-    }
-
-    let deliveryId: string | undefined;
-
-    if (schoolId) {
-      try {
-        const delivery = await whatsappDeliveryStore.upsertSchoolDelivery({
-          schoolId,
-          event: request.event,
-          recipientAddress: recipient.address,
-          recipientName: recipient.name,
-          messageBody: content.body,
-          guardianId: typeof request.metadata?.guardianId === 'string' ? request.metadata.guardianId : null,
-          status: 'SENDING',
-          provider: 'baileys',
-          attemptCount: 1,
-        });
-        deliveryId = delivery?.id;
-      } catch (auditError) {
-        console.warn('[WhatsApp] Could not create durable delivery record:', auditError);
-      }
-    }
-
     const result = await baileysSessionManager.sendTextMessage(schoolId, recipient.address, content.body) as { success: boolean; messageId?: string; error?: string };
-
-    if (deliveryId) {
-      try {
-        await whatsappDeliveryStore.updateById(deliveryId, {
-          status: result.success ? 'SENT' : 'FAILED',
-          provider: 'baileys',
-          providerMessageId: result.messageId ?? undefined,
-          attemptCount: 1,
-          lastError: result.success ? null : result.error ?? null,
-          sentAt: result.success ? new Date() : undefined,
-          nextAttemptAt: new Date(),
-        });
-      } catch (auditError) {
-        console.warn('[WhatsApp] Could not update durable delivery record:', auditError);
-      }
-    }
 
     if (!result.success) {
       return {
@@ -367,45 +190,6 @@ const settingsUpload = multer({
   storage: settingsStorage,
   fileFilter,
   limits: { fileSize: 4 * 1024 * 1024 },
-});
-
-const supportUploadDir = path.join(process.cwd(), 'uploads', 'support');
-if (!fs.existsSync(supportUploadDir)) {
-  fs.mkdirSync(supportUploadDir, { recursive: true });
-}
-
-const supportStorage = multer.diskStorage({
-  destination: supportUploadDir,
-  filename: (req, file, cb) => {
-    const extension = path.extname(file.originalname) || '.bin';
-    const uniqueName = `${Date.now()}-${Math.random().toString(36).substring(7)}${extension}`;
-    cb(null, uniqueName);
-  },
-});
-
-const supportUpload = multer({
-  storage: supportStorage,
-  limits: { fileSize: 12 * 1024 * 1024 },
-  fileFilter: (req: any, file: any, cb: any) => {
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'image/jpg', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv', 'text/plain'];
-    if (allowed.includes(file.mimetype) || file.originalname.match(/\.(csv|xlsx|xls|doc|docx|pdf|png|jpg|jpeg|webp|txt)$/i)) {
-      cb(null, true);
-      return;
-    }
-    cb(new Error('Unsupported file type. Upload images, PDFs, documents, or CSV files.'));
-  },
-});
-
-const parseSupportUpload = (req: Request, res: Response, next: NextFunction) => {
-  supportUpload.array('files', 10)(req, res, (error: any) => {
-    if (error) return res.status(400).json({ error: error.message || 'Unable to upload support files' });
-    next();
-  });
-};
-
-const importUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB for larger CSV imports
 });
 
 function secret() {
@@ -501,25 +285,6 @@ async function resolveUserName(req: Request): Promise<string | null> {
   return null;
 }
 
-async function resolveSessionUser(req: Request) {
-  const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
-  if (!token) return null;
-
-  try {
-    const { payload } = await jwtVerify(token, secret());
-    if (payload && typeof payload === 'object' && 'userId' in payload) {
-      return {
-        userId: String((payload as any).userId || ''),
-        role: String((payload as any).role || ''),
-      };
-    }
-  } catch (err) {
-    console.error('[resolveSessionUser] JWT verification failed:', (err as Error).message);
-  }
-
-  return null;
-}
-
 // Apply subscription guard to school-scoped routes, excluding a small set of public endpoints
 router.use((req: Request, res: Response, next: any) => {
   const allowlist = [
@@ -528,7 +293,6 @@ router.use((req: Request, res: Response, next: any) => {
     '/settings/status',
     '/settings/data',
     '/logo/presign',
-    '/communications',
     '/school-logo',
     '/school-stamp',
     '/school-signature',
@@ -537,11 +301,8 @@ router.use((req: Request, res: Response, next: any) => {
     '/subscription/status',
     '/request-password-reset',
     '/reset-password',
-    '/change-password',
     '/paystack',
     '/platform',
-    '/impersonate',
-    '/support',
   ];
 
   // Allow exact or prefix matches for the allowlist
@@ -612,7 +373,7 @@ router.post('/impersonate', async (req: Request, res: Response) => {
     const sessionToken = await new SignJWT({
       userId: adminId,
       role: 'SCHOOL_ADMIN',
-      email: 'admin@schoolbase.live',
+      email: 'impersonation@schoolbase.local',
       name: 'Platform Admin Impersonator',
       schoolId,
       impersonation: true,
@@ -626,64 +387,10 @@ router.post('/impersonate', async (req: Request, res: Response) => {
       success: true,
       token: sessionToken,
       schoolId,
-      redirectUrl: '/admin',
-      message: 'Impersonation session created.',
     });
   } catch (error) {
     console.error('[API ADMIN] Impersonation exchange error:', error);
     return res.status(500).json({ error: 'Failed to exchange impersonation token.' });
-  }
-});
-
-// POST /api/admin/change-password - Change authenticated admin password
-router.post('/change-password', async (req: Request, res: Response) => {
-  try {
-    const sessionUser = await resolveSessionUser(req);
-    if (!sessionUser) {
-      return res.status(401).json({ error: 'Not authenticated' });
-    }
-
-    if (sessionUser.role !== 'SCHOOL_ADMIN') {
-      return res.status(403).json({ error: 'Forbidden: Admin access required' });
-    }
-
-    const { currentPassword, newPassword } = req.body ?? {};
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'Current password and new password are required.' });
-    }
-
-    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
-      return res.status(400).json({ error: 'Invalid password format.' });
-    }
-
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'New password must be at least 8 characters.' });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id: sessionUser.userId },
-      select: { passwordHash: true },
-    });
-
-    if (!user || !user.passwordHash) {
-      return res.status(404).json({ error: 'User not found.' });
-    }
-
-    const valid = await bcrypt.compare(currentPassword, user.passwordHash);
-    if (!valid) {
-      return res.status(401).json({ error: 'Current password is incorrect.' });
-    }
-
-    const newHash = await bcrypt.hash(newPassword, 10);
-    await prisma.user.update({
-      where: { id: sessionUser.userId },
-      data: { passwordHash: newHash },
-    });
-
-    res.json({ success: true, message: 'Password changed successfully.' });
-  } catch (error) {
-    console.error('[POST /api/admin/change-password] Error:', error);
-    res.status(500).json({ error: 'Failed to change password' });
   }
 });
 
@@ -786,104 +493,6 @@ router.get('/school', async (req: Request, res: Response) => {
   }
 });
 
-// Signatory management endpoints
-// GET /api/admin/signatories
-router.get('/signatories', async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
-
-    const signatories = await prisma.signatory.findMany({ where: { schoolId } });
-    res.json({ signatories });
-  } catch (error) {
-    console.error('[GET /api/admin/signatories] Error:', error);
-    res.status(500).json({ error: 'Failed to fetch signatories' });
-  }
-});
-
-// POST /api/admin/signatories
-router.post('/signatories', async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
-
-    const sessionUser = await resolveSessionUser(req);
-    if (!sessionUser) return res.status(401).json({ error: 'Not authenticated' });
-
-    const { name, title, signatureUrl, phase, active, comment } = req.body as any;
-    if (!name) return res.status(400).json({ error: 'Name is required' });
-
-    const created = await prisma.signatory.create({
-      data: {
-        schoolId,
-        name,
-        title: title ?? null,
-        comment: comment ?? null,
-        signatureUrl: signatureUrl ?? null,
-        key: signatureUrl ?? null,
-        phase: phase ?? null,
-        active: typeof active === 'boolean' ? active : true,
-      },
-    });
-
-    res.json({ success: true, signatory: created });
-  } catch (error) {
-    console.error('[POST /api/admin/signatories] Error:', error);
-    res.status(500).json({ error: 'Failed to create signatory' });
-  }
-});
-
-// PUT /api/admin/signatories/:id
-router.put('/signatories/:id', async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
-
-    const { id } = req.params;
-    const { name, title, signatureUrl, phase, active, comment } = req.body as any;
-
-    // Validate ownership
-    const existing = await prisma.signatory.findUnique({ where: { id } });
-    if (!existing || existing.schoolId !== schoolId) return res.status(404).json({ error: 'Signatory not found' });
-
-    const updated = await prisma.signatory.update({
-      where: { id },
-      data: {
-        name: name ?? existing.name,
-        title: title ?? existing.title,
-        comment: comment ?? existing.comment,
-        signatureUrl: signatureUrl ?? existing.signatureUrl,
-        key: signatureUrl ?? existing.key,
-        phase: phase ?? existing.phase,
-        active: typeof active === 'boolean' ? active : existing.active,
-      },
-    });
-
-    res.json({ success: true, signatory: updated });
-  } catch (error) {
-    console.error('[PUT /api/admin/signatories/:id] Error:', error);
-    res.status(500).json({ error: 'Failed to update signatory' });
-  }
-});
-
-// DELETE /api/admin/signatories/:id - soft deactivate
-router.delete('/signatories/:id', async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
-
-    const { id } = req.params;
-    const existing = await prisma.signatory.findUnique({ where: { id } });
-    if (!existing || existing.schoolId !== schoolId) return res.status(404).json({ error: 'Signatory not found' });
-
-    await prisma.signatory.update({ where: { id }, data: { active: false } });
-    res.json({ success: true });
-  } catch (error) {
-    console.error('[DELETE /api/admin/signatories/:id] Error:', error);
-    res.status(500).json({ error: 'Failed to delete signatory' });
-  }
-});
-
 // GET /api/admin/school/:schoolId - Get school data by ID
 router.get('/school/:schoolId', async (req: Request, res: Response) => {
   try {
@@ -929,8 +538,6 @@ router.get('/settings', async (req: Request, res: Response) => {
       select: {
         name: true,
         initials: true,
-        slug: true,
-        tagline: true,
         country: true,
         currency: true,
         address: true,
@@ -946,21 +553,6 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentAccountName: true,
         manualPaymentAccountNumber: true,
         manualPaymentBankName: true,
-        paymentAccounts: {
-          where: { isActive: true },
-          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-        },
-        admissionsEnabled: true,
-        admissionsOpeningDate: true,
-        admissionsClosingDate: true,
-        admissionsIntroText: true,
-        admissionsRequirements: true,
-        admissionsContactInfo: true,
-        resultAccessPinEnabled: true,
-        resultAccessMode: true,
-        resultAccessPinType: true,
-        resultAccessPinValidity: true,
-        resultAccessAllowRegeneration: true,
         paystackPublicEncrypted: true,
         paystackSecretEncrypted: true,
       },
@@ -974,8 +566,6 @@ router.get('/settings', async (req: Request, res: Response) => {
       config: {
         name: school.name,
         initials: school.initials,
-        slug: school.slug,
-        tagline: school.tagline,
         country: school.country,
         currency: school.currency,
         address: school.address,
@@ -991,20 +581,6 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentAccountName: school.manualPaymentAccountName,
         manualPaymentAccountNumber: school.manualPaymentAccountNumber,
         manualPaymentBankName: school.manualPaymentBankName,
-        paymentAccounts: school.paymentAccounts,
-        admissionsEnabled: Boolean(school.admissionsEnabled),
-        admissionsOpeningDate: school.admissionsOpeningDate ? school.admissionsOpeningDate.toISOString() : null,
-        admissionsClosingDate: school.admissionsClosingDate ? school.admissionsClosingDate.toISOString() : null,
-        admissionsIntroText: school.admissionsIntroText,
-        admissionsRequirements: school.admissionsRequirements,
-        admissionsContactInfo: school.admissionsContactInfo,
-        resultAccess: {
-          enabled: Boolean(school.resultAccessPinEnabled),
-          mode: school.resultAccessMode || 'NONE',
-          pinType: school.resultAccessPinType || 'NONE',
-          pinValidity: school.resultAccessPinValidity || 'TERM',
-          allowRegeneration: Boolean(school.resultAccessAllowRegeneration),
-        },
         hasPaystackPublic: Boolean(school.paystackPublicEncrypted),
         hasPaystackSecret: Boolean(school.paystackSecretEncrypted),
       },
@@ -1026,8 +602,6 @@ router.post('/settings', async (req: Request, res: Response) => {
     const {
       name,
       initials,
-      slug,
-      tagline,
       country,
       currency,
       address,
@@ -1036,38 +610,18 @@ router.post('/settings', async (req: Request, res: Response) => {
       manualPaymentAccountName,
       manualPaymentAccountNumber,
       manualPaymentBankName,
-      paymentAccounts,
       principalSignatureUrl,
       stampUrl,
       logoUrl,
       paystackPublic,
       paystackSecret,
-      resultAccess,
-      admissionsEnabled,
-      admissionsOpeningDate,
-      admissionsClosingDate,
-      admissionsIntroText,
-      admissionsRequirements,
-      admissionsContactInfo,
     } = req.body;
-
-    const normalizedSlug = typeof slug === 'string' ? slug.trim().toLowerCase() : null;
-    if (!normalizedSlug || !/^[a-z0-9-]+$/.test(normalizedSlug)) {
-      return res.status(400).json({ error: 'Invalid slug. Use only lowercase letters, numbers, and hyphens.' });
-    }
-
-    const existingSlugOwner = await prisma.school.findUnique({ where: { slug: normalizedSlug } });
-    if (existingSlugOwner && existingSlugOwner.id !== schoolId) {
-      return res.status(409).json({ error: 'The chosen slug is already in use. Please choose another.' });
-    }
 
     const school = await prisma.school.update({
       where: { id: schoolId },
       data: {
         name,
         initials,
-        slug: normalizedSlug,
-        tagline: typeof tagline === 'string' ? tagline.trim() || null : null,
         country,
         currency,
         address,
@@ -1079,47 +633,10 @@ router.post('/settings', async (req: Request, res: Response) => {
         principalSignatureUrl,
         stampUrl,
         logoUrl,
-        admissionsEnabled: Boolean(admissionsEnabled),
-        admissionsOpeningDate: admissionsOpeningDate ? new Date(admissionsOpeningDate) : null,
-        admissionsClosingDate: admissionsClosingDate ? new Date(admissionsClosingDate) : null,
-        admissionsIntroText: admissionsIntroText || null,
-        admissionsRequirements: admissionsRequirements || null,
-        admissionsContactInfo: admissionsContactInfo || null,
-        resultAccessPinEnabled: Boolean(resultAccess?.enabled),
-        resultAccessMode: resultAccess?.mode || 'NONE',
-        resultAccessPinType: resultAccess?.pinType || 'NONE',
-        resultAccessPinValidity: resultAccess?.pinValidity || 'TERM',
-        resultAccessAllowRegeneration: Boolean(resultAccess?.allowRegeneration),
         paystackPublicEncrypted: paystackPublic || null,
         paystackSecretEncrypted: paystackSecret || null,
       },
     });
-
-    if (Array.isArray(paymentAccounts)) {
-      const normalizedAccounts = paymentAccounts
-        .map((account: any, index: number) => ({
-          label: String(account?.label || '').trim(),
-          bankName: String(account?.bankName || '').trim(),
-          accountName: String(account?.accountName || '').trim(),
-          accountNumber: String(account?.accountNumber || '').trim(),
-          branchName: String(account?.branchName || '').trim() || null,
-          currency: String(account?.currency || '').trim() || null,
-          purpose: String(account?.purpose || '').trim() || null,
-          isDefault: Boolean(account?.isDefault),
-          isActive: account?.isActive !== false,
-          sortOrder: Number.isFinite(Number(account?.sortOrder)) ? Number(account.sortOrder) : index,
-        }))
-        .filter((account: any) => account.label && account.bankName && account.accountName && account.accountNumber);
-      const defaultIndex = normalizedAccounts.findIndex((account: any) => account.isDefault);
-      await prisma.paymentAccount.deleteMany({ where: { schoolId } });
-      await prisma.paymentAccount.createMany({
-        data: normalizedAccounts.map((account: any, index: number) => ({
-          schoolId,
-          ...account,
-          isDefault: defaultIndex === -1 ? index === 0 : index === defaultIndex,
-        })),
-      });
-    }
 
     res.json({ success: true, school });
   } catch (error) {
@@ -1175,7 +692,6 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         name: true,
         initials: true,
         slug: true,
-        tagline: true,
         address: true,
         city: true,
         country: true,
@@ -1191,21 +707,6 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         manualPaymentAccountName: true,
         manualPaymentAccountNumber: true,
         manualPaymentBankName: true,
-        paymentAccounts: {
-          where: { isActive: true },
-          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-        },
-        admissionsEnabled: true,
-        admissionsOpeningDate: true,
-        admissionsClosingDate: true,
-        admissionsIntroText: true,
-        admissionsRequirements: true,
-        admissionsContactInfo: true,
-        resultAccessPinEnabled: true,
-        resultAccessMode: true,
-        resultAccessPinType: true,
-        resultAccessPinValidity: true,
-        resultAccessAllowRegeneration: true,
         paystackPublicEncrypted: true,
         paystackSecretEncrypted: true,
         enabledPhases: true,
@@ -1227,7 +728,6 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         name: school.name,
         initials: school.initials,
         slug: school.slug,
-        tagline: school.tagline,
         address: school.address,
         city: school.city,
         country: school.country,
@@ -1243,20 +743,6 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         manualPaymentAccountName: school.manualPaymentAccountName,
         manualPaymentAccountNumber: school.manualPaymentAccountNumber,
         manualPaymentBankName: school.manualPaymentBankName,
-        paymentAccounts: school.paymentAccounts,
-        admissionsEnabled: Boolean(school.admissionsEnabled),
-        admissionsOpeningDate: school.admissionsOpeningDate ? school.admissionsOpeningDate.toISOString() : null,
-        admissionsClosingDate: school.admissionsClosingDate ? school.admissionsClosingDate.toISOString() : null,
-        admissionsIntroText: school.admissionsIntroText,
-        admissionsRequirements: school.admissionsRequirements,
-        admissionsContactInfo: school.admissionsContactInfo,
-        resultAccess: {
-          enabled: Boolean(school.resultAccessPinEnabled),
-          mode: school.resultAccessMode || 'NONE',
-          pinType: school.resultAccessPinType || 'NONE',
-          pinValidity: school.resultAccessPinValidity || 'TERM',
-          allowRegeneration: Boolean(school.resultAccessAllowRegeneration),
-        },
         paystackPublicKey:
           process.env.PAYSTACK_SUBSCRIPTION_PUBLIC_KEY ||
           process.env.PAYSTACK_PUBLIC_KEY ||
@@ -1274,7 +760,7 @@ router.get('/settings/data', async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/settings/upload - Upload school asset (signature, stamp, logo)
-async function handleSettingsUpload(req: Request, res: Response) {
+router.post('/settings/upload', settingsUpload.single('file'), async (req: Request, res: Response) => {
   console.log('[settings upload] contentType=', req.headers['content-type']);
   console.log('[settings upload] body=', req.body);
   console.log('[settings upload] file=', req.file ? {
@@ -1308,11 +794,6 @@ async function handleSettingsUpload(req: Request, res: Response) {
       updateData.logoUrl = assetUrl;
     }
 
-    if (fileType === 'signatory') {
-      // For signatory uploads, do not update the school record; return the asset URL for use when creating a Signatory
-      return res.json({ success: true, message: 'File uploaded', url: assetUrl });
-    }
-
     if (Object.keys(updateData).length > 0) {
       await prisma.school.update({
         where: { id: schoolId },
@@ -1329,11 +810,7 @@ async function handleSettingsUpload(req: Request, res: Response) {
     console.error('Error uploading file:', error);
     res.status(500).json({ error: 'Failed to upload file' });
   }
-}
-
-// Register handler for both trailing-slash and non-trailing-slash paths to avoid redirect edge-cases
-router.post('/settings/upload', settingsUpload.single('file'), handleSettingsUpload);
-router.post('/settings/upload/', settingsUpload.single('file'), handleSettingsUpload);
+});
 
 // GET /api/admin/school-logo/:schoolId - Redirect to school logo asset
 router.get('/school-logo/:schoolId', async (req: Request, res: Response) => {
@@ -1838,6 +1315,331 @@ router.delete('/fees/schedules/:id', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/admin/fees/schedules/:id/items - List fee schedule items
+router.get('/fees/schedules/:id/items', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+
+    const feeSchedule = await prisma.feeSchedule.findFirst({
+      where: { id, schoolId },
+      select: { id: true },
+    });
+
+    if (!feeSchedule) {
+      return res.status(404).json({ error: 'Fee schedule not found' });
+    }
+
+    const items = await prisma.feeScheduleItem.findMany({
+      where: { feeScheduleId: id, schoolId },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    res.json({ success: true, items });
+  } catch (error) {
+    console.error('Error fetching fee schedule items:', error);
+    res.status(500).json({ error: 'Failed to fetch fee schedule items' });
+  }
+});
+
+// POST /api/admin/fees/schedules/:id/items - Add a fee item to a fee schedule
+router.post('/fees/schedules/:id/items', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+    const { name, amount, isRequired, description, sortOrder } = req.body;
+
+    if (!name || amount === undefined) {
+      return res.status(400).json({ error: 'Missing required fields: name, amount' });
+    }
+
+    const feeSchedule = await prisma.feeSchedule.findFirst({
+      where: { id, schoolId },
+      select: { id: true },
+    });
+
+    if (!feeSchedule) {
+      return res.status(404).json({ error: 'Fee schedule not found' });
+    }
+
+    const amountInCents = Math.round(parseFloat(String(amount)) * 100);
+    if (amountInCents < 0) {
+      return res.status(400).json({ error: 'Amount cannot be negative' });
+    }
+
+    const item = await prisma.feeScheduleItem.create({
+      data: {
+        schoolId,
+        feeScheduleId: id,
+        name: String(name).trim(),
+        amount: amountInCents,
+        isRequired: isRequired !== false,
+        description: description ? String(description).trim() : null,
+        sortOrder: sortOrder !== undefined ? Number(sortOrder) : 0,
+      },
+    });
+
+    res.json({ success: true, item });
+  } catch (error) {
+    console.error('Error creating fee schedule item:', error);
+    res.status(500).json({ error: 'Failed to create fee schedule item' });
+  }
+});
+
+// PATCH /api/admin/fees/schedules/items/:itemId - Update a fee item
+router.patch('/fees/schedules/items/:itemId', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { itemId } = req.params;
+    const { name, amount, isRequired, description, sortOrder } = req.body;
+
+    const existingItem = await prisma.feeScheduleItem.findFirst({
+      where: { id: itemId, schoolId },
+    });
+
+    if (!existingItem) {
+      return res.status(404).json({ error: 'Fee schedule item not found' });
+    }
+
+    const updateData: any = {};
+
+    if (name !== undefined) updateData.name = String(name).trim();
+    if (amount !== undefined) updateData.amount = Math.round(parseFloat(String(amount)) * 100);
+    if (isRequired !== undefined) updateData.isRequired = Boolean(isRequired);
+    if (description !== undefined) updateData.description = description ? String(description).trim() : null;
+    if (sortOrder !== undefined) updateData.sortOrder = Number(sortOrder);
+
+    const updatedItem = await prisma.feeScheduleItem.update({
+      where: { id: itemId },
+      data: updateData,
+    });
+
+    res.json({ success: true, item: updatedItem });
+  } catch (error) {
+    console.error('Error updating fee schedule item:', error);
+    res.status(500).json({ error: 'Failed to update fee schedule item' });
+  }
+});
+
+// DELETE /api/admin/fees/schedules/items/:itemId - Delete a fee item
+router.delete('/fees/schedules/items/:itemId', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { itemId } = req.params;
+
+    const existingItem = await prisma.feeScheduleItem.findFirst({
+      where: { id: itemId, schoolId },
+    });
+
+    if (!existingItem) {
+      return res.status(404).json({ error: 'Fee schedule item not found' });
+    }
+
+    const invoiceItemCount = await prisma.invoiceItem.count({
+      where: { feeScheduleItemId: itemId },
+    });
+
+    if (invoiceItemCount > 0) {
+      return res.status(400).json({
+        error: `Cannot delete fee item because it is already used in ${invoiceItemCount} invoice item(s).`,
+      });
+    }
+
+    await prisma.feeScheduleItem.delete({ where: { id: itemId } });
+
+    res.json({ success: true, message: 'Fee schedule item deleted' });
+  } catch (error) {
+    console.error('Error deleting fee schedule item:', error);
+    res.status(500).json({ error: 'Failed to delete fee schedule item' });
+  }
+});
+
+// GET /api/admin/fees/students/:studentId/adjustments - List student fee adjustments
+router.get('/fees/students/:studentId/adjustments', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { studentId } = req.params;
+
+    const pupil = await prisma.pupil.findFirst({
+      where: { id: studentId, schoolId },
+      select: { id: true },
+    });
+
+    if (!pupil) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const adjustments = await prisma.studentFeeAdjustment.findMany({
+      where: { schoolId, studentId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        feeScheduleItem: true,
+        invoice: true,
+      },
+    });
+
+    res.json({ success: true, adjustments });
+  } catch (error) {
+    console.error('Error fetching student fee adjustments:', error);
+    res.status(500).json({ error: 'Failed to fetch student fee adjustments' });
+  }
+});
+
+// POST /api/admin/fees/students/:studentId/adjustments - Create a student fee adjustment
+router.post('/fees/students/:studentId/adjustments', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { studentId } = req.params;
+    const { invoiceId, feeScheduleItemId, adjustmentType, amount, percentage, reason, status, approvedBy } = req.body;
+
+    const pupil = await prisma.pupil.findFirst({
+      where: { id: studentId, schoolId },
+      select: { id: true },
+    });
+
+    if (!pupil) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    if (!adjustmentType) {
+      return res.status(400).json({ error: 'Adjustment type is required' });
+    }
+
+    if (amount === undefined && percentage === undefined) {
+      return res.status(400).json({ error: 'Either amount or percentage is required' });
+    }
+
+    if (invoiceId) {
+      const invoice = await prisma.invoice.findFirst({
+        where: { id: invoiceId, schoolId },
+        select: { id: true },
+      });
+      if (!invoice) {
+        return res.status(404).json({ error: 'Invoice not found' });
+      }
+    }
+
+    if (feeScheduleItemId) {
+      const feeItem = await prisma.feeScheduleItem.findFirst({
+        where: { id: feeScheduleItemId, schoolId },
+        select: { id: true },
+      });
+      if (!feeItem) {
+        return res.status(404).json({ error: 'Fee item not found' });
+      }
+    }
+
+    const adjustment = await prisma.studentFeeAdjustment.create({
+      data: {
+        schoolId,
+        studentId,
+        invoiceId: invoiceId || null,
+        feeScheduleItemId: feeScheduleItemId || null,
+        adjustmentType,
+        amount: amount !== undefined ? Math.round(parseFloat(String(amount)) * 100) : null,
+        percentage: percentage !== undefined ? Number(percentage) : null,
+        reason: reason ? String(reason).trim() : null,
+        status: status || 'ACTIVE',
+        approvedBy: approvedBy ? String(approvedBy).trim() : null,
+      },
+    });
+
+    res.json({ success: true, adjustment });
+  } catch (error) {
+    console.error('Error creating student fee adjustment:', error);
+    res.status(500).json({ error: 'Failed to create student fee adjustment' });
+  }
+});
+
+// PATCH /api/admin/fees/students/adjustments/:id - Update student fee adjustment
+router.patch('/fees/students/adjustments/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+    const { amount, percentage, reason, status, approvedBy } = req.body;
+
+    const adjustment = await prisma.studentFeeAdjustment.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!adjustment) {
+      return res.status(404).json({ error: 'Adjustment not found' });
+    }
+
+    const updateData: any = {};
+    if (amount !== undefined) updateData.amount = Math.round(parseFloat(String(amount)) * 100);
+    if (percentage !== undefined) updateData.percentage = Number(percentage);
+    if (reason !== undefined) updateData.reason = reason ? String(reason).trim() : null;
+    if (status !== undefined) updateData.status = status;
+    if (approvedBy !== undefined) updateData.approvedBy = approvedBy ? String(approvedBy).trim() : null;
+
+    const updatedAdjustment = await prisma.studentFeeAdjustment.update({
+      where: { id },
+      data: updateData,
+    });
+
+    res.json({ success: true, adjustment: updatedAdjustment });
+  } catch (error) {
+    console.error('Error updating student fee adjustment:', error);
+    res.status(500).json({ error: 'Failed to update student fee adjustment' });
+  }
+});
+
+// DELETE /api/admin/fees/students/adjustments/:id - Delete student fee adjustment
+router.delete('/fees/students/adjustments/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID required' });
+    }
+
+    const { id } = req.params;
+
+    const adjustment = await prisma.studentFeeAdjustment.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!adjustment) {
+      return res.status(404).json({ error: 'Adjustment not found' });
+    }
+
+    await prisma.studentFeeAdjustment.delete({ where: { id } });
+
+    res.json({ success: true, message: 'Adjustment deleted' });
+  } catch (error) {
+    console.error('Error deleting student fee adjustment:', error);
+    res.status(500).json({ error: 'Failed to delete student fee adjustment' });
+  }
+});
+
 // POST /api/admin/fees/invoices/issue-bills - Create invoices for a term
 router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Request, res: Response) => {
   try {
@@ -1846,9 +1648,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const requestCurrency = (req.body && req.body.currency) ? String(req.body.currency).trim() : undefined;
-
-    const { termId, bulkApproval } = req.body;
+    const { termId } = req.body;
     if (!termId) {
       return res.status(400).json({ error: 'Term ID required' });
     }
@@ -1866,44 +1666,14 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       return res.status(400).json({ error: 'No fee schedules found for this term' });
     }
 
-    const audienceAddresses = new Set<string>();
-    for (const schedule of feeSchedules) {
-      const eligiblePupils = await prisma.pupil.findMany({
-        where: schedule.classId
-          ? { schoolId, classId: schedule.classId, isActive: true }
-          : { schoolId, isActive: true },
-        select: { guardians: { select: { guardian: { select: { whatsapp: true, phone: true, altPhone: true } } } } },
-      });
-      for (const pupil of eligiblePupils) {
-        for (const link of pupil.guardians) {
-          const address = link.guardian.whatsapp || link.guardian.phone || link.guardian.altPhone;
-          if (address?.trim()) audienceAddresses.add(address.trim());
-        }
-      }
-    }
-
-    const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
-    const policyEvaluation = evaluateSchoolWhatsAppSend(policy, {
-      recipientCount: audienceAddresses.size,
-      approvedForBulk: bulkApproval === true || bulkApproval === 'true',
-      now: new Date(),
-      timezone: policy.timezone,
-    });
-    if (!policyEvaluation.allowed) {
-      return res.status(409).json({ error: policyEvaluation.reason || 'Fee invoice WhatsApp delivery is blocked by school policy' });
-    }
-
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
-      select: { name: true, logoUrl: true, currency: true },
+      select: { name: true, logoUrl: true },
     });
 
     const communicationService = createCommunicationService();
     let createdCount = 0;
     let notificationsCount = 0;
-    let whatsappSentCount = 0;
-    let whatsappFailedCount = 0;
-    let queuedCount = 0;
     const errors: string[] = [];
 
     // For each fee schedule, create invoices for eligible pupils
@@ -1913,7 +1683,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       if (schedule.classId) {
         // Schedule is for specific class
         eligiblePupils = await prisma.pupil.findMany({
-          where: { schoolId, classId: schedule.classId, isActive: true },
+          where: { classId: schedule.classId, isActive: true },
           include: { 
             guardians: { include: { guardian: true } },
             class: true,
@@ -1968,19 +1738,15 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
           const className = pupil.class?.name || 'Unknown Class';
           const amount = (schedule.amount / 100).toFixed(2);
 
-          const selectedGuardianIds = Array.isArray((req.body as any)?.guardianIds)
-            ? (req.body as any).guardianIds.filter(Boolean)
-            : [];
-          const guardianTargets = resolveGuardianNotificationTargets(
-            pupil.guardians.map((entry) => ({ guardian: entry.guardian })),
-            selectedGuardianIds,
-          );
+          for (const guardianPupil of pupil.guardians) {
+            const guardian = guardianPupil.guardian;
+            const message = `Dear ${guardian.firstName}, this is to inform you that an invoice for ${school?.name || 'School'} fees has been issued for ${pupilName} (${className}). Amount: NGN ${amount}. Please contact the school for payment details.`;
+            const whatsappAddress = guardian.whatsapp || guardian.phone;
 
-          for (const target of guardianTargets) {
-            const guardian = target.guardian;
-            const recipients = target.recipients;
-            const scheduleCurrency = normalizeCurrency(requestCurrency) || normalizeCurrency(school?.currency) || getDefaultCurrency();
-            const message = `Dear ${guardian.firstName || 'Guardian'}, this is to inform you that an invoice for ${school?.name || 'School'} fees has been issued for ${pupilName} (${className}). Amount: ${scheduleCurrency} ${amount}. Please contact the school for payment details.`;
+            const recipients = [
+              ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
+              ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
+            ];
 
             if (recipients.length > 0) {
               try {
@@ -1995,16 +1761,14 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
                     studentName: pupilName,
                     className,
                     amount,
-                    currency: scheduleCurrency,
                     balance: amount,
                     schoolName: school?.name || 'School',
-                    recipientName: guardian.firstName || 'Guardian',
+                    recipientName: guardian.firstName,
                   },
                   metadata: {
                     studentName: pupilName,
                     className,
                     amount,
-                    currency: scheduleCurrency,
                     balance: amount,
                     schoolName: school?.name || 'School',
                     termName: schedule.term?.name || 'Current Term',
@@ -2019,11 +1783,6 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
 
                 for (const delivery of dispatchResult.deliveries) {
                   const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
-                    if (delivery.channel === 'WHATSAPP') {
-                      if (status === 'SENT') whatsappSentCount++;
-                      if (status === 'FAILED') whatsappFailedCount++;
-                    }
-                    if (status === 'PENDING') queuedCount++;
                   await prisma.notification.create({
                     data: {
                       schoolId,
@@ -2074,9 +1833,6 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       message: `Created ${createdCount} invoices for term`,
       created: createdCount,
       notificationsSent: notificationsCount,
-      whatsappSent: whatsappSentCount,
-      whatsappFailed: whatsappFailedCount,
-      queued: queuedCount,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
@@ -2093,46 +1849,22 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const { invoiceId } = req.body || {};
-    const requestCurrency = (req.body && req.body.currency) ? String(req.body.currency).trim() : undefined;
-
     // Find invoices that may need reminders: sent, part-paid, or overdue
-    const invoices = invoiceId
-      ? await prisma.invoice.findMany({
-          where: {
-            schoolId,
-            id: invoiceId,
-            status: { in: ['SENT', 'OVERDUE', 'PART_PAID'] },
-          },
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        schoolId,
+        status: { in: ['SENT', 'OVERDUE', 'PART_PAID'] },
+      },
+      include: {
+        pupil: {
           include: {
-            pupil: {
-              include: {
-                guardians: { include: { guardian: true } },
-                class: true,
-              },
-            },
-            feeSchedule: { include: { term: true } },
+            guardians: { include: { guardian: true } },
+            class: true,
           },
-        })
-      : await prisma.invoice.findMany({
-          where: {
-            schoolId,
-            status: { in: ['SENT', 'OVERDUE', 'PART_PAID'] },
-          },
-          include: {
-            pupil: {
-              include: {
-                guardians: { include: { guardian: true } },
-                class: true,
-              },
-            },
-            feeSchedule: { include: { term: true } },
-          },
-        });
-
-    if (invoiceId && invoices.length === 0) {
-      return res.status(404).json({ error: 'Invoice not found' });
-    }
+        },
+        feeSchedule: { include: { term: true } },
+      },
+    });
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
@@ -2150,74 +1882,43 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
     }
 
     let sentCount = 0;
-    let whatsappSentCount = 0;
-    let whatsappFailedCount = 0;
-    let queuedCount = 0;
     let skippedCount = 0;
     let processedGuardians = 0;
     const errors: string[] = [];
-    const invoiceResults: any[] = [];
 
     // Send reminders to guardians
     for (const invoice of invoices) {
-      const invoiceResult: any = {
-        invoiceId: invoice.id,
-        invoiceNo: invoice.invoiceNo,
-        status: invoice.status,
-        outstanding: 0,
-        guardiansProcessed: 0,
-        guardiansSkipped: 0,
-        noRecipientGuardians: 0,
-        deliveriesSent: 0,
-        deliveriesFailed: 0,
-        errors: [] as string[],
-      };
-
       const pupilName = `${invoice.pupil.firstName} ${invoice.pupil.lastName}`;
       const className = invoice.pupil.class?.name || 'Unknown Class';
       const amount = (invoice.amountDue / 100).toFixed(2);
       const outstanding = Math.max(0, invoice.amountDue - invoice.amountPaid) / 100;
-      invoiceResult.outstanding = outstanding;
 
       if (outstanding <= 0) {
-        invoiceResult.guardiansSkipped += 1;
-        invoiceResult.errors.push('Invoice has no outstanding balance');
-        invoiceResults.push(invoiceResult);
         continue;
       }
 
-      const selectedGuardianIds = Array.isArray((req.body as any)?.guardianIds)
-        ? (req.body as any).guardianIds.filter(Boolean)
-        : [];
-      const guardianTargets = resolveGuardianNotificationTargets(
-        invoice.pupil.guardians.map((entry) => ({ guardian: entry.guardian })),
-        selectedGuardianIds,
-      );
-
-      for (const target of guardianTargets) {
-        invoiceResult.guardiansProcessed += 1;
+      for (const guardianPupil of invoice.pupil.guardians) {
         processedGuardians++;
-        const guardian = target.guardian;
-        const recipients = target.recipients;
-        const normalizedRequestCurrency = normalizeCurrency(requestCurrency);
-        const normalizedSchoolCurrency = normalizeCurrency(school.currency);
-        const currency = normalizedRequestCurrency || normalizedSchoolCurrency || getDefaultCurrency();
-        const cookiePresent = Boolean(req.cookies && req.cookies.country_v1);
-        console.log(`[send-reminders] invoice=${invoice.id} guardian=${guardian.id} requestCurrency=${requestCurrency || '<none>'} normalizedRequestCurrency=${normalizedRequestCurrency || '<none>'} cookiePresent=${cookiePresent} schoolCurrency=${school.currency || '<none>'} normalizedSchoolCurrency=${normalizedSchoolCurrency || '<none>'} chosenCurrency=${currency}`);
-        const message = `Dear ${guardian.firstName || 'Guardian'}, this is a reminder that fee payment of ${currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
+        const guardian = guardianPupil.guardian;
+        const message = `Dear ${guardian.firstName}, this is a reminder that fee payment of ${school.currency} ${amount} for ${pupilName} (${className}) is outstanding. Amount due: ${school.currency} ${outstanding.toFixed(2)}. Please make payment at your earliest convenience. Thank you.`;
+        const whatsappAddress = guardian.whatsapp || guardian.phone;
+        const canSendWhatsApp = Boolean(whatsappAddress);
+        const canSendEmail = Boolean(guardian.email);
 
-        if (!recipients.length) {
+        if (!canSendWhatsApp && !canSendEmail) {
           skippedCount++;
-          invoiceResult.guardiansSkipped += 1;
-          invoiceResult.noRecipientGuardians += 1;
-          invoiceResult.errors.push(`Guardian ${guardian.id} had no recipients`);
           continue;
         }
+
+        const recipients = [
+          ...(canSendWhatsApp ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress!, name: guardian.firstName }] : []),
+          ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
+        ];
 
         if (recipients.length > 0) {
           try {
             const dispatchResult = await communicationService.dispatch({
-              event: 'FeeReminder',
+              event: 'FeeInvoiceCreated',
               schoolId,
               recipients,
               template: 'FeeReminder',
@@ -2227,16 +1928,14 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
                 studentName: pupilName,
                 className,
                 amount,
-                currency,
                 balance: outstanding.toFixed(2),
                 schoolName: school.name,
-                recipientName: guardian.firstName || 'Guardian',
+                recipientName: guardian.firstName,
               },
               metadata: {
                 studentName: pupilName,
                 className,
                 amount,
-                currency,
                 balance: outstanding.toFixed(2),
                 schoolName: school.name,
                 termName: invoice.feeSchedule?.term?.name || 'Current Term',
@@ -2251,11 +1950,6 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
 
             for (const delivery of dispatchResult.deliveries) {
               const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
-              if (delivery.channel === 'WHATSAPP') {
-                if (status === 'SENT') whatsappSentCount++;
-                if (status === 'FAILED') whatsappFailedCount++;
-              }
-              if (status === 'PENDING') queuedCount++;
               await prisma.notification.create({
                 data: {
                   schoolId,
@@ -2274,16 +1968,10 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
 
               if (status !== 'FAILED') {
                 sentCount++;
-                invoiceResult.deliveriesSent += 1;
-              } else {
-                invoiceResult.deliveriesFailed += 1;
               }
             }
           } catch (err) {
-            const errMsg = `Failed to dispatch reminder communication for guardian ${guardian.id}: ${err instanceof Error ? err.message : String(err)}`;
-            errors.push(errMsg);
-            invoiceResult.errors.push(errMsg);
-            invoiceResult.deliveriesFailed += 1;
+            errors.push(`Failed to dispatch reminder communication for guardian ${guardian.id}`);
             await prisma.notification.create({
               data: {
                 schoolId,
@@ -2301,21 +1989,15 @@ router.post('/fees/invoices/send-reminders', requireSubscription, async (req: Re
           }
         }
       }
-
-      invoiceResults.push(invoiceResult);
     }
 
     res.json({
       success: true,
       message: `Sent ${sentCount} reminders`,
       sent: sentCount,
-      whatsappSent: whatsappSentCount,
-      whatsappFailed: whatsappFailedCount,
-      queued: queuedCount,
       skipped: skippedCount,
       totalInvoices: invoices.length,
       totalGuardians: processedGuardians,
-      invoiceResults,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
@@ -2377,10 +2059,6 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
         manualPaymentAccountName: true,
         manualPaymentAccountNumber: true,
         manualPaymentBankName: true,
-        paymentAccounts: {
-          where: { isActive: true },
-          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-        },
       },
     });
 
@@ -2728,16 +2406,15 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
     const newPaidAmountFormatted = (newAmountPaid / 100).toFixed(2);
     const balanceAmount = Math.max(0, updatedInvoice.amountDue - updatedInvoice.amountPaid) / 100;
     const balance = balanceAmount.toFixed(2);
-    const paymentCurrency = normalizeCurrency(school?.currency) || getDefaultCurrency();
-    const paymentMessage = `Dear guardian, we have received payment of ${paymentCurrency} ${amountPaidFormatted} for ${pupilName} (${className}). Your updated balance is ${paymentCurrency} ${balance}. Thank you.`;
+    const paymentMessage = `Dear guardian, we have received payment of ${school?.currency ?? 'NGN'} ${amountPaidFormatted} for ${pupilName} (${className}). Your updated balance is ${school?.currency ?? 'NGN'} ${balance}. Thank you.`;
 
-    const guardianTargets = resolveGuardianNotificationTargets(
-      guardians.map((entry) => ({ guardian: entry.guardian })),
-    );
-
-    for (const target of guardianTargets) {
-      const guardian = target.guardian;
-      const recipients = target.recipients;
+    for (const guardianPupil of guardians) {
+      const guardian = guardianPupil.guardian;
+      const whatsappAddress = guardian.whatsapp || guardian.phone;
+      const recipients = [
+        ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
+        ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
+      ];
 
       if (recipients.length === 0) {
         continue;
@@ -2755,17 +2432,15 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
             studentName: pupilName,
             className,
             amount: amountPaidFormatted,
-            currency: paymentCurrency,
             paidAmount: newPaidAmountFormatted,
             balance,
             schoolName: school?.name || 'SchoolBase',
-            recipientName: guardian.firstName || 'Guardian',
+            recipientName: guardian.firstName,
           },
           metadata: {
             studentName: pupilName,
             className,
             amount: amountPaidFormatted,
-            currency: paymentCurrency,
             paidAmount: newPaidAmountFormatted,
             outstanding: balance,
             schoolName: school?.name || 'SchoolBase',
@@ -2833,139 +2508,6 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
   } catch (error) {
     console.error('Error recording payment:', error);
     res.status(500).json({ error: 'Failed to record payment' });
-  }
-});
-
-// PATCH /api/admin/fees/payments/:paymentId - Edit a recorded payment amount against an invoice
-router.patch('/fees/payments/:paymentId', requireSubscription, async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) {
-      return res.status(400).json({ error: 'School ID required' });
-    }
-
-    const { paymentId } = req.params;
-    const { amount, reference } = req.body || {};
-    if (!paymentId) {
-      return res.status(400).json({ error: 'Payment ID is required' });
-    }
-
-    const parsedAmount = Number(amount);
-    if (!Number.isFinite(parsedAmount) || parsedAmount < 0) {
-      return res.status(400).json({ error: 'Payment amount must be 0 or greater' });
-    }
-
-    const payment = await prisma.payment.findFirst({
-      where: {
-        id: paymentId,
-        invoice: {
-          schoolId,
-        },
-      },
-      include: {
-        invoice: true,
-      },
-    });
-
-    if (!payment || !payment.invoice) {
-      return res.status(404).json({ error: 'Payment not found' });
-    }
-
-    const newAmountInCents = Math.round(parsedAmount * 100);
-    const delta = newAmountInCents - payment.amount;
-    const updatedAmountPaid = Math.max(0, payment.invoice.amountPaid + delta);
-    const nextStatus = updatedAmountPaid >= payment.invoice.amountDue ? 'PAID' : updatedAmountPaid > 0 ? 'PART_PAID' : 'SENT';
-
-    const updatedPayment = await prisma.payment.update({
-      where: { id: paymentId },
-      data: {
-        amount: newAmountInCents,
-        reference: reference ?? payment.reference,
-      },
-    });
-
-    const updatedInvoice = await prisma.invoice.update({
-      where: { id: payment.invoiceId },
-      data: {
-        amountPaid: updatedAmountPaid,
-        status: nextStatus,
-      },
-    });
-
-    res.json({
-      success: true,
-      payment: {
-        id: updatedPayment.id,
-        amount: (updatedPayment.amount / 100).toFixed(2),
-        reference: updatedPayment.reference,
-      },
-      invoice: {
-        id: updatedInvoice.id,
-        amountDue: (updatedInvoice.amountDue / 100).toFixed(2),
-        amountPaid: (updatedInvoice.amountPaid / 100).toFixed(2),
-        status: updatedInvoice.status,
-      },
-    });
-  } catch (error) {
-    console.error('Error updating payment:', error);
-    res.status(500).json({ error: 'Failed to update payment' });
-  }
-});
-
-// DELETE /api/admin/fees/payments/:paymentId - Remove an erroneous payment history item
-router.delete('/fees/payments/:paymentId', requireSubscription, async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) {
-      return res.status(400).json({ error: 'School ID required' });
-    }
-
-    const { paymentId } = req.params;
-    if (!paymentId) {
-      return res.status(400).json({ error: 'Payment ID is required' });
-    }
-
-    const payment = await prisma.payment.findFirst({
-      where: {
-        id: paymentId,
-        invoice: {
-          schoolId,
-        },
-      },
-      include: {
-        invoice: true,
-      },
-    });
-
-    if (!payment || !payment.invoice) {
-      return res.status(404).json({ error: 'Payment not found' });
-    }
-
-    const nextAmountPaid = Math.max(0, payment.invoice.amountPaid - payment.amount);
-    const nextStatus = nextAmountPaid >= payment.invoice.amountDue ? 'PAID' : nextAmountPaid > 0 ? 'PART_PAID' : 'SENT';
-
-    await prisma.payment.delete({ where: { id: paymentId } });
-
-    const updatedInvoice = await prisma.invoice.update({
-      where: { id: payment.invoiceId },
-      data: {
-        amountPaid: nextAmountPaid,
-        status: nextStatus,
-      },
-    });
-
-    res.json({
-      success: true,
-      invoice: {
-        id: updatedInvoice.id,
-        amountDue: (updatedInvoice.amountDue / 100).toFixed(2),
-        amountPaid: (updatedInvoice.amountPaid / 100).toFixed(2),
-        status: updatedInvoice.status,
-      },
-    });
-  } catch (error) {
-    console.error('Error deleting payment:', error);
-    res.status(500).json({ error: 'Failed to delete payment' });
   }
 });
 
@@ -3059,45 +2601,12 @@ router.get('/notifications', async (req: Request, res: Response) => {
 });
 
 // GET /api/admin/students/data - Get students list for client-side rendering
-async function getNextAdmissionNumberForSchool(schoolId: string, offset = 0) {
-  const school = await prisma.school.findUnique({
-    where: { id: schoolId },
-    select: { name: true, initials: true },
-  });
-
-  let prefix = 'SCH';
-  if (school?.initials && typeof school.initials === 'string' && school.initials.trim()) {
-    prefix = school.initials.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
-  } else if (school?.name) {
-    const words = school.name.split(/[^A-Za-z0-9]+/).filter(Boolean);
-    let letters = words.slice(0, 3).map((word: string) => word[0]).join('').toUpperCase();
-
-    if (letters.length < 3 && words[0]) {
-      const remaining = words[0].slice(1).replace(/[^A-Za-z0-9]/g, '');
-      for (const ch of remaining) {
-        letters += ch.toUpperCase();
-        if (letters.length >= 3) break;
-      }
-    }
-
-    prefix = (letters || 'SCH').replace(/[^A-Z0-9]/g, '').slice(0, 6);
-  }
-
-  const year = new Date().getFullYear();
-  const existingCount = await prisma.pupil.count({
-    where: { schoolId, admissionNo: { startsWith: `${prefix}-${year}-` } },
-  });
-
-  const nextSeq = String(existingCount + offset + 1).padStart(4, '0');
-  return `${prefix}-${year}-${nextSeq}`;
-}
-
 router.get('/students/data', async (req: Request, res: Response) => {
   try {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
-    const [pupils, classes] = await Promise.all([
+    const [pupils, classes, school] = await Promise.all([
       prisma.pupil.findMany({
         where: { schoolId, isActive: true },
         include: {
@@ -3110,150 +2619,40 @@ router.get('/students/data', async (req: Request, res: Response) => {
         where: { schoolId },
         orderBy: { name: 'asc' },
       }),
+      prisma.school.findUnique({
+        where: { id: schoolId },
+        select: { name: true, initials: true },
+      }),
     ]);
 
-    const nextAdmissionNo = await getNextAdmissionNumberForSchool(schoolId);
+    // Calculate next admission number
+    let prefix = "SCH";
+    if (school?.initials && typeof school.initials === "string" && school.initials.trim()) {
+      prefix = school.initials.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    } else if (school?.name) {
+      const words = school.name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+      let letters = words.slice(0, 3).map((w: string) => w[0]).join("").toUpperCase();
+      if (letters.length < 3 && words[0]) {
+        const remaining = words[0].slice(1).replace(/[^A-Za-z0-9]/g, "");
+        for (const ch of remaining) {
+          letters += ch.toUpperCase();
+          if (letters.length >= 3) break;
+        }
+      }
+      prefix = (letters || "SCH").replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    }
+
+    const year = new Date().getFullYear();
+    const existingCount = await prisma.pupil.count({
+      where: { schoolId, admissionNo: { startsWith: `${prefix}-${year}-` } },
+    });
+    const nextSeq = String(existingCount + 1).padStart(4, "0");
+    const nextAdmissionNo = `${prefix}-${year}-${nextSeq}`;
 
     res.json({ pupils, classes, nextAdmissionNo });
   } catch (error) {
     console.error('Error fetching students data:', error);
     res.status(500).json({ error: 'Failed to fetch students data' });
-  }
-});
-
-// POST /api/admin/students/import - Preview or import students from CSV
-router.post('/students/import', importUpload.single('file'), async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
-
-    const previewOnly = (req.query.preview === 'true') || (req.body?.preview === true) || (req.body?.preview === 'true');
-
-    if (!req.file?.buffer) {
-      return res.status(400).json({ error: 'CSV file is required' });
-    }
-
-    const csvText = req.file.buffer.toString('utf8');
-    const parsedRows = parseCsvText(csvText);
-
-    const [classes, existingPupils] = await Promise.all([
-      prisma.class.findMany({ where: { schoolId }, orderBy: { name: 'asc' } }),
-      prisma.pupil.findMany({ where: { schoolId }, select: { admissionNo: true } }),
-    ]);
-
-    const existingAdmissions = existingPupils
-      .map((pupil) => pupil.admissionNo)
-      .filter((admissionNo): admissionNo is string => Boolean(admissionNo));
-
-    const importResult = buildBulkStudentImportRows(parsedRows, classes, existingAdmissions);
-
-    if (previewOnly) {
-      const previewRows = await Promise.all(
-        importResult.validRows.slice(0, 10).map(async (row, index) => ({
-          ...row,
-          admissionNo: await getNextAdmissionNumberForSchool(schoolId, index),
-        }))
-      );
-
-      return res.json({
-        preview: true,
-        totalRows: parsedRows.length - 1,
-        validRows: importResult.validRows.length,
-        errors: importResult.errors,
-        previewRows,
-      });
-    }
-
-    if (importResult.validRows.length === 0) {
-      return res.status(400).json({
-        error: 'No valid student rows were found for import.',
-        errors: importResult.errors,
-      });
-    }
-
-    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { plan: true } });
-    const paymentPlans = await getConfiguredPaymentPlans(prisma);
-    if (!paymentPlans) {
-      return res.status(503).json({ error: 'Pricing is temporarily unavailable. Student import is temporarily disabled.' });
-    }
-    const planLimit = school ? ((paymentPlans as any)[school.plan]?.studentLimit ?? null) : null;
-    const currentPupilCount = await prisma.pupil.count({ where: { schoolId } });
-    if (planLimit !== null && currentPupilCount + importResult.validRows.length > planLimit) {
-      return res.status(403).json({
-        error: `Student limit reached for your ${school?.plan} plan. Upgrade to add more students.`,
-        details: { currentStudents: currentPupilCount, requestedStudents: importResult.validRows.length, planLimit },
-      });
-    }
-
-    const createdStudents: Array<{ id: string; firstName: string; lastName: string; admissionNo?: string | null }> = [];
-    const importErrors: string[] = [...importResult.errors];
-    let admissionSequence = 0;
-
-    for (const row of importResult.validRows) {
-      try {
-        const assignedAdmissionNo = row.admissionNo && row.admissionNo.trim()
-          ? row.admissionNo
-          : await getNextAdmissionNumberForSchool(schoolId, admissionSequence);
-        admissionSequence += 1;
-
-        const pupil = await prisma.pupil.create({
-          data: {
-            schoolId,
-            firstName: row.firstName!,
-            lastName: row.lastName!,
-            middleName: row.middleName ?? null,
-            admissionNo: assignedAdmissionNo,
-            classId: row.classId ?? null,
-            status: row.status || 'ACTIVE',
-            admissionDate: new Date(),
-            gender: row.gender ?? null,
-            dateOfBirth: row.birthDate ? new Date(row.birthDate) : null,
-            address: row.address ?? null,
-            photoUrl: null,
-          },
-        });
-
-        if (row.guardianFirst && row.guardianLast) {
-          const guardian = await prisma.guardian.create({
-            data: {
-              schoolId,
-              firstName: row.guardianFirst,
-              lastName: row.guardianLast,
-              phone: row.guardianPhone || '',
-              whatsapp: row.guardianPhone || null,
-              email: row.guardianEmail ?? null,
-            },
-          });
-
-          await prisma.guardianPupil.create({
-            data: {
-              guardianId: guardian.id,
-              pupilId: pupil.id,
-              relation: 'Parent',
-            },
-          });
-        }
-
-        createdStudents.push({
-          id: pupil.id,
-          firstName: pupil.firstName,
-          lastName: pupil.lastName,
-          admissionNo: pupil.admissionNo,
-        });
-      } catch (error) {
-        importErrors.push(`Unable to create ${row.firstName || 'student'} ${row.lastName || ''}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-
-    return res.json({
-      imported: true,
-      importedCount: createdStudents.length,
-      createdStudents,
-      errors: importErrors,
-    });
-  } catch (error) {
-    console.error('Error importing students:', error);
-    res.status(500).json({ error: 'Failed to import students', details: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -3315,6 +2714,7 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
     const normalizedGuardianPhone = normalizeField(guardianPhone);
     const normalizedGuardianAltPhone = normalizeField(guardianAltPhone);
     const normalizedGuardianOccupation = normalizeField(guardianOccupation);
+    const normalizedAdmissionNo = normalizeAdmissionNo(admissionNo ?? null);
 
     console.log('[create student] schoolId=%s, firstName=%s, lastName=%s, classId=%s, guardianFirst=%s, guardianLast=%s',
       schoolId,
@@ -3334,28 +2734,33 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
       });
     }
 
-    const school = await prisma.school.findUnique({
-      where: { id: schoolId },
-      select: { plan: true },
-    });
-
-    const paymentPlans = await getConfiguredPaymentPlans(prisma);
-    if (!paymentPlans) {
-      if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(503).json({ error: 'Pricing is temporarily unavailable. Student registration is temporarily disabled.' });
-    }
-    const planLimit = school ? ((paymentPlans as any)[school.plan]?.studentLimit ?? null) : null;
-    const currentPupilCount = await prisma.pupil.count({ where: { schoolId } });
-
-    if (planLimit !== null && currentPupilCount >= planLimit) {
-      if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(403).json({
-        error: `Student limit reached for your ${school?.plan} plan. Upgrade to add more students.`,
-        details: {
-          currentStudents: currentPupilCount,
-          planLimit,
-        },
+    if (normalizedAdmissionNo) {
+      const existingPupils = await prisma.pupil.findMany({
+        where: { schoolId },
+        select: { id: true, schoolId: true, admissionNo: true },
       });
+
+      const duplicateCheck = validateUniqueAdmissionNo({
+        schoolId,
+        admissionNo: normalizedAdmissionNo,
+        currentStudentId: null,
+        existingRecords: existingPupils,
+      });
+
+      if (!duplicateCheck.isValid) {
+        if (req.file) {
+          try {
+            fs.unlinkSync(req.file.path);
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        return res.status(409).json({
+          error: duplicateCheck.error || 'Admission number already exists for this school.',
+          details: { admissionNo: normalizedAdmissionNo },
+        });
+      }
     }
 
     // Create pupil
@@ -3365,7 +2770,7 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
         firstName,
         lastName,
         middleName: normalizeField(middleName),
-        admissionNo,
+        admissionNo: normalizedAdmissionNo,
         classId: classId || null,
         status: status || 'ACTIVE',
         admissionDate: admissionDate ? new Date(admissionDate) : new Date(),
@@ -3387,8 +2792,6 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
       },
     });
 
-    const admissionNotificationOutcomes: Array<{ channel: string; status: string; error?: string }> = [];
-
     // Create or find guardian and link to pupil
     if (guardianFirst && guardianLast) {
       const guardian = await prisma.guardian.create({
@@ -3397,7 +2800,6 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
           firstName: guardianFirst,
           lastName: guardianLast,
           phone: normalizedGuardianPhone || '',
-          whatsapp: normalizedGuardianPhone || null,
           altPhone: normalizedGuardianAltPhone,
           email: normalizedGuardianEmail,
           occupation: normalizedGuardianOccupation,
@@ -3413,7 +2815,11 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
         },
       });
 
-      const recipients = buildGuardianNotificationRecipients(guardian);
+      const whatsappAddress = guardian.whatsapp || guardian.phone;
+      const recipients = [
+        ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
+        ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
+      ];
 
       if (recipients.length > 0) {
         const className = pupil.class?.name || 'your class';
@@ -3449,7 +2855,6 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
 
           for (const delivery of dispatchResult.deliveries) {
             const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
-            admissionNotificationOutcomes.push({ channel: delivery.channel, status, ...(delivery.error ? { error: delivery.error } : {}) });
             await prisma.notification.create({
               data: {
                 schoolId,
@@ -3482,11 +2887,6 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
               reference: String(pupil.admissionNo || 'N/A'),
             },
           });
-          admissionNotificationOutcomes.push({
-            channel: guardian.whatsapp ? 'WHATSAPP' : 'EMAIL',
-            status: 'FAILED',
-            error: dispatchError instanceof Error ? dispatchError.message : String(dispatchError),
-          });
         }
       }
     }
@@ -3500,7 +2900,7 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
       },
     });
 
-    res.status(201).json({ ...updatedPupil, notificationOutcomes: admissionNotificationOutcomes });
+    res.status(201).json(updatedPupil);
   } catch (error) {
     if (req.file) {
       try {
@@ -3509,6 +2909,14 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
         // ignore
       }
     }
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      console.error('[create student] Duplicate admission number or unique constraint violation:', error.meta);
+      return res.status(409).json({
+        error: 'A student with this admission number already exists for this school.',
+      });
+    }
+
     console.error('Error creating student:', error);
     res.status(500).json({ error: 'Failed to create student' });
   }
@@ -3574,9 +2982,6 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
     // Verify student exists and belongs to school
     const existingPupil = await prisma.pupil.findFirst({
       where: { id, schoolId },
-      include: {
-        guardians: { include: { guardian: true } },
-      },
     });
 
     if (!existingPupil) {
@@ -3610,15 +3015,6 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
       guardianOccupation,
     } = req.body;
 
-    const normalizedGuardianProfile = normalizeGuardianProfileData({
-      guardianFirst,
-      guardianLast,
-      guardianEmail,
-      guardianPhone,
-      guardianAltPhone,
-      guardianOccupation,
-    });
-
     // Prepare photo URL if file was uploaded
     let photoUrl = existingPupil.photoUrl;
     if (req.file) {
@@ -3632,64 +3028,58 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
       photoUrl = `/uploads/photos/${req.file.filename}`;
     }
 
-    const currentStudentProfile = {
-      firstName: existingPupil.firstName,
-      middleName: existingPupil.middleName,
-      lastName: existingPupil.lastName,
-      classId: existingPupil.classId,
-      status: existingPupil.status,
-      admissionDate: existingPupil.admissionDate,
-      gender: existingPupil.gender,
-      dateOfBirth: existingPupil.dateOfBirth,
-      studentEmail: existingPupil.studentEmail,
-      studentPhone: existingPupil.studentPhone,
-      address: existingPupil.address,
-      bloodGroup: existingPupil.bloodGroup,
-      genotype: existingPupil.genotype,
-      medicalNotes: existingPupil.medicalNotes,
-      previousSchool: existingPupil.previousSchool,
-      previousClass: existingPupil.previousClass,
-    };
+    const updateAdmissionNo = req.body.admissionNo !== undefined ? normalizeAdmissionNo(String(req.body.admissionNo)) : existingPupil.admissionNo ? normalizeAdmissionNo(existingPupil.admissionNo) : null;
 
-    const mergedStudentData = buildStudentUpdateData({
-      firstName,
-      middleName,
-      lastName,
-      classId,
-      status,
-      admissionDate,
-      gender,
-      dateOfBirth,
-      studentEmail,
-      studentPhone,
-      address,
-      bloodGroup,
-      genotype,
-      medicalNotes,
-      previousSchool,
-      previousClass,
-    }, currentStudentProfile);
+    if (updateAdmissionNo) {
+      const existingPupils = await prisma.pupil.findMany({
+        where: { schoolId },
+        select: { id: true, schoolId: true, admissionNo: true },
+      });
+
+      const duplicateCheck = validateUniqueAdmissionNo({
+        schoolId,
+        admissionNo: updateAdmissionNo,
+        currentStudentId: id,
+        existingRecords: existingPupils,
+      });
+
+      if (!duplicateCheck.isValid) {
+        if (req.file) {
+          try {
+            fs.unlinkSync(req.file.path);
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        return res.status(409).json({
+          error: duplicateCheck.error || 'Admission number already exists for this school.',
+          details: { admissionNo: updateAdmissionNo },
+        });
+      }
+    }
 
     // Update pupil
     const updatedPupil = await prisma.pupil.update({
       where: { id },
       data: {
-        firstName: mergedStudentData.firstName,
-        middleName: mergedStudentData.middleName,
-        lastName: mergedStudentData.lastName,
-        classId: mergedStudentData.classId,
-        status: mergedStudentData.status,
-        admissionDate: mergedStudentData.admissionDate,
-        gender: mergedStudentData.gender,
-        dateOfBirth: mergedStudentData.dateOfBirth,
-        studentEmail: mergedStudentData.studentEmail,
-        studentPhone: mergedStudentData.studentPhone,
-        address: mergedStudentData.address,
-        bloodGroup: mergedStudentData.bloodGroup,
-        genotype: mergedStudentData.genotype,
-        medicalNotes: mergedStudentData.medicalNotes,
-        previousSchool: mergedStudentData.previousSchool,
-        previousClass: mergedStudentData.previousClass,
+        firstName: firstName || undefined,
+        middleName: middleName || undefined,
+        lastName: lastName || undefined,
+        classId: classId || undefined,
+        status: status || undefined,
+        admissionDate: admissionDate ? new Date(admissionDate) : undefined,
+        gender: gender || undefined,
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+        studentEmail: studentEmail || undefined,
+        studentPhone: studentPhone || undefined,
+        address: address || undefined,
+        bloodGroup: bloodGroup || undefined,
+        genotype: genotype || undefined,
+        medicalNotes: medicalNotes || undefined,
+        previousSchool: previousSchool || undefined,
+        previousClass: previousClass || undefined,
+        admissionNo: updateAdmissionNo,
         photoUrl,
       },
       include: {
@@ -3697,45 +3087,6 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
         guardians: { include: { guardian: true } },
       },
     });
-
-    const guardianLink = existingPupil.guardians?.[0] ?? (updatedPupil.guardians?.[0] ?? null);
-    const existingGuardian = guardianLink?.guardian ?? null;
-
-    if (existingGuardian && (normalizedGuardianProfile.firstName || normalizedGuardianProfile.lastName || normalizedGuardianProfile.phone || normalizedGuardianProfile.altPhone || normalizedGuardianProfile.email || normalizedGuardianProfile.occupation)) {
-      await prisma.guardian.update({
-        where: { id: existingGuardian.id },
-        data: {
-          firstName: normalizedGuardianProfile.firstName ?? existingGuardian.firstName,
-          lastName: normalizedGuardianProfile.lastName ?? existingGuardian.lastName,
-          phone: normalizedGuardianProfile.phone ?? existingGuardian.phone,
-          whatsapp: normalizedGuardianProfile.phone ?? existingGuardian.whatsapp ?? existingGuardian.phone ?? null,
-          altPhone: normalizedGuardianProfile.altPhone ?? existingGuardian.altPhone ?? null,
-          email: normalizedGuardianProfile.email ?? existingGuardian.email ?? null,
-          occupation: normalizedGuardianProfile.occupation ?? existingGuardian.occupation ?? null,
-        },
-      });
-    } else if (normalizedGuardianProfile.firstName && normalizedGuardianProfile.lastName) {
-      const guardian = await prisma.guardian.create({
-        data: {
-          schoolId,
-          firstName: normalizedGuardianProfile.firstName,
-          lastName: normalizedGuardianProfile.lastName,
-          phone: normalizedGuardianProfile.phone || '',
-          whatsapp: normalizedGuardianProfile.phone || null,
-          altPhone: normalizedGuardianProfile.altPhone ?? null,
-          email: normalizedGuardianProfile.email ?? null,
-          occupation: normalizedGuardianProfile.occupation ?? null,
-        },
-      });
-
-      await prisma.guardianPupil.create({
-        data: {
-          guardianId: guardian.id,
-          pupilId: id,
-          relation: guardianRelationship || 'Parent',
-        },
-      });
-    }
 
     res.json(updatedPupil);
   } catch (error) {
@@ -4146,45 +3497,13 @@ router.get('/website/data', async (req: Request, res: Response) => {
 
     const announcements = await prisma.announcement.findMany({
       where: { schoolId },
-      orderBy: [{ publishedAt: 'desc' }, { createdAt: 'desc' }],
-      include: {
-        term: { include: { academicYear: true } },
-        academicYear: true,
-      },
+      orderBy: { publishedAt: 'desc' },
     });
 
     res.json({ announcements });
   } catch (error) {
     console.error('Error fetching website data:', error);
     res.status(500).json({ error: 'Failed to fetch website data' });
-  }
-});
-
-router.post('/support/upload', parseSupportUpload, async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) {
-      const uploadedFiles = Array.isArray(req.files) ? req.files : [];
-      uploadedFiles.forEach((file: any) => fs.unlink(file.path, () => {}));
-      return res.status(401).json({ error: 'School session required' });
-    }
-
-    const files = Array.isArray(req.files) ? req.files : [];
-    const forwardedProto = String(req.get('x-forwarded-proto') || req.protocol).split(',')[0].trim();
-    const publicBaseUrl = process.env.PUBLIC_API_URL || `${forwardedProto === 'https' || process.env.NODE_ENV === 'production' ? 'https' : 'http'}://${req.get('host')}`;
-    const attachments = files.map((file: any) => ({
-      id: `local-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-      fileName: file.filename,
-      originalName: file.originalname,
-      mimeType: file.mimetype,
-      size: file.size,
-      url: `${publicBaseUrl}/uploads/support/${file.filename}`,
-    }));
-
-    res.json({ attachments });
-  } catch (error) {
-    console.error('Error uploading support files:', error);
-    res.status(500).json({ error: 'Failed to upload support files' });
   }
 });
 
@@ -4197,13 +3516,7 @@ router.get('/support/data', async (req: Request, res: Response) => {
     const supportRequests = await prisma.supportRequest.findMany({
       where: { schoolId },
       orderBy: { createdAt: 'desc' },
-      include: {
-        messages: {
-          orderBy: { createdAt: 'asc' },
-          include: { attachments: { orderBy: { createdAt: 'asc' } } },
-        },
-        attachments: { orderBy: { createdAt: 'asc' } },
-      } as any,
+      include: { messages: { orderBy: { createdAt: 'asc' } } } as any,
     });
 
     const school = await prisma.school.findUnique({ where: { id: schoolId } });
@@ -4224,15 +3537,6 @@ router.get('/support/data', async (req: Request, res: Response) => {
             senderEmail: message.senderEmail,
             body: message.body,
             createdAt: message.createdAt.toISOString(),
-            attachments: ((message.attachments || []) as any[]).map((attachment: any) => ({
-              id: attachment.id,
-              fileName: attachment.fileName,
-              originalName: attachment.originalName,
-              mimeType: attachment.mimeType,
-              size: attachment.size,
-              url: attachment.url,
-              createdAt: attachment.createdAt.toISOString(),
-            })),
           };
         });
 
@@ -4257,15 +3561,6 @@ router.get('/support/data', async (req: Request, res: Response) => {
           createdAt: request.createdAt.toISOString(),
           updatedAt: request.updatedAt.toISOString(),
           messages,
-          attachments: ((request as any).attachments || []).map((attachment: any) => ({
-            id: attachment.id,
-            fileName: attachment.fileName,
-            originalName: attachment.originalName,
-            mimeType: attachment.mimeType,
-            size: attachment.size,
-            url: attachment.url,
-            createdAt: attachment.createdAt.toISOString(),
-          })),
           school: {
             id: schoolId,
             name: school?.name,
@@ -4286,13 +3581,11 @@ router.post('/support', async (req: Request, res: Response) => {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
-    const { subject, message, priority = 'MEDIUM', attachments = [] } = req.body;
+    const { subject, message, priority = 'MEDIUM' } = req.body;
 
-    if (!subject || (!message && (!Array.isArray(attachments) || attachments.length === 0))) {
-      return res.status(400).json({ error: 'Add a message or attach a file before submitting' });
+    if (!subject || !message) {
+      return res.status(400).json({ error: 'Subject and message are required' });
     }
-
-    const supportMessage = message || 'Attachment included.';
 
     const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { id: true, name: true, country: true } });
 
@@ -4301,13 +3594,13 @@ router.post('/support', async (req: Request, res: Response) => {
         data: {
           schoolId,
           subject,
-          message: supportMessage,
+          message,
           priority,
           status: 'OPEN',
         },
       });
 
-      const createdMessage = await tx.supportRequestMessage.create({
+      await tx.supportRequestMessage.create({
         data: {
           supportRequestId: createdRequest.id,
           senderRole: 'SCHOOL',
@@ -4317,64 +3610,27 @@ router.post('/support', async (req: Request, res: Response) => {
         },
       });
 
-      if (Array.isArray(attachments) && attachments.length > 0) {
-        await tx.supportAttachment.createMany({
-          data: attachments.map((attachment: any) => ({
-            supportRequestId: createdRequest.id,
-            supportMessageId: createdMessage.id,
-            fileName: attachment.fileName || attachment.name || 'support-file',
-            originalName: attachment.originalName || attachment.name || 'support-file',
-            mimeType: attachment.mimeType || 'application/octet-stream',
-            size: Number(attachment.size || 0),
-            url: attachment.url,
-          })),
-        });
-      }
-
-      return { createdRequest, createdMessage };
+      return createdRequest;
     });
-
-    const persistedAttachments = await prisma.supportAttachment.findMany({
-      where: { supportRequestId: supportRequest.createdRequest.id },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    // Notify support team (non-blocking)
-    try {
-      const { sendSupportRequestNotification } = await import('../services/email.js');
-      sendSupportRequestNotification(
-        supportRequest.createdRequest.id,
-        supportRequest.createdRequest.subject,
-        supportRequest.createdRequest.message,
-        (school && school.name) || undefined,
-        school?.email,
-      )
-        .then(() => console.log('Support notification queued'))
-        .catch((err) => console.warn('Support notification failed (non-blocking):', err));
-    } catch (err) {
-      console.warn('Could not import email service to notify support:', err);
-    }
 
     res.status(201).json({ 
       supportRequest: {
-        id: supportRequest.createdRequest.id,
-        subject: supportRequest.createdRequest.subject,
-        message: supportRequest.createdRequest.message,
-        response: supportRequest.createdRequest.response,
-        status: supportRequest.createdRequest.status,
-        priority: supportRequest.createdRequest.priority,
-        createdAt: supportRequest.createdRequest.createdAt.toISOString(),
-        updatedAt: supportRequest.createdRequest.updatedAt.toISOString(),
+        id: supportRequest.id,
+        subject: supportRequest.subject,
+        message: supportRequest.message,
+        response: supportRequest.response,
+        status: supportRequest.status,
+        priority: supportRequest.priority,
+        createdAt: supportRequest.createdAt.toISOString(),
+        updatedAt: supportRequest.updatedAt.toISOString(),
         messages: [{
-          id: supportRequest.createdMessage.id,
+          id: `${supportRequest.id}-initial`,
           senderRole: 'SCHOOL',
           senderName: school?.name || 'School',
           senderEmail: null,
-          body: supportRequest.createdRequest.message,
-          createdAt: supportRequest.createdRequest.createdAt.toISOString(),
-          attachments: persistedAttachments,
+          body: supportRequest.message,
+          createdAt: supportRequest.createdAt.toISOString(),
         }],
-        attachments: persistedAttachments,
         school: school ? {
           id: school.id,
           name: school.name,
@@ -4395,13 +3651,11 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
-    const { requestId, response: responseText, attachments = [] } = req.body;
+    const { requestId, response: responseText } = req.body;
 
-    if (!requestId || (!responseText && (!Array.isArray(attachments) || attachments.length === 0))) {
-      return res.status(400).json({ error: 'Write a reply or attach a file before sending' });
+    if (!requestId || !responseText) {
+      return res.status(400).json({ error: 'Request ID and response are required' });
     }
-
-    const supportResponse = responseText || 'Attachment included.';
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
@@ -4421,57 +3675,27 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
       await tx.supportRequest.update({
         where: { id: requestId },
         data: {
-          response: supportResponse,
+          response: responseText,
           status: 'IN_PROGRESS',
           updatedAt: new Date(),
         },
       });
 
-      const createdMessage = await tx.supportRequestMessage.create({
+      await tx.supportRequestMessage.create({
         data: {
           supportRequestId: requestId,
           senderRole: 'SCHOOL',
           senderName: school?.name || 'School',
           senderEmail: null,
-          body: supportResponse,
+          body: responseText,
         },
       });
 
-      if (Array.isArray(attachments) && attachments.length > 0) {
-        await tx.supportAttachment.createMany({
-          data: attachments.map((attachment: any) => ({
-            supportRequestId: requestId,
-            supportMessageId: createdMessage.id,
-            fileName: attachment.fileName || attachment.name || 'support-file',
-            originalName: attachment.originalName || attachment.name || 'support-file',
-            mimeType: attachment.mimeType || 'application/octet-stream',
-            size: Number(attachment.size || 0),
-            url: attachment.url,
-          })),
-        });
-      }
-
       return tx.supportRequest.findUniqueOrThrow({
         where: { id: requestId },
-        include: {
-          messages: {
-            orderBy: { createdAt: 'asc' },
-            include: { attachments: { orderBy: { createdAt: 'asc' } } },
-          },
-          attachments: { orderBy: { createdAt: 'asc' } },
-        } as any,
+        include: { messages: { orderBy: { createdAt: 'asc' } } } as any,
       });
     });
-
-    // Notify support team about the follow-up message (non-blocking)
-    try {
-      const { sendSupportFollowupNotification } = await import('../services/email.js');
-      sendSupportFollowupNotification(requestId, supportResponse, (school && school.name) || undefined, school?.email)
-        .then(() => console.log('Support followup notification queued'))
-        .catch((err) => console.warn('Support followup notification failed (non-blocking):', err));
-    } catch (err) {
-      console.warn('Could not import email service to notify support of followup:', err);
-    }
 
     const messages = ((updated.messages || []).map((message: any) => {
       const isSchoolMessage = message.senderRole === 'SCHOOL';
@@ -4487,15 +3711,6 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
         senderEmail: message.senderEmail,
         body: message.body,
         createdAt: message.createdAt.toISOString(),
-        attachments: ((message.attachments || []) as any[]).map((attachment: any) => ({
-          id: attachment.id,
-          fileName: attachment.fileName,
-          originalName: attachment.originalName,
-          mimeType: attachment.mimeType,
-          size: attachment.size,
-          url: attachment.url,
-          createdAt: attachment.createdAt.toISOString(),
-        })),
       };
     }));
 
@@ -4510,15 +3725,6 @@ router.patch('/support/reply', async (req: Request, res: Response) => {
         createdAt: updated.createdAt.toISOString(),
         updatedAt: updated.updatedAt.toISOString(),
         messages,
-        attachments: ((updated.attachments || []) as any[]).map((attachment: any) => ({
-          id: attachment.id,
-          fileName: attachment.fileName,
-          originalName: attachment.originalName,
-          mimeType: attachment.mimeType,
-          size: attachment.size,
-          url: attachment.url,
-          createdAt: attachment.createdAt.toISOString(),
-        })),
         school: null,
       },
       message: 'Reply sent successfully'
@@ -4754,88 +3960,11 @@ router.get('/communications/rules', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      rules: await communicationRulesRegistry.loadRules(schoolId),
+      rules: communicationRulesRegistry.getRules(schoolId),
     });
   } catch (error) {
     console.error('Error fetching communication rules:', error);
     res.status(500).json({ error: 'Failed to fetch communication rules' });
-  }
-});
-
-// GET /api/admin/communications/whatsapp-policy - Get school WhatsApp policy
-router.get('/communications/whatsapp-policy', async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
-
-    const policy = await prisma.whatsAppPolicy.findUnique({ where: { schoolId } });
-    const fallback = getDefaultWhatsAppPolicyRecord(schoolId);
-
-    res.json({
-      success: true,
-      policy: policy
-        ? {
-            ...fallback,
-            ...policy,
-            updatedAt: policy.updatedAt,
-          }
-        : fallback,
-    });
-  } catch (error) {
-    console.error('Error fetching WhatsApp policy:', error);
-    res.status(500).json({ error: 'Failed to fetch WhatsApp policy' });
-  }
-});
-
-// PUT /api/admin/communications/whatsapp-policy - Update school WhatsApp policy
-router.put('/communications/whatsapp-policy', requireSubscription, async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
-
-    const payload = req.body as Record<string, unknown>;
-    const current = await prisma.whatsAppPolicy.upsert({
-      where: { schoolId },
-      create: {
-        schoolId,
-        enabled: Boolean(payload.enabled ?? true),
-        messagesPerMinute: Number(payload.messagesPerMinute ?? 10),
-        messagesPerHour: Number(payload.messagesPerHour ?? 100),
-        messagesPerDay: Number(payload.messagesPerDay ?? 300),
-        batchSize: Number(payload.batchSize ?? 25),
-        batchCooldownSeconds: Number(payload.batchCooldownSeconds ?? 120),
-        quietHoursStart: String(payload.quietHoursStart ?? '21:00'),
-        quietHoursEnd: String(payload.quietHoursEnd ?? '07:00'),
-        requireApprovalForBulk: Boolean(payload.requireApprovalForBulk ?? true),
-        allowAutomaticRetries: Boolean(payload.allowAutomaticRetries ?? true),
-        timezone: String(payload.timezone ?? 'Africa/Lagos'),
-      },
-      update: {
-        enabled: Boolean(payload.enabled ?? true),
-        messagesPerMinute: Number(payload.messagesPerMinute ?? 10),
-        messagesPerHour: Number(payload.messagesPerHour ?? 100),
-        messagesPerDay: Number(payload.messagesPerDay ?? 300),
-        batchSize: Number(payload.batchSize ?? 25),
-        batchCooldownSeconds: Number(payload.batchCooldownSeconds ?? 120),
-        quietHoursStart: String(payload.quietHoursStart ?? '21:00'),
-        quietHoursEnd: String(payload.quietHoursEnd ?? '07:00'),
-        requireApprovalForBulk: Boolean(payload.requireApprovalForBulk ?? true),
-        allowAutomaticRetries: Boolean(payload.allowAutomaticRetries ?? true),
-        timezone: String(payload.timezone ?? 'Africa/Lagos'),
-      },
-    });
-
-    res.json({
-      success: true,
-      policy: {
-        ...getDefaultWhatsAppPolicyRecord(schoolId),
-        ...current,
-        updatedAt: current.updatedAt,
-      },
-    });
-  } catch (error) {
-    console.error('Error updating WhatsApp policy:', error);
-    res.status(500).json({ error: 'Failed to update WhatsApp policy' });
   }
 });
 
@@ -4850,8 +3979,8 @@ router.put('/communications/rules', requireSubscription, async (req: Request, re
       return res.status(400).json({ error: 'event and enabled are required' });
     }
 
-    await communicationRulesRegistry.setRuleEnabled(schoolId, event, enabled);
-    res.json({ success: true, rules: await communicationRulesRegistry.loadRules(schoolId) });
+    communicationRulesRegistry.setRuleEnabled(schoolId, event, enabled);
+    res.json({ success: true, rules: communicationRulesRegistry.getRules(schoolId) });
   } catch (error) {
     console.error('Error updating communication rules:', error);
     res.status(500).json({ error: 'Failed to update communication rules' });
@@ -4869,7 +3998,7 @@ router.get('/whatsapp/data', async (req: Request, res: Response) => {
       successCount: 0,
       failureCount: 0,
       session: baileysSessionManager.getStatus(schoolId),
-      queue: sharedDeliveryQueue.getQueueSummary(schoolId),
+      queue: sharedDeliveryQueue.getQueueSummary(),
     });
   } catch (error) {
     console.error('Error fetching whatsapp data:', error);
@@ -4894,51 +4023,10 @@ router.post('/whatsapp/connect', requireSubscription, async (req: Request, res: 
 // GET /api/admin/whatsapp/queue - Get pending WhatsApp delivery retry queue
 router.get('/whatsapp/queue', requireSubscription, async (req: Request, res: Response) => {
   try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
-    res.json({ success: true, queue: sharedDeliveryQueue.getQueueSummary(schoolId) });
+    res.json({ success: true, queue: sharedDeliveryQueue.getQueueSummary() });
   } catch (error) {
     console.error('Error fetching whatsapp queue:', error);
     res.status(500).json({ error: 'Failed to fetch WhatsApp queue' });
-  }
-});
-
-// GET /api/admin/whatsapp/deliveries - Durable school-scoped WhatsApp delivery history
-router.get('/whatsapp/deliveries', requireSubscription, async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
-
-    const requestedLimit = Number(req.query.limit ?? 50);
-    const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 200) : 50;
-    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
-
-    const deliveries = await prisma.whatsAppDelivery.findMany({
-      where: { schoolId, ...(status ? { status } : {}) },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      select: {
-        id: true,
-        event: true,
-        recipientAddress: true,
-        recipientName: true,
-        messagePreview: true,
-        status: true,
-        provider: true,
-        providerMessageId: true,
-        attemptCount: true,
-        sentAt: true,
-        nextAttemptAt: true,
-        lastError: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
-
-    res.json({ success: true, deliveries });
-  } catch (error) {
-    console.error('Error fetching WhatsApp delivery history:', error);
-    res.status(500).json({ error: 'Failed to fetch WhatsApp delivery history' });
   }
 });
 
@@ -5591,7 +4679,7 @@ router.get('/results/historical-totals', async (req: Request, res: Response) => 
 // POST /api/admin/results/historical-totals - Save or update a historical term total
 router.post('/results/historical-totals', requireSubscription, async (req: Request, res: Response) => {
   try {
-    const schoolId = (await resolveSchoolId(req)) || (req as any).user?.schoolId || (req.body as any)?.schoolId || (req.headers['x-school-id'] as string | undefined);
+    const schoolId = await resolveSchoolId(req);
     const entries = Array.isArray(req.body) ? req.body : [req.body];
     const createdBy = (req as any).user?.id || 'SYSTEM';
 
@@ -5603,7 +4691,6 @@ router.post('/results/historical-totals', requireSubscription, async (req: Reque
 
     for (const entry of entries) {
       const { academicYearId, termId, classId, studentId, subjectId, subject, totalScore } = entry;
-      const entrySchoolId = entry.schoolId || schoolId;
 
       if (!academicYearId || !termId || !classId || !studentId || totalScore === undefined) {
         return res.status(400).json({ error: 'Missing required fields for one or more entries' });
@@ -5611,7 +4698,7 @@ router.post('/results/historical-totals', requireSubscription, async (req: Reque
 
       const existing = await (prisma as any).historicalTermTotal.findFirst({
         where: {
-          schoolId: entrySchoolId,
+          schoolId,
           academicYearId,
           termId,
           classId,
@@ -5631,7 +4718,7 @@ router.post('/results/historical-totals', requireSubscription, async (req: Reque
           })
         : await (prisma as any).historicalTermTotal.create({
             data: {
-              schoolId: entrySchoolId,
+              schoolId,
               academicYearId,
               termId,
               classId,
@@ -5739,117 +4826,6 @@ router.post('/assessments/:id/publish', requireSubscription, async (req: Request
       where: { id, schoolId },
       include: { _count: { select: { results: true } } },
     });
-
-    if (updated) {
-      const assessmentWithDetails = await prisma.assessment.findFirst({
-        where: { id, schoolId },
-        include: {
-          term: { select: { name: true } },
-          results: {
-            select: { pupilId: true },
-          },
-        },
-      });
-
-      if (assessmentWithDetails) {
-        const pupilIds = [...new Set(assessmentWithDetails.results.map((result: any) => result.pupilId))];
-        const pupils = await prisma.pupil.findMany({
-          where: { id: { in: pupilIds } },
-          include: {
-            guardians: { include: { guardian: true } },
-          },
-        });
-
-        const school = await prisma.school.findUnique({
-          where: { id: schoolId },
-          select: { name: true, logoUrl: true },
-        });
-
-        const communicationService = createCommunicationService();
-        const resultsUrl = resolvePublicResultsUrl(`${process.env.FRONTEND_URL || 'https://www.schoolbase.live'}/results/check`);
-        const rules = await communicationRulesRegistry.loadRules(schoolId);
-        const shouldSendResultsNotification = rules.ResultsPublished?.enabled !== false;
-
-        if (shouldSendResultsNotification) {
-          for (const pupil of pupils) {
-            const pupilName = `${pupil.firstName} ${pupil.lastName}`;
-
-            const guardianTargets = resolveGuardianNotificationTargets(
-              pupil.guardians.map((entry) => ({ guardian: entry.guardian })),
-            );
-
-            for (const target of guardianTargets) {
-              const guardian = target.guardian;
-              const recipients = target.recipients;
-
-              if (recipients.length === 0) {
-                continue;
-              }
-
-              const message = buildResultsPublishedWhatsAppMessage({
-                guardianName: guardian.firstName || 'Guardian',
-                pupilName,
-                assessmentName: updated.name || 'Assessment Results',
-                termName: assessmentWithDetails.term?.name || 'Current Term',
-                schoolName: school?.name || 'SchoolBase',
-                resultsUrl,
-              });
-
-              try {
-                const dispatchResult = await communicationService.dispatch({
-                  event: 'ResultsPublished',
-                  schoolId,
-                  recipients,
-                  template: 'Results',
-                  subject: 'Results Published',
-                  body: message,
-                  data: {
-                    studentName: pupilName,
-                    assessmentName: updated.name || 'Assessment Results',
-                    termName: assessmentWithDetails.term?.name || 'Current Term',
-                    schoolName: school?.name || 'SchoolBase',
-                    recipientName: guardian.firstName || 'Guardian',
-                    resultsUrl,
-                  },
-                  metadata: {
-                    studentName: pupilName,
-                    assessmentName: updated.name || 'Assessment Results',
-                    termName: assessmentWithDetails.term?.name || 'Current Term',
-                    schoolName: school?.name || 'SchoolBase',
-                    recipientName: guardian.firstName || 'Guardian',
-                    schoolLogoUrl: school?.logoUrl || undefined,
-                    resultsUrl,
-                    logoUrl: school?.logoUrl || undefined,
-                    guardianId: guardian.id,
-                  },
-                });
-
-                for (const delivery of dispatchResult.deliveries) {
-                  const status = delivery.status === 'SENT' ? 'SENT' : delivery.status === 'QUEUED' ? 'PENDING' : 'FAILED';
-                  await prisma.notification.create({
-                    data: {
-                      schoolId,
-                      guardianId: guardian.id,
-                      type: 'RESULTS_PUBLISHED',
-                      title: 'Results Published',
-                      body: truncateNotificationBody(message),
-                      channel: delivery.channel,
-                      status,
-                      sentAt: delivery.status === 'SENT' || delivery.status === 'QUEUED' ? new Date() : undefined,
-                      failureReason: delivery.error,
-                      relatedId: updated.id,
-                      reference: updated.id,
-                    },
-                  });
-                }
-              } catch (dispatchError) {
-                console.error(`Failed to dispatch results published notification for guardian ${guardian.id}:`, dispatchError);
-              }
-            }
-          }
-        }
-      }
-    }
 
     res.json({
       success: true,
@@ -6648,15 +5624,13 @@ router.post('/request-password-reset', async (req: Request, res: Response) => {
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-    const resetId = `${user.id}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-    passwordResetStore.set(resetId, {
-      id: resetId,
-      userId: user.id,
-      tokenHash,
-      expiresAt,
-      attempts: 0,
-      usedAt: null,
-      createdAt: new Date(),
+    // Save to database
+    await prisma.passwordReset.create({
+      data: {
+        userId: user.id,
+        tokenHash,
+        expiresAt,
+      },
     });
 
     // Send email
@@ -6694,8 +5668,13 @@ router.post('/reset-password', async (req: Request, res: Response) => {
 
     // Find valid reset token
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-    const resetRecord = Array.from(passwordResetStore.values()).find((entry) => {
-      return entry.userId === user.id && entry.tokenHash === tokenHash && entry.expiresAt > new Date() && !entry.usedAt;
+    const resetRecord = await prisma.passwordReset.findFirst({
+      where: {
+        userId: user.id,
+        tokenHash,
+        expiresAt: { gt: new Date() },
+        usedAt: null,
+      },
     });
 
     if (!resetRecord) {
@@ -6711,13 +5690,16 @@ router.post('/reset-password', async (req: Request, res: Response) => {
     const passwordHash = await bcrypt.hash(password, 10);
 
     // Update user and mark token as used
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { passwordHash },
-    });
-
-    resetRecord.usedAt = new Date();
-    passwordResetStore.set(resetRecord.id, { ...resetRecord });
+    await Promise.all([
+      prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash },
+      }),
+      prisma.passwordReset.update({
+        where: { id: resetRecord.id },
+        data: { usedAt: new Date() },
+      }),
+    ]);
 
     res.json({ success: true, message: 'Password reset successful' });
   } catch (error) {
@@ -6738,10 +5720,6 @@ router.get('/announcements', async (req: Request, res: Response) => {
       where: { schoolId },
       orderBy: { publishedAt: 'desc' },
       take: 5,
-      include: {
-        term: { include: { academicYear: true } },
-        academicYear: true,
-      },
     });
 
     res.json({ announcements });
@@ -6751,7 +5729,7 @@ router.get('/announcements', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/admin/announcements - Create a new announcement
+// POST /api/admin/announcements - Create new announcement
 router.post('/announcements', async (req: Request, res: Response) => {
   try {
     const schoolId = await resolveSchoolId(req);
@@ -6759,50 +5737,10 @@ router.post('/announcements', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const { title, body, publish, academicYearId, termId, bulkApproval } = req.body;
+    const { title, body, publish } = req.body;
 
     if (!title || !body) {
       return res.status(400).json({ error: 'Title and body are required' });
-    }
-
-    if (publish === true || publish === 'true') {
-      const bulkRecipientCount = await prisma.guardian.count({
-        where: { schoolId, pupils: { some: { pupil: { schoolId } } } },
-      });
-      const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
-      const policyEvaluation = evaluateSchoolWhatsAppSend(policy, {
-        recipientCount: bulkRecipientCount,
-        approvedForBulk: bulkApproval === true || bulkApproval === 'true',
-        now: new Date(),
-        timezone: policy.timezone,
-      });
-      if (!policyEvaluation.allowed) {
-        return res.status(409).json({ error: policyEvaluation.reason || 'Announcement WhatsApp delivery is blocked by school policy' });
-      }
-    }
-
-    let resolvedAcademicYearId: string | undefined = undefined;
-    let resolvedTermId: string | undefined = undefined;
-
-    if (termId) {
-      const term = await prisma.term.findUnique({
-        where: { id: String(termId) },
-        select: { id: true, academicYearId: true },
-      });
-      if (!term) {
-        return res.status(400).json({ error: 'Invalid term selected' });
-      }
-      resolvedTermId = term.id;
-      resolvedAcademicYearId = term.academicYearId;
-    } else if (academicYearId) {
-      const academicYear = await prisma.academicYear.findUnique({
-        where: { id: String(academicYearId) },
-        select: { id: true },
-      });
-      if (!academicYear) {
-        return res.status(400).json({ error: 'Invalid session selected' });
-      }
-      resolvedAcademicYearId = academicYear.id;
     }
 
     const announcement = await prisma.announcement.create({
@@ -6811,9 +5749,7 @@ router.post('/announcements', async (req: Request, res: Response) => {
         title,
         body,
         published: publish === true || publish === 'true',
-        publishedAt: publish === true || publish === 'true' ? new Date() : null,
-        academicYearId: resolvedAcademicYearId,
-        termId: resolvedTermId,
+        publishedAt: (publish === true || publish === 'true') ? new Date() : null,
       },
     });
 
@@ -6919,12 +5855,12 @@ router.post('/announcements', async (req: Request, res: Response) => {
       }
     }
 
-    res.status(201).json({
-      success: true,
+    res.status(201).json({ 
+      success: true, 
       announcement,
       sentCount,
       errors: errors.length > 0 ? errors : undefined,
-      message: 'Announcement created successfully',
+      message: 'Announcement created successfully' 
     });
   } catch (error) {
     console.error('Error creating announcement:', error);
@@ -7972,293 +6908,6 @@ router.get('/subscription/status', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching subscription status:', error);
     res.status(500).json({ error: 'Failed to fetch subscription status' });
-  }
-});
-
-router.get('/admissions', async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) {
-      return res.status(401).json({ error: 'School context is required' });
-    }
-
-    const applications = await prisma.admissionApplication.findMany({
-      where: { schoolId },
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        applicationNumber: true,
-        status: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        phone: true,
-        studentFirstName: true,
-        studentMiddleName: true,
-        studentLastName: true,
-        studentEmail: true,
-        studentPhone: true,
-        gender: true,
-        dateOfBirth: true,
-        admissionDate: true,
-        intendedClass: true,
-        address: true,
-        bloodGroup: true,
-        genotype: true,
-        medicalNotes: true,
-        previousSchool: true,
-        previousClass: true,
-        guardianFirst: true,
-        guardianLast: true,
-        guardianRelationship: true,
-        guardianEmail: true,
-        guardianPhone: true,
-        guardianAltPhone: true,
-        guardianOccupation: true,
-        note: true,
-        photoUrl: true,
-        parentName: true,
-        childName: true,
-        studentId: true,
-        reviewedAt: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
-
-    res.json({
-      ok: true,
-      applications: applications.map((application) => ({
-        ...application,
-        applicantName: `${application.firstName} ${application.lastName}`.trim(),
-        status: normalizeAdmissionStatus(application.status),
-      })),
-    });
-  } catch (error) {
-    console.error('Error fetching admissions applications:', error);
-    res.status(500).json({ error: 'Failed to fetch admissions applications' });
-  }
-});
-
-router.patch('/admissions/:id/status', async (req: Request, res: Response) => {
-  try {
-    const schoolId = await resolveSchoolId(req);
-    if (!schoolId) {
-      return res.status(401).json({ error: 'School context is required' });
-    }
-
-    const applicationId = String(req.params.id ?? '').trim();
-    const nextStatus = normalizeAdmissionStatus(req.body?.status);
-
-    if (!applicationId) {
-      return res.status(400).json({ error: 'Application id is required' });
-    }
-
-    const application = await prisma.admissionApplication.findFirst({
-      where: { id: applicationId, schoolId },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        phone: true,
-        childName: true,
-        intendedClass: true,
-        guardianEmail: true,
-        status: true,
-      },
-    });
-
-    if (!application) {
-      return res.status(404).json({ error: 'Admission application not found' });
-    }
-
-    const updatedApplication = await prisma.admissionApplication.updateMany({
-      where: { id: applicationId, schoolId },
-      data: {
-        status: nextStatus,
-        reviewedAt: new Date(),
-      },
-    });
-
-    if (updatedApplication.count === 0) {
-      return res.status(404).json({ error: 'Admission application not found' });
-    }
-
-    try {
-      const school = await prisma.school.findUnique({
-        where: { id: schoolId },
-        select: { id: true, name: true },
-      });
-
-      if (school) {
-        await notifyApplicantOnAdmissionStatusChange(
-          { ...application, status: nextStatus },
-          school,
-        );
-      }
-    } catch (notificationError) {
-      console.warn('Failed to send admission status notification:', notificationError);
-    }
-
-    const refreshedApplication = await prisma.admissionApplication.findFirst({
-      where: { id: applicationId, schoolId },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        phone: true,
-        childName: true,
-        dateOfBirth: true,
-        intendedClass: true,
-        parentName: true,
-        note: true,
-        status: true,
-        reviewedAt: true,
-        createdAt: true,
-        updatedAt: true,
-        studentFirstName: true,
-        studentMiddleName: true,
-        studentLastName: true,
-        studentEmail: true,
-        studentPhone: true,
-        gender: true,
-        admissionDate: true,
-        address: true,
-        bloodGroup: true,
-        genotype: true,
-        medicalNotes: true,
-        previousSchool: true,
-        previousClass: true,
-        photoUrl: true,
-        guardianFirst: true,
-        guardianLast: true,
-        guardianRelationship: true,
-        guardianEmail: true,
-        guardianPhone: true,
-        guardianAltPhone: true,
-        guardianOccupation: true,
-        studentId: true,
-      },
-    });
-
-    let studentCreationError: string | null = null;
-    let createdStudent: any = null;
-
-    if (application && nextStatus === 'APPROVED' && !application.studentId) {
-      try {
-        let resolvedClassId: string | null = null;
-        if (application.intendedClass) {
-          const intendedClassName = application.intendedClass.trim().toLowerCase();
-          const schoolClasses = await prisma.class.findMany({
-            where: { schoolId },
-            select: { id: true, name: true },
-          });
-
-          const matchedClass = schoolClasses.find((classItem) => {
-            const className = (classItem.name || '').toLowerCase();
-            return className === intendedClassName || className.includes(intendedClassName);
-          });
-
-          resolvedClassId = matchedClass?.id ?? null;
-        }
-
-        const studentFirstName = (application.studentFirstName || application.firstName || '').toString().trim();
-        const studentLastName = (application.studentLastName || application.lastName || '').toString().trim();
-        const childNameParts = (application.childName || '').toString().trim().split(/\s+/).filter(Boolean);
-        const derivedFirstName = childNameParts[0] || studentFirstName || 'Student';
-        const derivedLastName = childNameParts.slice(1).join(' ') || studentLastName || 'Student';
-        const nextAdmissionNo = await getNextAdmissionNumberForSchool(schoolId);
-
-        const pupil = await prisma.pupil.create({
-          data: {
-            schoolId,
-            firstName: studentFirstName || derivedFirstName,
-            lastName: studentLastName || derivedLastName,
-            middleName: application.studentMiddleName ?? null,
-            admissionNo: nextAdmissionNo,
-            classId: resolvedClassId,
-            status: 'ACTIVE',
-            isActive: true,
-            admissionDate: application.admissionDate ?? new Date(),
-            gender: application.gender ?? undefined,
-            dateOfBirth: application.dateOfBirth ?? null,
-            studentEmail: application.studentEmail ?? null,
-            studentPhone: application.studentPhone ?? null,
-            address: application.address ?? null,
-            bloodGroup: application.bloodGroup ?? null,
-            genotype: application.genotype ?? null,
-            medicalNotes: application.medicalNotes ?? null,
-            previousSchool: application.previousSchool ?? null,
-            previousClass: application.previousClass ?? null,
-            photoUrl: application.photoUrl ?? null,
-          },
-        });
-
-        createdStudent = pupil;
-
-        await prisma.admissionApplication.update({
-          where: { id: application.id },
-          data: { studentId: pupil.id },
-        });
-
-        if (application.guardianFirst && application.guardianLast) {
-          const existingGuardian = await prisma.guardian.findFirst({
-            where: {
-              schoolId,
-              OR: [
-                { phone: application.guardianPhone || '' },
-                { email: application.guardianEmail ?? undefined },
-              ],
-            },
-            select: { id: true },
-          });
-
-          const guardian = existingGuardian ?? await prisma.guardian.create({
-            data: {
-              schoolId,
-              firstName: application.guardianFirst,
-              lastName: application.guardianLast,
-              phone: application.guardianPhone || '',
-              altPhone: application.guardianAltPhone ?? null,
-              email: application.guardianEmail ?? null,
-              occupation: application.guardianOccupation ?? null,
-            },
-          });
-
-          await prisma.guardianPupil.upsert({
-            where: {
-              guardianId_pupilId: {
-                guardianId: guardian.id,
-                pupilId: pupil.id,
-              },
-            },
-            update: {
-              relation: application.guardianRelationship || 'Parent',
-            },
-            create: {
-              guardianId: guardian.id,
-              pupilId: pupil.id,
-              relation: application.guardianRelationship || 'Parent',
-            },
-          });
-        }
-      } catch (createError) {
-        console.error('Error auto-creating student from approved admission:', createError);
-        studentCreationError = (createError as Error).message || 'Failed to auto-create student';
-      }
-    }
-
-    res.json({
-      ok: true,
-      application: application ? { ...application, applicantName: `${application.firstName} ${application.lastName}`.trim(), status: normalizeAdmissionStatus(application.status) } : null,
-      student: createdStudent ? { id: createdStudent.id, admissionNo: createdStudent.admissionNo, classId: createdStudent.classId } : null,
-      studentCreationError,
-    });
-  } catch (error) {
-    console.error('Error updating admissions application status:', error);
-    res.status(500).json({ error: 'Failed to update admissions application status' });
   }
 });
 

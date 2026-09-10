@@ -739,6 +739,7 @@ router.get('/email-logs', async (req: Request, res: Response) => {
       'MANUAL_ANNOUNCEMENT',
       'POLICY_UPDATE',
       'ACCOUNT_SECURITY',
+      'ACCOUNT_VERIFICATION_SUSPENSION',
     ];
 
     const where: any = {};
@@ -1880,7 +1881,7 @@ router.post('/campaigns/send', async (req: Request, res: Response) => {
       'CONSULTANT_PARTNERSHIP', 'SCHOOL_PARTNERSHIP_INTRODUCTION', 'PARTNERSHIP_FOLLOW_UP',
       'PRODUCT_UPDATE', 'PRICE_UPDATE', 'SUBSCRIPTION_THANK_YOU', 'SUPPORT_UPDATE',
       'ONBOARDING_GUIDANCE', 'BEST_PRACTICE_TIP', 'MANUAL_ANNOUNCEMENT',
-      'POLICY_UPDATE', 'ACCOUNT_SECURITY',
+      'POLICY_UPDATE', 'ACCOUNT_SECURITY', 'ACCOUNT_VERIFICATION_SUSPENSION',
     ]);
     const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 

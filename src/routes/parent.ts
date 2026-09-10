@@ -991,6 +991,12 @@ router.get('/school', async (req: Request, res: Response) => {
 
     const school = await prisma.school.findUnique({
       where: { id: data.schoolId },
+      include: {
+        paymentAccounts: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
+      },
     });
 
     if (!school) {
@@ -1015,6 +1021,7 @@ router.get('/school', async (req: Request, res: Response) => {
       termCount: school.termCount,
       logoUrl: school.logoUrl || '',
       principalComment: school.principalComment || '',
+      paymentAccounts: school.paymentAccounts,
     });
   } catch (error) {
     console.error('Error loading school:', error);
