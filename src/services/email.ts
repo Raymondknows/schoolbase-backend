@@ -946,6 +946,7 @@ export async function sendFeePaymentReceiptEmail(
   balance: string,
   schoolName: string,
   schoolLogo?: string,
+  itemBreakdown?: string,
 ) {
   try {
     if (!isValidEmail(email)) {
@@ -954,7 +955,8 @@ export async function sendFeePaymentReceiptEmail(
 
     const schoolLogoInline = await fetchInlineLogo(schoolLogo);
     const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
-    const textBody = `School Fee Payment Receipt - ${schoolName}\n\nHello ${guardianName},\n\nWe have received a payment of ${currency} ${amountPaid} for ${pupilName}.\n\nStudent: ${pupilName}\nClass: ${className}\nAmount Paid: ${currency} ${amountPaid}\nTotal Paid: ${currency} ${totalPaid}\nBalance: ${currency} ${balance}\n\nThank you for your prompt payment. If you have questions, please contact the school office.`;
+    const itemSection = itemBreakdown ? `\n\nFee item balances:\n${itemBreakdown}` : '';
+    const textBody = `School Fee Payment Receipt - ${schoolName}\n\nHello ${guardianName},\n\nWe have received a payment of ${currency} ${amountPaid} for ${pupilName}.\n\nStudent: ${pupilName}\nClass: ${className}\nAmount Paid: ${currency} ${amountPaid}\nTotal Paid: ${currency} ${totalPaid}\nBalance: ${currency} ${balance}${itemSection}\n\nThank you for your prompt payment. If you have questions, please contact the school office.`;
 
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
@@ -986,6 +988,7 @@ export async function sendFeePaymentReceiptEmail(
                   <p><strong>Total Paid:</strong> ${currency} ${totalPaid}</p>
                   <p><strong>Balance:</strong> ${currency} ${balance}</p>
                 </div>
+                ${itemBreakdown ? `<div class="info-box"><p><strong>Fee item balances:</strong></p><p style="white-space: pre-line;">${itemBreakdown}</p></div>` : ''}
                 <p>If you have any questions about this payment, please contact the school office.</p>
                 <div class="button-container">
                   <a href="https://schoolbase.live/parent/invoices" class="button">View Invoice Details</a>

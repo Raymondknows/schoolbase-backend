@@ -733,6 +733,7 @@ model InvoiceItem {
 
   invoice         Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   feeScheduleItem FeeScheduleItem? @relation(fields: [feeScheduleItemId], references: [id], onDelete: SetNull)
+  allocations     PaymentAllocation[]
 
   @@index([invoiceId])
   @@index([feeScheduleItemId])
@@ -787,8 +788,24 @@ model Payment {
   recordedBy String?
   note       String?
   invoice    Invoice?      @relation(fields: [invoiceId], references: [id])
+  allocations PaymentAllocation[]
 
   @@index([invoiceId], map: "Payment_invoiceId_fkey")
+}
+
+model PaymentAllocation {
+  id            String      @id @default(cuid())
+  paymentId     String
+  invoiceItemId String
+  amount        Int
+  createdAt     DateTime    @default(now())
+
+  payment     Payment     @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoiceItem InvoiceItem @relation(fields: [invoiceItemId], references: [id], onDelete: Cascade)
+
+  @@unique([paymentId, invoiceItemId])
+  @@index([paymentId])
+  @@index([invoiceItemId])
 }
 
 model PlatformPayment {

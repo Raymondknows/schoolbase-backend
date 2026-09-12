@@ -862,9 +862,15 @@ router.get('/invoices', async (req: Request, res: Response) => {
       where: {
         pupilId: { in: guardian.pupils.map((gp: any) => gp.pupil.id) },
       },
-      include: { 
+      include: {
         pupil: true,
         feeSchedule: true,
+        items: {
+          include: {
+            allocations: { select: { amount: true } },
+          },
+          orderBy: { createdAt: 'asc' },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -875,9 +881,39 @@ router.get('/invoices', async (req: Request, res: Response) => {
         childId: inv.pupilId,
         childName: `${inv.pupil.firstName} ${inv.pupil.lastName}`,
         amountDue: inv.amountDue,
+        amountPaid: inv.amountPaid,
         status: inv.status,
         dueDate: inv.dueDate,
         description: inv.feeSchedule?.name || 'School Fees',
+        items: (inv.items as Array<{
+          id: string;
+          name: string;
+          amount: number;
+          quantity: number;
+          description: string | null;
+          feeScheduleItemId: string | null;
+          allocations: Array<{ amount: number }>;
+        }>).map((item) => {
+          const amountPaid = item.allocations.reduce(
+            (sum, allocation) => sum + Number(allocation.amount || 0),
+            0,
+          );
+          const amountOutstanding = Math.max(
+            0,
+            Number(item.amount || 0) * Number(item.quantity || 1) - amountPaid,
+          );
+
+          return {
+            id: item.id,
+            name: item.name,
+            amount: item.amount,
+            quantity: item.quantity,
+            description: item.description,
+            feeScheduleItemId: item.feeScheduleItemId,
+            amountPaid,
+            amountOutstanding,
+          };
+        }),
       })),
     });
   } catch (error) {
@@ -1069,6 +1105,12 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
             term: { include: { academicYear: true } },
           },
         },
+        items: {
+          include: {
+            allocations: { select: { amount: true } },
+          },
+          orderBy: { createdAt: 'asc' },
+        },
         payments: {
           orderBy: { paidAt: 'desc' },
         },
@@ -1078,6 +1120,27 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
+
+    type ParentFeeAdjustment = {
+      id: string;
+      adjustmentType: string;
+      amount: number | null;
+      percentage: number | null;
+      reason: string | null;
+      status: string;
+      approvedBy: string | null;
+      createdAt: Date;
+    };
+    const feeAdjustmentDelegate = (prisma as any)['studentFeeAdjustment'] as {
+      findMany: (args: unknown) => Promise<ParentFeeAdjustment[]>;
+    };
+    const adjustments: ParentFeeAdjustment[] = await feeAdjustmentDelegate.findMany({
+      where: {
+        schoolId: data.schoolId,
+        invoiceId: invoice.id,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
 
     const school = await prisma.school.findUnique({
       where: { id: data.schoolId },
@@ -1092,6 +1155,9 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
         principalName: true,
         tagline: true,
         principalComment: true,
+        manualPaymentAccountName: true,
+        manualPaymentAccountNumber: true,
+        manualPaymentBankName: true,
         paymentAccounts: {
           where: { isActive: true },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
@@ -1099,18 +1165,70 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
       },
     });
 
+    const invoiceItems = invoice.items as Array<{
+      id: string;
+      name: string;
+      amount: number;
+      quantity: number;
+      description: string | null;
+      feeScheduleItemId: string | null;
+      allocations: Array<{ amount: number }>;
+    }>;
+    const subtotal = invoiceItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const totalAdjustments = adjustments.reduce((sum: number, adjustment: ParentFeeAdjustment) => {
+      if (adjustment.amount !== null && adjustment.amount !== undefined) {
+        return sum + Number(adjustment.amount);
+      }
+      if (adjustment.percentage !== null && adjustment.percentage !== undefined) {
+        return sum + Math.round((subtotal * Number(adjustment.percentage)) / 100);
+      }
+      return sum;
+    }, 0);
+
     res.json({
       invoice: {
         ...invoice,
         dueDate: invoice.dueDate ? invoice.dueDate.toISOString() : null,
         createdAt: invoice.createdAt.toISOString(),
         updatedAt: invoice.updatedAt.toISOString(),
+        items: invoiceItems.map((item) => {
+          const amountPaid = item.allocations.reduce(
+            (sum, allocation) => sum + Number(allocation.amount || 0),
+            0,
+          );
+
+          return {
+            id: item.id,
+            name: item.name,
+            amount: item.amount,
+            quantity: item.quantity,
+            description: item.description,
+            feeScheduleItemId: item.feeScheduleItemId,
+            amountPaid,
+            amountOutstanding: Math.max(
+              0,
+              Number(item.amount || 0) * Number(item.quantity || 1) - amountPaid,
+            ),
+          };
+        }),
+        adjustments: adjustments.map((adjustment: ParentFeeAdjustment) => ({
+          id: adjustment.id,
+          adjustmentType: adjustment.adjustmentType,
+          amount: adjustment.amount,
+          percentage: adjustment.percentage,
+          reason: adjustment.reason,
+          status: adjustment.status,
+          approvedBy: adjustment.approvedBy,
+          createdAt: adjustment.createdAt.toISOString(),
+        })),
         payments: invoice.payments.map((payment) => ({
           ...payment,
           paidAt: payment.paidAt.toISOString(),
         })),
       },
       school,
+      subtotal,
+      totalAdjustments,
       outstanding: Math.max(0, invoice.amountDue - invoice.amountPaid),
     });
   } catch (error) {
