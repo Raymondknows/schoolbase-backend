@@ -4176,6 +4176,10 @@ router.get('/website/data', async (req: Request, res: Response) => {
     const announcements = await prisma.announcement.findMany({
       where: { schoolId },
       orderBy: { publishedAt: 'desc' },
+      include: {
+        academicYear: true,
+        term: { include: { academicYear: true } },
+      },
     });
 
     res.json({ announcements });
@@ -6464,10 +6468,44 @@ router.post('/announcements', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const { title, body, publish, bulkApproval } = req.body;
+    const { title, body, publish, bulkApproval, academicYearId, termId } = req.body;
 
     if (!title || !body) {
       return res.status(400).json({ error: 'Title and body are required' });
+    }
+
+    const normalizedAcademicYearId = academicYearId ? String(academicYearId) : null;
+    const normalizedTermId = termId ? String(termId) : null;
+    let announcementAcademicYearId = normalizedAcademicYearId;
+    let announcementTermId = normalizedTermId;
+
+    if (normalizedAcademicYearId) {
+      const academicYear = await prisma.academicYear.findFirst({
+        where: { id: normalizedAcademicYearId, schoolId },
+        select: { id: true },
+      });
+      if (!academicYear) {
+        return res.status(400).json({ error: 'Selected academic session was not found for this school' });
+      }
+    }
+
+    if (normalizedTermId) {
+      const term = await prisma.term.findFirst({
+        where: {
+          id: normalizedTermId,
+          academicYear: { schoolId },
+        },
+        select: { id: true, academicYearId: true },
+      });
+      if (!term) {
+        return res.status(400).json({ error: 'Selected term was not found for this school' });
+      }
+      if (normalizedAcademicYearId && term.academicYearId !== normalizedAcademicYearId) {
+        return res.status(400).json({ error: 'Selected term does not belong to the selected academic session' });
+      }
+      if (!normalizedAcademicYearId) {
+        announcementAcademicYearId = term.academicYearId;
+      }
     }
 
     const publishNow = publish === true || publish === 'true';
@@ -6490,6 +6528,8 @@ router.post('/announcements', async (req: Request, res: Response) => {
         schoolId,
         title,
         body,
+        academicYearId: announcementAcademicYearId,
+        termId: announcementTermId,
         published: publishNow,
         publishedAt: publishNow ? new Date() : null,
       },
