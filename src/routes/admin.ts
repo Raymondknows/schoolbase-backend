@@ -15,6 +15,8 @@ import { ResultsDomainService } from '../domain/results/ResultsDomainService.js'
 import requireActiveSubscription from '../middleware/subscriptionGuard.js';
 import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
 import { getNextAdmissionNo, normalizeAdmissionNo, validateUniqueAdmissionNo } from '../services/student-admission.js';
+import { evaluateSchoolWhatsAppSend, getPersistedSchoolWhatsAppPolicyRecord, readSchoolWhatsAppPolicy } from '../services/whatsapp-policy.js';
+import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
 import type { NextFunction } from 'express';
 
 const router = Router();
@@ -114,7 +116,38 @@ const sharedDriverManager = new DriverManager({
   }),
   WHATSAPP: new WhatsAppDriver(async ({ recipient, request, content }) => {
     const schoolId = request.schoolId ?? '';
+    let deliveryId: string | undefined;
+    try {
+      const delivery = await whatsappDeliveryStore.upsertSchoolDelivery({
+        schoolId,
+        event: request.event,
+        guardianId: typeof request.metadata?.guardianId === 'string' ? request.metadata.guardianId : null,
+        recipientAddress: recipient.address,
+        recipientName: recipient.name,
+        messageBody: content.body,
+        status: 'SENDING',
+        provider: 'baileys',
+        attemptCount: 1,
+      });
+      deliveryId = delivery?.id;
+    } catch (auditError) {
+      console.warn('[admin] Could not create durable WhatsApp delivery record:', auditError);
+    }
+
     const result = await baileysSessionManager.sendTextMessage(schoolId, recipient.address, content.body) as { success: boolean; messageId?: string; error?: string };
+    if (deliveryId) {
+      try {
+        await whatsappDeliveryStore.updateById(deliveryId, {
+          status: result.success ? 'SENT' : 'FAILED',
+          providerMessageId: result.messageId ?? null,
+          lastError: result.success ? null : result.error ?? null,
+          sentAt: result.success ? new Date() : null,
+          nextAttemptAt: new Date(),
+        });
+      } catch (auditError) {
+        console.warn('[admin] Could not update durable WhatsApp delivery record:', auditError);
+      }
+    }
 
     if (!result.success) {
       return {
@@ -4613,6 +4646,55 @@ router.get('/communications/rules', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/admin/communications/whatsapp-policy - Get WhatsApp safety policy
+router.get('/communications/whatsapp-policy', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+    const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
+    res.json({ success: true, policy: getPersistedSchoolWhatsAppPolicyRecord(policy) });
+  } catch (error) {
+    console.error('Error fetching WhatsApp policy:', error);
+    res.status(500).json({ error: 'Failed to fetch WhatsApp policy' });
+  }
+});
+
+// PUT /api/admin/communications/whatsapp-policy - Update WhatsApp safety policy
+router.put('/communications/whatsapp-policy', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+    const current = await readSchoolWhatsAppPolicy(prisma, schoolId);
+    const body = req.body || {};
+    const numeric = (value: unknown, fallback: number) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+    };
+    const data = {
+      enabled: typeof body.enabled === 'boolean' ? body.enabled : current.enabled,
+      messagesPerMinute: numeric(body.messagesPerMinute, current.messagesPerMinute),
+      messagesPerHour: numeric(body.messagesPerHour, current.messagesPerHour),
+      messagesPerDay: numeric(body.messagesPerDay, current.messagesPerDay),
+      batchSize: Math.max(1, numeric(body.batchSize, current.batchSize)),
+      batchCooldownSeconds: numeric(body.batchCooldownSeconds, current.batchCooldownSeconds),
+      quietHoursStart: typeof body.quietHoursStart === 'string' ? body.quietHoursStart : current.quietHoursStart,
+      quietHoursEnd: typeof body.quietHoursEnd === 'string' ? body.quietHoursEnd : current.quietHoursEnd,
+      requireApprovalForBulk: typeof body.requireApprovalForBulk === 'boolean' ? body.requireApprovalForBulk : current.requireApprovalForBulk,
+      allowAutomaticRetries: typeof body.allowAutomaticRetries === 'boolean' ? body.allowAutomaticRetries : current.allowAutomaticRetries,
+      timezone: typeof body.timezone === 'string' ? body.timezone : current.timezone,
+    };
+    const policy = await prisma.whatsAppPolicy.upsert({
+      where: { schoolId },
+      create: { schoolId, ...data },
+      update: data,
+    });
+    res.json({ success: true, policy });
+  } catch (error) {
+    console.error('Error updating WhatsApp policy:', error);
+    res.status(500).json({ error: 'Failed to update WhatsApp policy' });
+  }
+});
+
 // PUT /api/admin/communications/rules - Update communication rules for the current school
 router.put('/communications/rules', requireSubscription, async (req: Request, res: Response) => {
   try {
@@ -6382,10 +6464,25 @@ router.post('/announcements', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const { title, body, publish } = req.body;
+    const { title, body, publish, bulkApproval } = req.body;
 
     if (!title || !body) {
       return res.status(400).json({ error: 'Title and body are required' });
+    }
+
+    const publishNow = publish === true || publish === 'true';
+    if (publishNow) {
+      const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
+      const guardianCount = await prisma.guardian.count({
+        where: { pupils: { some: { pupil: { schoolId } } } },
+      });
+      const policyCheck = evaluateSchoolWhatsAppSend(policy, {
+        recipientCount: guardianCount,
+        approvedForBulk: bulkApproval === true || bulkApproval === 'true',
+      });
+      if (!policyCheck.allowed) {
+        return res.status(400).json({ error: policyCheck.reason || 'WhatsApp announcement approval required' });
+      }
     }
 
     const announcement = await prisma.announcement.create({
@@ -6393,12 +6490,16 @@ router.post('/announcements', async (req: Request, res: Response) => {
         schoolId,
         title,
         body,
-        published: publish === true || publish === 'true',
-        publishedAt: (publish === true || publish === 'true') ? new Date() : null,
+        published: publishNow,
+        publishedAt: publishNow ? new Date() : null,
       },
     });
 
     let sentCount = 0;
+    let emailSent = 0;
+    let whatsappSent = 0;
+    let emailFailed = 0;
+    let whatsappFailed = 0;
     const errors: string[] = [];
 
     if (announcement.published) {
@@ -6411,6 +6512,7 @@ router.post('/announcements', async (req: Request, res: Response) => {
           firstName: true,
           whatsapp: true,
           phone: true,
+          altPhone: true,
           email: true,
         },
         orderBy: { lastName: 'asc' },
@@ -6423,15 +6525,15 @@ router.post('/announcements', async (req: Request, res: Response) => {
       const communicationService = createCommunicationService();
       const message = `Dear parent, a new school announcement has been published: ${title}. ${body}`;
 
-      for (const guardian of guardians) {
-        const whatsappAddress = guardian.whatsapp || guardian.phone;
+      void Promise.all(guardians.map(async (guardian) => {
+        const whatsappAddress = guardian.whatsapp || guardian.phone || guardian.altPhone;
         const recipients = [
           ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
           ...(whatsappAddress ? [{ channel: 'WHATSAPP' as const, address: whatsappAddress, name: guardian.firstName }] : []),
         ];
 
         if (recipients.length === 0) {
-          continue;
+          return;
         }
 
         try {
@@ -6479,9 +6581,19 @@ router.post('/announcements', async (req: Request, res: Response) => {
             if (status !== 'FAILED') {
               sentCount++;
             }
+            if (delivery.channel === 'EMAIL') {
+              if (status === 'FAILED') emailFailed++;
+              else emailSent++;
+            }
+            if (delivery.channel === 'WHATSAPP') {
+              if (status === 'FAILED') whatsappFailed++;
+              else whatsappSent++;
+            }
           }
         } catch (err) {
           errors.push(`Failed to dispatch announcement for guardian ${guardian.id}`);
+          if (guardian.email) emailFailed++;
+          if (whatsappAddress) whatsappFailed++;
           await prisma.notification.create({
             data: {
               schoolId,
@@ -6497,19 +6609,60 @@ router.post('/announcements', async (req: Request, res: Response) => {
             },
           });
         }
-      }
+      })).catch((error) => {
+        console.error('Error processing queued announcement notifications:', error);
+      });
     }
 
     res.status(201).json({ 
       success: true, 
       announcement,
+      announcementId: announcement.id,
       sentCount,
+      emailSent,
+      whatsappSent,
+      emailFailed,
+      whatsappFailed,
+      queued: announcement.published,
       errors: errors.length > 0 ? errors : undefined,
       message: 'Announcement created successfully' 
     });
   } catch (error) {
     console.error('Error creating announcement:', error);
     res.status(500).json({ error: 'Failed to create announcement' });
+  }
+});
+
+// GET /api/admin/announcements/:id/delivery-status - Read notification results for an announcement
+router.get('/announcements/:id/delivery-status', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(401).json({ error: 'School ID required' });
+
+    const announcement = await prisma.announcement.findFirst({
+      where: { id: req.params.id, schoolId },
+      select: { id: true },
+    });
+    if (!announcement) return res.status(404).json({ error: 'Announcement not found' });
+
+    const notifications = await prisma.notification.findMany({
+      where: { schoolId, relatedId: announcement.id, type: 'ANNOUNCEMENT' },
+      select: { channel: true, status: true },
+    });
+    const count = (channel: string, statuses: string[]) => notifications.filter((item) => item.channel === channel && statuses.includes(item.status)).length;
+    const pending = notifications.filter((item) => ['PENDING', 'QUEUED', 'SENDING'].includes(item.status)).length;
+
+    res.json({
+      complete: pending === 0,
+      emailSent: count('EMAIL', ['SENT']),
+      emailFailed: count('EMAIL', ['FAILED']),
+      whatsappSent: count('WHATSAPP', ['SENT']),
+      whatsappFailed: count('WHATSAPP', ['FAILED']),
+      pending,
+    });
+  } catch (error) {
+    console.error('Error fetching announcement delivery status:', error);
+    res.status(500).json({ error: 'Failed to fetch announcement delivery status' });
   }
 });
 
