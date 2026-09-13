@@ -1554,7 +1554,8 @@ export async function sendAdmissionNotificationEmail(
 
     const schoolLogoInline = await fetchInlineLogo(schoolLogo);
     const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
-    const textBody = `Student Registration\n${pupilName} has been registered for ${className} at ${schoolName}.\nAdmission Number: ${admissionNo}\n\nHello ${guardianName},\n\nYour child has been successfully registered. Visit the parent portal at https://schoolbase.live/parent/login for details.`;
+    const parentPortalUrl = `${(process.env.FRONTEND_URL || 'https://www.schoolbase.live').replace(/\/$/, '')}/parent/login`;
+    const textBody = `Student Registration\n\nHello ${guardianName},\n\nWelcome to ${schoolName} on SchoolBase. ${pupilName} has been successfully registered for ${className}.\n\nAdmission number: ${admissionNo}\n\nParent portal login: ${parentPortalUrl}\n\nHow to use it:\n1. Open the parent portal link.\n2. Enter the phone number registered with the school.\n3. Enter your child's admission number.\n4. Sign in to view fees, results, attendance, notices, and other school updates.\n\nNo password is required. Please contact the school office if you need help.`;
 
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
@@ -1584,9 +1585,10 @@ export async function sendAdmissionNotificationEmail(
                   <p><strong>Admission Number:</strong> ${admissionNo}</p>
                   <p><strong>Class:</strong> ${className}</p>
                 </div>
-                <p>If you have any questions or need assistance with your child’s school profile, please contact the school office or visit the parent portal.</p>
+                <p><strong>How to sign in:</strong> Open the parent portal, enter the phone number registered with the school and your child&apos;s admission number, then tap <strong>Sign in</strong>. No password is required.</p>
+                <p>From the parent portal, you can view fees, results, attendance, notices, and other school updates. Please contact the school office if you need help.</p>
                 <div class="button-container">
-                  <a href="https://schoolbase.live/parent/login" class="button">Visit Parent Portal</a>
+                  <a href="${parentPortalUrl}" class="button">Open Parent Portal</a>
                 </div>
                 <p>Thank you for choosing SchoolBase to support your child’s education.</p>
                 <p>Warm regards,<br><strong>The ${schoolName} Team</strong></p>

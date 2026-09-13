@@ -3401,7 +3401,24 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
           ? await prisma.school.findUnique({ where: { id: schoolId }, select: { name: true, logoUrl: true } })
           : null;
         const communicationService = createCommunicationService();
-        const message = `Dear ${guardian.firstName}, ${pupil.firstName} ${pupil.lastName} has been successfully registered for ${className} at ${school?.name || 'your school'}. Admission Number: ${pupil.admissionNo || 'N/A'}. Please visit the parent portal for more details.`;
+        const parentPortalUrl = `${(process.env.FRONTEND_URL || 'https://www.schoolbase.live').replace(/\/$/, '')}/parent/login`;
+        const message = `Hello ${guardian.firstName},
+
+Welcome to ${school?.name || 'your school'} on SchoolBase. ${pupil.firstName} ${pupil.lastName} has been successfully registered for ${className}.
+
+Student details:
+• Admission number: ${pupil.admissionNo || 'N/A'}
+
+Parent portal login:
+${parentPortalUrl}
+
+How to use it:
+1. Open the link above.
+2. Enter the phone number registered with the school.
+3. Enter your child's admission number.
+4. Tap Sign in to view fees, results, attendance, notices, and other school updates.
+
+No password is required. Please save this link for future access. If you need help, contact the school office.`;
 
         try {
           const dispatchResult = await communicationService.dispatch({
