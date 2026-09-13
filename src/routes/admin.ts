@@ -6523,7 +6523,13 @@ router.post('/announcements', async (req: Request, res: Response) => {
         select: { name: true, logoUrl: true },
       });
       const communicationService = createCommunicationService();
-      const message = `Dear parent, a new school announcement has been published: ${title}. ${body}`;
+      const message = `Dear Parent,
+
+    ${title}
+
+    ${body}
+
+    Please contact the school office if you need any clarification.`;
 
       void Promise.all(guardians.map(async (guardian) => {
         const whatsappAddress = guardian.whatsapp || guardian.phone || guardian.altPhone;
