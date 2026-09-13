@@ -505,6 +505,60 @@ router.use((req: Request, res: Response, next: any) => {
   return requireActiveSubscription(req as any, res as any, next);
 });
 
+// GET /api/admin/admissions - List admission applications for the current school
+router.get('/admissions', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(401).json({ error: 'School ID required' });
+
+    const applications = await prisma.admissionApplication.findMany({
+      where: { schoolId },
+      orderBy: [{ createdAt: 'desc' }],
+    });
+
+    res.json({ applications });
+  } catch (error) {
+    console.error('Error fetching admission applications:', error);
+    res.status(500).json({ error: 'Failed to fetch admissions' });
+  }
+});
+
+// PATCH /api/admin/admissions/:id/status - Update an admission application status
+router.patch('/admissions/:id/status', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(401).json({ error: 'School ID required' });
+
+    const { id } = req.params;
+    const { status } = req.body;
+    const allowedStatuses = ['SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'REJECTED'];
+
+    if (!allowedStatuses.includes(String(status))) {
+      return res.status(400).json({ error: 'Invalid admission status' });
+    }
+
+    const application = await prisma.admissionApplication.findFirst({
+      where: { id, schoolId },
+    });
+
+    if (!application) return res.status(404).json({ error: 'Admission application not found' });
+
+    const updatedApplication = await prisma.admissionApplication.update({
+      where: { id: application.id },
+      data: {
+        status: String(status),
+        reviewedAt: new Date(),
+        reviewedBy: await resolveUserName(req),
+      },
+    });
+
+    res.json({ success: true, application: updatedApplication });
+  } catch (error) {
+    console.error('Error updating admission application status:', error);
+    res.status(500).json({ error: 'Failed to update admission status' });
+  }
+});
+
 function truncateNotificationBody(body: string, maxLength = 180) {
   if (!body) return body;
   return body.length <= maxLength ? body : `${body.slice(0, maxLength - 3)}...`;
