@@ -14,7 +14,7 @@ import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../comm
 import { ResultsDomainService } from '../domain/results/ResultsDomainService.js';
 import requireActiveSubscription from '../middleware/subscriptionGuard.js';
 import { checkSubscription, requireSubscription } from '../middleware/subscriptionGuard.js';
-import { getNextAdmissionNo, normalizeAdmissionNo, validateUniqueAdmissionNo } from '../services/student-admission.js';
+import { getNextAdmissionNo, normalizeAdmissionNo, reserveNextAdmissionNo, validateUniqueAdmissionNo } from '../services/student-admission.js';
 import { evaluateSchoolWhatsAppSend, getPersistedSchoolWhatsAppPolicyRecord, readSchoolWhatsAppPolicy } from '../services/whatsapp-policy.js';
 import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
 import type { NextFunction } from 'express';
@@ -619,23 +619,19 @@ router.patch('/admissions/:id/status', async (req: Request, res: Response) => {
 
         let student = existingStudent;
         if (!student.admissionNo) {
-          const [school, existingPupils] = await Promise.all([
+          const [school] = await Promise.all([
             transaction.school.findUnique({
               where: { id: schoolId },
               select: { name: true, initials: true },
             }),
-            transaction.pupil.findMany({
-              where: { schoolId },
-              select: { id: true, schoolId: true, admissionNo: true },
-            }),
           ]);
 
-          const admissionNo = getNextAdmissionNo({
+          const admissionNo = await reserveNextAdmissionNo({
+            transaction,
             schoolId,
             schoolName: school?.name,
             schoolInitials: school?.initials,
             year: new Date().getFullYear(),
-            existingRecords: existingPupils,
           });
 
           student = await transaction.pupil.update({
@@ -672,17 +668,12 @@ router.patch('/admissions/:id/status', async (req: Request, res: Response) => {
           select: { name: true, initials: true },
         });
 
-        const existingPupils = await transaction.pupil.findMany({
-          where: { schoolId },
-          select: { id: true, schoolId: true, admissionNo: true },
-        });
-
-        const admissionNo = getNextAdmissionNo({
+        const admissionNo = await reserveNextAdmissionNo({
+          transaction,
           schoolId,
           schoolName: school?.name,
           schoolInitials: school?.initials,
           year: new Date().getFullYear(),
-          existingRecords: existingPupils,
         });
 
         const intendedClass = application.intendedClass?.trim();
@@ -3771,7 +3762,22 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
     const normalizedGuardianPhone = normalizeField(guardianPhone);
     const normalizedGuardianAltPhone = normalizeField(guardianAltPhone);
     const normalizedGuardianOccupation = normalizeField(guardianOccupation);
-    const normalizedAdmissionNo = normalizeAdmissionNo(admissionNo ?? null);
+    let normalizedAdmissionNo = normalizeAdmissionNo(admissionNo ?? null);
+
+    if (!normalizedAdmissionNo) {
+      const school = await prisma.school.findUnique({
+        where: { id: schoolId },
+        select: { name: true, initials: true },
+      });
+
+      normalizedAdmissionNo = await prisma.$transaction((transaction) => reserveNextAdmissionNo({
+        transaction,
+        schoolId,
+        schoolName: school?.name,
+        schoolInitials: school?.initials,
+        year: new Date().getFullYear(),
+      }));
+    }
 
     console.log('[create student] schoolId=%s, firstName=%s, lastName=%s, classId=%s, guardianFirst=%s, guardianLast=%s',
       schoolId,

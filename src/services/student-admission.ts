@@ -1,3 +1,5 @@
+import { Prisma } from '@prisma/client';
+
 export type AdmissionNoRecord = {
   id?: string | null;
   schoolId: string;
@@ -138,4 +140,55 @@ export function validateUniqueAdmissionNo({
   }
 
   return { isValid: true };
+}
+
+export async function reserveNextAdmissionNo({
+  transaction,
+  schoolId,
+  schoolName,
+  schoolInitials,
+  year = new Date().getFullYear(),
+}: {
+  transaction: Prisma.TransactionClient;
+  schoolId: string;
+  schoolName?: string | null;
+  schoolInitials?: string | null;
+  year?: number;
+}): Promise<string> {
+  const resolvedYear = Number(year) || new Date().getFullYear();
+  const prefix = inferAdmissionPrefix(schoolName, schoolInitials);
+
+  // Create the row once, then lock it for the rest of this transaction. This
+  // makes simultaneous admissions reserve different sequence values.
+  await transaction.admissionCounter.upsert({
+    where: { schoolId_year: { schoolId, year: resolvedYear } },
+    update: {},
+    create: { schoolId, year: resolvedYear, lastSeq: 0 },
+  });
+
+  const lockedRows = await transaction.$queryRawUnsafe<Array<{ lastSeq: number }>>(
+    'SELECT lastSeq FROM AdmissionCounter WHERE schoolId = ? AND year = ? FOR UPDATE',
+    schoolId,
+    resolvedYear,
+  );
+
+  const existingPupils = await transaction.pupil.findMany({
+    where: { schoolId },
+    select: { admissionNo: true },
+  });
+  const pattern = new RegExp(`^${escapeRegExp(prefix)}-${resolvedYear}-(\\d+)$`, 'i');
+  let highestExisting = 0;
+
+  for (const pupil of existingPupils) {
+    const match = normalizeAdmissionNo(pupil.admissionNo)?.match(pattern);
+    if (match) highestExisting = Math.max(highestExisting, Number(match[1]) || 0);
+  }
+
+  const nextSequence = Math.max(Number(lockedRows[0]?.lastSeq || 0), highestExisting) + 1;
+  await transaction.admissionCounter.update({
+    where: { schoolId_year: { schoolId, year: resolvedYear } },
+    data: { lastSeq: nextSequence },
+  });
+
+  return `${prefix}-${resolvedYear}-${String(nextSequence).padStart(4, '0')}`;
 }
