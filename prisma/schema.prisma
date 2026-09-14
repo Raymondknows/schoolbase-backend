@@ -724,6 +724,7 @@ model Invoice {
   items              InvoiceItem[]
   adjustments        StudentFeeAdjustment[]
   payments           Payment[]
+  accountingTransactions FinancialTransaction[] @relation("InvoiceAccountingTransactions")
 
   @@unique([schoolId, invoiceNo])
   @@index([feeScheduleId], map: "Invoice_feeScheduleId_fkey")
@@ -798,6 +799,7 @@ model Payment {
   note       String?
   invoice    Invoice?      @relation(fields: [invoiceId], references: [id])
   allocations PaymentAllocation[]
+  accountingTransactions FinancialTransaction[] @relation("PaymentAccountingTransactions")
 
   @@index([invoiceId], map: "Payment_invoiceId_fkey")
 }
@@ -1601,6 +1603,7 @@ enum TransactionStatus {
   DRAFT
   POSTED
   REVERSED
+  VOIDED
 }
 
 model EmailLog {
@@ -1650,8 +1653,14 @@ model FinancialTransaction {
   category          AccountCategory   @relation(fields: [categoryId], references: [id])
   type              TransactionType
   amount            Int
+  currency          String            @default("NGN")
+  paymentMethod     PaymentMethod?
   description       String?
   referenceNumber   String?
+  invoiceId         String?
+  invoice           Invoice?          @relation("InvoiceAccountingTransactions", fields: [invoiceId], references: [id])
+  paymentId         String?           @unique
+  payment           Payment?          @relation("PaymentAccountingTransactions", fields: [paymentId], references: [id])
   transactionDate   DateTime
   status            TransactionStatus @default(DRAFT)
   createdBy         String
@@ -1673,6 +1682,7 @@ model FinancialTransaction {
   @@index([type])
   @@index([status])
   @@index([transactionDate])
+  @@index([schoolId, invoiceId])
 }
 
 model FinancialAuditLog {

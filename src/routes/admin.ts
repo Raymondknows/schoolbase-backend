@@ -18,6 +18,7 @@ import { getNextAdmissionNo, normalizeAdmissionNo, reserveNextAdmissionNo, valid
 import { evaluateSchoolWhatsAppSend, getPersistedSchoolWhatsAppPolicyRecord, readSchoolWhatsAppPolicy } from '../services/whatsapp-policy.js';
 import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
 import type { NextFunction } from 'express';
+import { requireAccountingAccess, verifyAuth } from '../middleware/roleAuth.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -3238,13 +3239,13 @@ router.get('/invoices/:id/pdf', async (req: Request, res: Response) => {
 });
 
 // POST /api/admin/fees/payments/record - Record a payment against an invoice
-router.post('/fees/payments/record', requireSubscription, async (req: Request, res: Response) => {
+router.post('/fees/payments/record', verifyAuth, requireAccountingAccess, requireSubscription, async (req: Request, res: Response) => {
   try {
     console.log('[/fees/payments/record] Request received');
     console.log('[/fees/payments/record] Cookies:', Object.keys(req.cookies || {}));
     console.log('[/fees/payments/record] Body:', req.body);
     
-    const schoolId = await resolveSchoolId(req);
+    const schoolId = (req as any).user?.schoolId as string | undefined;
     console.log('[/fees/payments/record] Resolved schoolId:', schoolId);
     
     if (!schoolId) {
@@ -3332,6 +3333,23 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
     }
 
     const userId = await resolveUserId(req);
+    const accountingRecorderId = userId ?? (await prisma.user.findFirst({
+      where: {
+        schoolId,
+        role: { in: ['SCHOOL_ADMIN', 'BURSAR'] },
+      },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    }))?.id ?? null;
+    const schoolCurrency = (await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { currency: true },
+    }))?.currency ?? 'NGN';
+
+    const accountingCategoryName = invoice.items.some((item) => /tuition|books|uniform|wear|transport|boarding|registration/i.test(item.name))
+      ? 'Tuition Fees'
+      : 'School Fees';
+
     const { payment, updatedInvoice } = await prisma.$transaction(async (transaction) => {
       const payment = await transaction.payment.create({
         data: {
@@ -3361,80 +3379,70 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
         },
       });
 
-      return { payment, updatedInvoice };
-    });
-
-    const accountingRecorderId = userId ?? payment.recordedBy ?? (await prisma.user.findFirst({
-      where: {
-        schoolId,
-        role: { in: ['SCHOOL_ADMIN', 'BURSAR'] },
-      },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true },
-    }))?.id ?? null;
-
-    const accountingCategoryName = invoice.items.some((item) => /tuition|books|uniform|wear|transport|boarding|registration/i.test(item.name))
-      ? 'Tuition Fees'
-      : 'School Fees';
-
-    const accountingCategory = await prisma.accountCategory.upsert({
-      where: {
-        schoolId_type_name: {
-          schoolId,
-          type: 'INCOME',
-          name: accountingCategoryName,
-        },
-      },
-      update: {
-        isActive: true,
-        description: 'Fee income captured from invoice payments',
-      },
-      create: {
-        schoolId,
-        type: 'INCOME',
-        name: accountingCategoryName,
-        description: 'Fee income captured from invoice payments',
-      },
-    });
-
-    let accountingTransaction: any = null;
-    if (accountingRecorderId) {
-      accountingTransaction = await prisma.financialTransaction.create({
-        data: {
-          schoolId,
-          categoryId: accountingCategory.id,
-          type: 'INCOME',
-          amount: amountInCents,
-          description: `Fee payment received for ${invoice.pupil.firstName} ${invoice.pupil.lastName} (${invoice.invoiceNo})`,
-          referenceNumber: invoice.invoiceNo || payment.reference || payment.id,
-          transactionDate: new Date(),
-          status: 'POSTED',
-          createdBy: accountingRecorderId,
-          postedAt: new Date(),
-          postedBy: accountingRecorderId,
-        },
-      });
-
-      if (userId) {
-        await prisma.financialAuditLog.create({
-          data: {
+      if (accountingRecorderId) {
+        const accountingCategory = await transaction.accountCategory.upsert({
+          where: {
+            schoolId_type_name: {
+              schoolId,
+              type: 'INCOME',
+              name: accountingCategoryName,
+            },
+          },
+          update: {
+            isActive: true,
+            description: 'Fee income captured from invoice payments',
+          },
+          create: {
             schoolId,
-            transactionId: accountingTransaction.id,
-            action: 'FEE_PAYMENT_SYNCED_TO_ACCOUNTING',
-            previousValues: JSON.stringify({ status: 'DRAFT' }),
-            newValues: JSON.stringify({
-              invoiceId,
-              paymentId: payment.id,
-              amount: amountInCents,
-              category: accountingCategoryName,
-            }),
-            changedBy: userId,
+            type: 'INCOME',
+            name: accountingCategoryName,
+            description: 'Fee income captured from invoice payments',
           },
         });
+
+        const accountingTransaction = await transaction.financialTransaction.create({
+          data: {
+            schoolId,
+            categoryId: accountingCategory.id,
+            type: 'INCOME',
+            amount: amountInCents,
+            currency: schoolCurrency,
+            paymentMethod: method,
+            paymentId: payment.id,
+            invoiceId,
+            description: `Fee payment received for ${invoice.pupil.firstName} ${invoice.pupil.lastName} (${invoice.invoiceNo})`,
+            referenceNumber: invoice.invoiceNo || payment.reference || payment.id,
+            transactionDate: new Date(),
+            status: 'POSTED',
+            createdBy: accountingRecorderId,
+            postedAt: new Date(),
+            postedBy: accountingRecorderId,
+          },
+        });
+
+        if (userId) {
+          await transaction.financialAuditLog.create({
+            data: {
+              schoolId,
+              transactionId: accountingTransaction.id,
+              action: 'FEE_PAYMENT_SYNCED_TO_ACCOUNTING',
+              previousValues: JSON.stringify({ status: 'DRAFT' }),
+              newValues: JSON.stringify({
+                invoiceId,
+                paymentId: payment.id,
+                amount: amountInCents,
+                category: accountingCategoryName,
+              }),
+              changedBy: userId,
+            },
+          });
+        }
+      } else {
+        throw new Error('Unable to resolve a staff user for accounting synchronization');
       }
-    } else {
-      console.warn('[fees/payments/record] Skipped accounting ledger sync because no valid staff user could be resolved for school', schoolId);
-    }
+
+      return { payment, updatedInvoice };
+    });
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },

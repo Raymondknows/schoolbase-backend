@@ -91,3 +91,16 @@ export function requireBursar(req: AuthenticatedRequest, res: Response, next: Ne
 
   next();
 }
+
+// Accounting is available to the school administrator and accounting staff.
+export function requireAccountingAccess(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  if (req.user.role !== 'BURSAR' && req.user.role !== 'SCHOOL_ADMIN') {
+    return res.status(403).json({ error: 'Forbidden: Accounting access required' });
+  }
+
+  next();
+}

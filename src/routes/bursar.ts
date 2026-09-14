@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
-import { AuthenticatedRequest, requireBursar, verifyAuth } from '../middleware/roleAuth.js';
+import { PaymentMethod, PrismaClient } from '@prisma/client';
+import { AuthenticatedRequest, requireAccountingAccess, verifyAuth } from '../middleware/roleAuth.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -15,6 +15,28 @@ function isFeeIncomeCategory(categoryName?: string | null) {
 
   const normalized = categoryName.toLowerCase();
   return ['school fees', 'tuition fees', 'transport fees', 'exam fees', 'boarding fees', 'registration fees', 'books fees', 'uniform fees'].some((keyword) => normalized.includes(keyword));
+}
+
+export function parseAmountMinor(value: unknown) {
+  const amount = typeof value === 'number' ? value : Number(String(value ?? '').trim());
+  if (!Number.isFinite(amount) || amount <= 0 || amount > Number.MAX_SAFE_INTEGER / 100) {
+    return null;
+  }
+
+  return Math.round(amount * 100);
+}
+
+export function parseTransactionDate(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+export function parsePaymentMethod(value: unknown) {
+  if (value === undefined || value === null || value === '') return null;
+  return typeof value === 'string' && Object.values(PaymentMethod).includes(value as PaymentMethod)
+    ? value as PaymentMethod
+    : undefined;
 }
 
 export function calculateSchoolFinanceSummary({
@@ -80,9 +102,9 @@ async function ensureDefaultAccountCategories(schoolId: string) {
   });
 }
 
-async function resolveFeeInvoiceNumbersForAcademicContext(schoolId: string, academicYearId?: string, termId?: string) {
+async function resolveFeeInvoicesForAcademicContext(schoolId: string, academicYearId?: string, termId?: string) {
   if (!academicYearId && !termId) {
-    return [];
+    return { ids: [], invoiceNos: [] };
   }
 
   const where: Record<string, any> = { schoolId };
@@ -102,15 +124,18 @@ async function resolveFeeInvoiceNumbersForAcademicContext(schoolId: string, acad
 
   const invoices = await prisma.invoice.findMany({
     where,
-    select: { invoiceNo: true },
+    select: { id: true, invoiceNo: true },
   });
 
-  return invoices.map((invoice) => invoice.invoiceNo).filter(Boolean);
+  return {
+    ids: invoices.map((invoice) => invoice.id),
+    invoiceNos: invoices.map((invoice) => invoice.invoiceNo).filter(Boolean),
+  };
 }
 
 // Middleware: Apply to all routes
 router.use(verifyAuth);
-router.use(requireBursar);
+router.use(requireAccountingAccess);
 
 /**
  * GET /api/bursar/overview
@@ -124,16 +149,19 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
     }
 
     const today = new Date();
-    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const rawStartDate = typeof req.query.startDate === 'string' ? req.query.startDate : undefined;
     const rawEndDate = typeof req.query.endDate === 'string' ? req.query.endDate : undefined;
     const rawAcademicYearId = typeof req.query.academicYearId === 'string' ? req.query.academicYearId : undefined;
     const rawTermId = typeof req.query.termId === 'string' ? req.query.termId : undefined;
+    const requestedPage = Number.parseInt(String(req.query.page ?? '1'), 10);
+    const requestedLimit = Number.parseInt(String(req.query.limit ?? '10'), 10);
+    const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 100) : 10;
 
-    const startDate = rawStartDate ? new Date(rawStartDate) : firstDayOfMonth;
-    const endDate = rawEndDate ? new Date(rawEndDate) : today;
+    const startDate = rawStartDate ? new Date(rawStartDate) : null;
+    const endDate = rawEndDate ? new Date(rawEndDate) : null;
 
-    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    if ((startDate && Number.isNaN(startDate.getTime())) || (endDate && Number.isNaN(endDate.getTime()))) {
       return res.status(400).json({ error: 'Invalid date range' });
     }
 
@@ -141,11 +169,13 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
       invoice: {
         schoolId,
       },
-      paidAt: {
-        gte: startDate,
-        lte: endDate,
-      },
     };
+
+    if (startDate || endDate) {
+      feePaymentWhere.paidAt = {};
+      if (startDate) feePaymentWhere.paidAt.gte = startDate;
+      if (endDate) feePaymentWhere.paidAt.lte = endDate;
+    }
 
     const feeScheduleFilter: Record<string, any> = {};
     if (rawTermId) {
@@ -164,21 +194,25 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
       };
     }
 
-    const feeInvoiceNumbers = await resolveFeeInvoiceNumbersForAcademicContext(schoolId, rawAcademicYearId, rawTermId);
+    const feeInvoices = await resolveFeeInvoicesForAcademicContext(schoolId, rawAcademicYearId, rawTermId);
 
     const financialTransactionWhere: Record<string, any> = {
       schoolId,
       status: 'POSTED',
-      transactionDate: {
-        gte: startDate,
-        lte: endDate,
-      },
     };
 
+    if (startDate || endDate) {
+      financialTransactionWhere.transactionDate = {};
+      if (startDate) financialTransactionWhere.transactionDate.gte = startDate;
+      if (endDate) financialTransactionWhere.transactionDate.lte = endDate;
+    }
+
     if (rawAcademicYearId || rawTermId) {
-      financialTransactionWhere.referenceNumber = {
-        in: feeInvoiceNumbers.length > 0 ? feeInvoiceNumbers : ['__NO_MATCH__'],
-      };
+      financialTransactionWhere.OR = [
+        { invoiceId: { in: feeInvoices.ids.length > 0 ? feeInvoices.ids : ['__NO_MATCH__'] } },
+        { invoiceId: null, referenceNumber: { in: feeInvoices.invoiceNos.length > 0 ? feeInvoices.invoiceNos : ['__NO_MATCH__'] } },
+        { invoiceId: null },
+      ];
     }
 
     const [monthlyTransactions, monthlyPayments, school] = await Promise.all([
@@ -216,29 +250,37 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
     const recentTransactionWhere: Record<string, any> = {
       schoolId,
       status: 'POSTED',
-      transactionDate: {
-        gte: startDate,
-        lte: endDate,
-      },
     };
 
-    if (rawAcademicYearId || rawTermId) {
-      recentTransactionWhere.referenceNumber = {
-        in: feeInvoiceNumbers.length > 0 ? feeInvoiceNumbers : ['__NO_MATCH__'],
-      };
+    if (startDate || endDate) {
+      recentTransactionWhere.transactionDate = {};
+      if (startDate) recentTransactionWhere.transactionDate.gte = startDate;
+      if (endDate) recentTransactionWhere.transactionDate.lte = endDate;
     }
 
-    const recentTransactions = await prisma.financialTransaction.findMany({
-      where: recentTransactionWhere,
-      include: {
-        category: true,
-        createdByUser: {
-          select: { name: true, email: true },
+    if (rawAcademicYearId || rawTermId) {
+      recentTransactionWhere.OR = [
+        { invoiceId: { in: feeInvoices.ids.length > 0 ? feeInvoices.ids : ['__NO_MATCH__'] } },
+        { invoiceId: null, referenceNumber: { in: feeInvoices.invoiceNos.length > 0 ? feeInvoices.invoiceNos : ['__NO_MATCH__'] } },
+        { invoiceId: null },
+      ];
+    }
+
+    const [recentTransactions, transactionTotal] = await Promise.all([
+      prisma.financialTransaction.findMany({
+        where: recentTransactionWhere,
+        include: {
+          category: true,
+          createdByUser: {
+            select: { name: true, email: true },
+          },
         },
-      },
-      orderBy: { transactionDate: 'desc' },
-      take: 10,
-    });
+        orderBy: { transactionDate: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.financialTransaction.count({ where: recentTransactionWhere }),
+    ]);
 
     res.json({
       cashPosition,
@@ -248,9 +290,12 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
       monthlyExpenses,
       currency: school?.currency || 'NGN',
       recentTransactions,
+      transactionTotal,
+      transactionPage: page,
+      transactionLimit: limit,
       range: {
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
+        startDate: startDate?.toISOString() ?? null,
+        endDate: endDate?.toISOString() ?? today.toISOString(),
       },
     });
   } catch (error) {
@@ -346,11 +391,16 @@ router.post('/income', async (req: AuthenticatedRequest, res: Response) => {
       description,
       referenceNumber,
       transactionDate,
+      paymentMethod,
     } = req.body;
 
-    if (!categoryId || !amount || !transactionDate) {
+    const amountMinor = parseAmountMinor(amount);
+    const parsedDate = parseTransactionDate(transactionDate);
+    const normalizedPaymentMethod = parsePaymentMethod(paymentMethod);
+
+    if (!categoryId || amountMinor === null || !parsedDate || normalizedPaymentMethod === undefined) {
       return res.status(400).json({
-        error: 'Missing required fields: categoryId, amount, transactionDate',
+        error: 'Category, a positive amount, a valid date, and a valid payment method are required',
       });
     }
 
@@ -368,16 +418,20 @@ router.post('/income', async (req: AuthenticatedRequest, res: Response) => {
       return res.status(404).json({ error: 'Income category not found' });
     }
 
+    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { currency: true } });
+
     // Create transaction as posted so the dashboard/cashbook immediately reflect the entry.
     const transaction = await prisma.financialTransaction.create({
       data: {
         schoolId,
         categoryId,
         type: 'INCOME',
-        amount: Math.round(parseFloat(amount) * 100),
+        amount: amountMinor,
+        currency: school?.currency || 'NGN',
+        paymentMethod: normalizedPaymentMethod,
         description,
         referenceNumber,
-        transactionDate: new Date(transactionDate),
+        transactionDate: parsedDate,
         status: 'POSTED',
         createdBy: userId,
         postedAt: new Date(),
@@ -414,11 +468,16 @@ router.post('/expenses', async (req: AuthenticatedRequest, res: Response) => {
       description,
       referenceNumber,
       transactionDate,
+      paymentMethod,
     } = req.body;
 
-    if (!categoryId || !amount || !transactionDate) {
+    const amountMinor = parseAmountMinor(amount);
+    const parsedDate = parseTransactionDate(transactionDate);
+    const normalizedPaymentMethod = parsePaymentMethod(paymentMethod);
+
+    if (!categoryId || amountMinor === null || !parsedDate || normalizedPaymentMethod === undefined) {
       return res.status(400).json({
-        error: 'Missing required fields: categoryId, amount, transactionDate',
+        error: 'Category, a positive amount, a valid date, and a valid payment method are required',
       });
     }
 
@@ -436,16 +495,20 @@ router.post('/expenses', async (req: AuthenticatedRequest, res: Response) => {
       return res.status(404).json({ error: 'Expense category not found' });
     }
 
+    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { currency: true } });
+
     // Create transaction as posted so the dashboard/cashbook immediately reflect the entry.
     const transaction = await prisma.financialTransaction.create({
       data: {
         schoolId,
         categoryId,
         type: 'EXPENSE',
-        amount: Math.round(parseFloat(amount) * 100),
+        amount: amountMinor,
+        currency: school?.currency || 'NGN',
+        paymentMethod: normalizedPaymentMethod,
         description,
         referenceNumber,
-        transactionDate: new Date(transactionDate),
+        transactionDate: parsedDate,
         status: 'POSTED',
         createdBy: userId,
         postedAt: new Date(),
@@ -507,6 +570,88 @@ router.patch('/transactions/:id/post', async (req: AuthenticatedRequest, res: Re
   } catch (error) {
     console.error('Transaction post error:', error);
     res.status(500).json({ error: 'Failed to post transaction' });
+  }
+});
+
+/**
+ * POST /api/bursar/transactions/:id/reverse
+ * Reverse a posted transaction without deleting or editing the original.
+ */
+router.post('/transactions/:id/reverse', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    const userId = req.user?.userId;
+    const { id } = req.params;
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+
+    if (!schoolId || !userId) {
+      return res.status(400).json({ error: 'Missing required auth data' });
+    }
+    if (!reason) {
+      return res.status(400).json({ error: 'A reversal reason is required' });
+    }
+
+    const result = await prisma.$transaction(async (transaction) => {
+      const original = await transaction.financialTransaction.findFirst({
+        where: { id, schoolId, status: 'POSTED' },
+        include: { category: true },
+      });
+
+      if (!original) {
+        throw new Error('TRANSACTION_NOT_FOUND');
+      }
+
+      const reversal = await transaction.financialTransaction.create({
+        data: {
+          schoolId,
+          categoryId: original.categoryId,
+          type: original.type,
+          amount: -original.amount,
+          currency: original.currency,
+          paymentMethod: original.paymentMethod,
+          description: `Reversal: ${original.description || original.category.name}`,
+          referenceNumber: `REVERSAL:${original.id}`,
+          transactionDate: new Date(),
+          status: 'POSTED',
+          createdBy: userId,
+          postedAt: new Date(),
+          postedBy: userId,
+        },
+        include: { category: true },
+      });
+
+      const updatedOriginal = await transaction.financialTransaction.update({
+        where: { id: original.id },
+        data: {
+          status: 'REVERSED',
+          reversalDate: new Date(),
+          reversalReason: reason,
+          reversedBy: userId,
+        },
+        include: { category: true },
+      });
+
+      await transaction.financialAuditLog.create({
+        data: {
+          schoolId,
+          transactionId: original.id,
+          action: 'TRANSACTION_REVERSED',
+          previousValues: JSON.stringify({ status: original.status, amount: original.amount }),
+          newValues: JSON.stringify({ status: updatedOriginal.status, reversalId: reversal.id, reason }),
+          changedBy: userId,
+        },
+      });
+
+      return { original: updatedOriginal, reversal };
+    });
+
+    res.json(result);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'TRANSACTION_NOT_FOUND') {
+      return res.status(404).json({ error: 'Posted transaction not found or already reversed' });
+    }
+    console.error('Transaction reversal error:', error);
+    res.status(500).json({ error: 'Failed to reverse transaction' });
   }
 });
 
