@@ -744,6 +744,7 @@ model InvoiceItem {
   invoice         Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   feeScheduleItem FeeScheduleItem? @relation(fields: [feeScheduleItemId], references: [id], onDelete: SetNull)
   allocations     PaymentAllocation[]
+  accountingTransactions FinancialTransaction[] @relation("InvoiceItemAccountingTransactions")
 
   @@index([invoiceId])
   @@index([feeScheduleItemId])
@@ -1659,6 +1660,8 @@ model FinancialTransaction {
   referenceNumber   String?
   invoiceId         String?
   invoice           Invoice?          @relation("InvoiceAccountingTransactions", fields: [invoiceId], references: [id])
+  invoiceItemId     String?
+  invoiceItem       InvoiceItem?      @relation("InvoiceItemAccountingTransactions", fields: [invoiceItemId], references: [id])
   paymentId         String?           @unique
   payment           Payment?          @relation("PaymentAccountingTransactions", fields: [paymentId], references: [id])
   transactionDate   DateTime
@@ -1683,6 +1686,7 @@ model FinancialTransaction {
   @@index([status])
   @@index([transactionDate])
   @@index([schoolId, invoiceId])
+  @@index([invoiceItemId])
 }
 
 model FinancialAuditLog {

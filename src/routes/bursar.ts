@@ -6,7 +6,7 @@ const router = Router();
 const prisma = new PrismaClient();
 
 const DEFAULT_ACCOUNT_CATEGORIES = {
-  INCOME: ['School Fees', 'Tuition Fees', 'Transport Fees', 'Exam Fees', 'Other Income'],
+  INCOME: ['Other Income'],
   EXPENSE: ['Staff Salaries', 'Utilities', 'Maintenance', 'Stationery', 'Transport', 'Admin Expenses', 'Other Expenses'],
 } as const;
 
@@ -46,6 +46,7 @@ export function calculateSchoolFinanceSummary({
   monthlyTransactions: Array<{
     type: 'INCOME' | 'EXPENSE';
     amount: number;
+    invoiceId?: string | null;
     description?: string | null;
     category?: { name?: string | null } | null;
   }>;
@@ -53,7 +54,7 @@ export function calculateSchoolFinanceSummary({
 }) {
   const feeIncome = monthlyPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
   const otherIncome = monthlyTransactions
-    .filter((transaction) => transaction.type === 'INCOME' && !isFeeIncomeCategory(transaction.category?.name ?? null))
+    .filter((transaction) => transaction.type === 'INCOME' && !transaction.invoiceId && !isFeeIncomeCategory(transaction.category?.name ?? null))
     .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
 
   const expenses = monthlyTransactions
@@ -93,12 +94,22 @@ async function ensureDefaultAccountCategories(schoolId: string) {
     }
   }
 
-  return prisma.accountCategory.findMany({
-    where: {
-      schoolId,
-      isActive: true,
-    },
-    orderBy: [{ type: 'asc' }, { name: 'asc' }],
+  const [categories, feeItems] = await Promise.all([
+    prisma.accountCategory.findMany({
+      where: { schoolId, isActive: true },
+      orderBy: [{ type: 'asc' }, { name: 'asc' }],
+    }),
+    prisma.feeScheduleItem.findMany({
+      where: { schoolId },
+      select: { name: true },
+      distinct: ['name'],
+    }),
+  ]);
+
+  const feeNames = new Set(feeItems.map((item) => item.name.trim().toLowerCase()));
+  return categories.filter((category) => {
+    if (category.type !== 'INCOME') return true;
+    return !feeNames.has(category.name.trim().toLowerCase()) && !isFeeIncomeCategory(category.name);
   });
 }
 
@@ -240,6 +251,7 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
         type: transaction.type,
         amount: transaction.amount,
         description: transaction.description,
+        invoiceId: transaction.invoiceId,
         category: transaction.category,
       })),
       monthlyPayments: monthlyPayments.map((payment) => ({
@@ -420,7 +432,7 @@ router.post('/income', async (req: AuthenticatedRequest, res: Response) => {
 
     const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { currency: true } });
 
-    // Create transaction as posted so the dashboard/cashbook immediately reflect the entry.
+    // Income is posted immediately because it represents money already received.
     const transaction = await prisma.financialTransaction.create({
       data: {
         schoolId,
@@ -497,7 +509,7 @@ router.post('/expenses', async (req: AuthenticatedRequest, res: Response) => {
 
     const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { currency: true } });
 
-    // Create transaction as posted so the dashboard/cashbook immediately reflect the entry.
+    // Expenses require review before they affect posted cashbook totals.
     const transaction = await prisma.financialTransaction.create({
       data: {
         schoolId,
@@ -509,10 +521,8 @@ router.post('/expenses', async (req: AuthenticatedRequest, res: Response) => {
         description,
         referenceNumber,
         transactionDate: parsedDate,
-        status: 'POSTED',
+        status: 'DRAFT',
         createdBy: userId,
-        postedAt: new Date(),
-        postedBy: userId,
       },
       include: {
         category: true,
@@ -553,17 +563,35 @@ router.patch('/transactions/:id/post', async (req: AuthenticatedRequest, res: Re
       return res.status(404).json({ error: 'Transaction not found or not in DRAFT status' });
     }
 
-    // Update to POSTED
-    const updated = await prisma.financialTransaction.update({
-      where: { id },
-      data: {
-        status: 'POSTED',
-        postedAt: new Date(),
-        postedBy: userId,
-      },
-      include: {
-        category: true,
-      },
+    if (transaction.createdBy === userId && req.user?.role !== 'SCHOOL_ADMIN') {
+      return res.status(403).json({ error: 'A second staff member or school admin must approve this expense' });
+    }
+
+    const updated = await prisma.$transaction(async (transactionClient) => {
+      const posted = await transactionClient.financialTransaction.update({
+        where: { id },
+        data: {
+          status: 'POSTED',
+          postedAt: new Date(),
+          postedBy: userId,
+        },
+        include: {
+          category: true,
+        },
+      });
+
+      await transactionClient.financialAuditLog.create({
+        data: {
+          schoolId,
+          transactionId: id,
+          action: 'TRANSACTION_POSTED',
+          previousValues: JSON.stringify({ status: 'DRAFT' }),
+          newValues: JSON.stringify({ status: 'POSTED', postedBy: userId }),
+          changedBy: userId,
+        },
+      });
+
+      return posted;
     });
 
     res.json(updated);
@@ -666,12 +694,19 @@ router.get('/cashbook', async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const { skip = '0', take = '50', type } = req.query;
+    const { skip = '0', take = '50', type, status } = req.query;
 
     const where: any = {
       schoolId,
-      status: 'POSTED',
     };
+
+    if (status === 'ALL') {
+      where.status = { in: ['DRAFT', 'POSTED', 'REVERSED', 'VOIDED'] };
+    } else if (status === 'DRAFT' || status === 'REVERSED' || status === 'VOIDED') {
+      where.status = status;
+    } else {
+      where.status = 'POSTED';
+    }
 
     if (type === 'INCOME' || type === 'EXPENSE') {
       where.type = type;

@@ -3346,10 +3346,6 @@ router.post('/fees/payments/record', verifyAuth, requireAccountingAccess, requir
       select: { currency: true },
     }))?.currency ?? 'NGN';
 
-    const accountingCategoryName = invoice.items.some((item) => /tuition|books|uniform|wear|transport|boarding|registration/i.test(item.name))
-      ? 'Tuition Fees'
-      : 'School Fees';
-
     const { payment, updatedInvoice } = await prisma.$transaction(async (transaction) => {
       const payment = await transaction.payment.create({
         data: {
@@ -3380,62 +3376,78 @@ router.post('/fees/payments/record', verifyAuth, requireAccountingAccess, requir
       });
 
       if (accountingRecorderId) {
-        const accountingCategory = await transaction.accountCategory.upsert({
-          where: {
-            schoolId_type_name: {
+        const accountingRows = allocationRows.length > 0
+          ? allocationRows
+          : [{ invoiceItemId: null, amount: amountInCents }];
+
+        for (const [index, allocation] of accountingRows.entries()) {
+          const invoiceItem = allocation.invoiceItemId
+            ? invoice.items.find((item) => item.id === allocation.invoiceItemId)
+            : null;
+          const accountingCategoryName = invoiceItem?.name?.trim() || 'Other Income';
+          const accountingCategory = await transaction.accountCategory.upsert({
+            where: {
+              schoolId_type_name: {
+                schoolId,
+                type: 'INCOME',
+                name: accountingCategoryName,
+              },
+            },
+            update: {
+              isActive: true,
+              description: invoiceItem?.feeScheduleItemId
+                ? 'Synchronized from the school fee schedule'
+                : 'Fee income captured from invoice payments',
+            },
+            create: {
               schoolId,
               type: 'INCOME',
               name: accountingCategoryName,
-            },
-          },
-          update: {
-            isActive: true,
-            description: 'Fee income captured from invoice payments',
-          },
-          create: {
-            schoolId,
-            type: 'INCOME',
-            name: accountingCategoryName,
-            description: 'Fee income captured from invoice payments',
-          },
-        });
-
-        const accountingTransaction = await transaction.financialTransaction.create({
-          data: {
-            schoolId,
-            categoryId: accountingCategory.id,
-            type: 'INCOME',
-            amount: amountInCents,
-            currency: schoolCurrency,
-            paymentMethod: method,
-            paymentId: payment.id,
-            invoiceId,
-            description: `Fee payment received for ${invoice.pupil.firstName} ${invoice.pupil.lastName} (${invoice.invoiceNo})`,
-            referenceNumber: invoice.invoiceNo || payment.reference || payment.id,
-            transactionDate: new Date(),
-            status: 'POSTED',
-            createdBy: accountingRecorderId,
-            postedAt: new Date(),
-            postedBy: accountingRecorderId,
-          },
-        });
-
-        if (userId) {
-          await transaction.financialAuditLog.create({
-            data: {
-              schoolId,
-              transactionId: accountingTransaction.id,
-              action: 'FEE_PAYMENT_SYNCED_TO_ACCOUNTING',
-              previousValues: JSON.stringify({ status: 'DRAFT' }),
-              newValues: JSON.stringify({
-                invoiceId,
-                paymentId: payment.id,
-                amount: amountInCents,
-                category: accountingCategoryName,
-              }),
-              changedBy: userId,
+              description: invoiceItem?.feeScheduleItemId
+                ? 'Synchronized from the school fee schedule'
+                : 'Fee income captured from invoice payments',
             },
           });
+
+          const accountingTransaction = await transaction.financialTransaction.create({
+            data: {
+              schoolId,
+              categoryId: accountingCategory.id,
+              type: 'INCOME',
+              amount: allocation.amount,
+              currency: schoolCurrency,
+              paymentMethod: method,
+              paymentId: index === 0 ? payment.id : null,
+              invoiceId,
+              invoiceItemId: allocation.invoiceItemId,
+              description: `Fee payment received for ${invoiceItem?.name || 'school fees'} - ${invoice.pupil.firstName} ${invoice.pupil.lastName} (${invoice.invoiceNo})`,
+              referenceNumber: invoice.invoiceNo || payment.reference || payment.id,
+              transactionDate: new Date(),
+              status: 'POSTED',
+              createdBy: accountingRecorderId,
+              postedAt: new Date(),
+              postedBy: accountingRecorderId,
+            },
+          });
+
+          if (userId) {
+            await transaction.financialAuditLog.create({
+              data: {
+                schoolId,
+                transactionId: accountingTransaction.id,
+                action: 'FEE_ITEM_PAYMENT_SYNCED_TO_ACCOUNTING',
+                previousValues: JSON.stringify({ status: 'DRAFT' }),
+                newValues: JSON.stringify({
+                  invoiceId,
+                  invoiceItemId: allocation.invoiceItemId,
+                  paymentId: payment.id,
+                  amount: allocation.amount,
+                  category: accountingCategoryName,
+                }),
+                changedBy: userId,
+              },
+            });
+          }
         }
       } else {
         throw new Error('Unable to resolve a staff user for accounting synchronization');
