@@ -10,6 +10,45 @@ const DEFAULT_ACCOUNT_CATEGORIES = {
   EXPENSE: ['Staff Salaries', 'Utilities', 'Maintenance', 'Stationery', 'Transport', 'Admin Expenses', 'Other Expenses'],
 } as const;
 
+function isFeeIncomeCategory(categoryName?: string | null) {
+  if (!categoryName) return false;
+
+  const normalized = categoryName.toLowerCase();
+  return ['school fees', 'tuition fees', 'transport fees', 'exam fees', 'boarding fees', 'registration fees', 'books fees', 'uniform fees'].some((keyword) => normalized.includes(keyword));
+}
+
+export function calculateSchoolFinanceSummary({
+  monthlyTransactions,
+  monthlyPayments,
+}: {
+  monthlyTransactions: Array<{
+    type: 'INCOME' | 'EXPENSE';
+    amount: number;
+    description?: string | null;
+    category?: { name?: string | null } | null;
+  }>;
+  monthlyPayments: Array<{ amount: number }>; 
+}) {
+  const feeIncome = monthlyPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  const otherIncome = monthlyTransactions
+    .filter((transaction) => transaction.type === 'INCOME' && !isFeeIncomeCategory(transaction.category?.name ?? null))
+    .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+
+  const expenses = monthlyTransactions
+    .filter((transaction) => transaction.type === 'EXPENSE')
+    .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+
+  const monthlyIncome = feeIncome + otherIncome;
+
+  return {
+    feeIncome,
+    otherIncome,
+    monthlyIncome,
+    monthlyExpenses: expenses,
+    cashPosition: monthlyIncome - expenses,
+  };
+}
+
 async function ensureDefaultAccountCategories(schoolId: string) {
   const existing = await prisma.accountCategory.findMany({
     where: { schoolId },
@@ -58,37 +97,61 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
 
     const today = new Date();
     const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    
-    // Fetch transactions for current month
-    const monthlyTransactions = await prisma.financialTransaction.findMany({
-      where: {
-        schoolId,
-        status: 'POSTED',
-        transactionDate: {
-          gte: firstDayOfMonth,
-          lte: today,
+    const rawStartDate = typeof req.query.startDate === 'string' ? req.query.startDate : undefined;
+    const rawEndDate = typeof req.query.endDate === 'string' ? req.query.endDate : undefined;
+
+    const startDate = rawStartDate ? new Date(rawStartDate) : firstDayOfMonth;
+    const endDate = rawEndDate ? new Date(rawEndDate) : today;
+
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid date range' });
+    }
+
+    const [monthlyTransactions, monthlyPayments, school] = await Promise.all([
+      prisma.financialTransaction.findMany({
+        where: {
+          schoolId,
+          status: 'POSTED',
+          transactionDate: {
+            gte: startDate,
+            lte: endDate,
+          },
         },
-      },
-      include: {
-        category: true,
-      },
-    });
+        include: {
+          category: true,
+        },
+      }),
+      prisma.payment.findMany({
+        where: {
+          invoice: {
+            schoolId,
+          },
+          paidAt: {
+            gte: startDate,
+            lte: endDate,
+          },
+        },
+        select: {
+          amount: true,
+          paidAt: true,
+        },
+      }),
+      prisma.school.findUnique({
+        where: { id: schoolId },
+        select: { currency: true },
+      }),
+    ]);
 
-    // Calculate totals
-    const income = monthlyTransactions
-      .filter(t => t.type === 'INCOME')
-      .reduce((sum, t) => sum + t.amount, 0);
-
-    const expenses = monthlyTransactions
-      .filter(t => t.type === 'EXPENSE')
-      .reduce((sum, t) => sum + t.amount, 0);
-
-    const cashPosition = income - expenses;
-
-    // Get outstanding student fees
-    const school = await prisma.school.findUnique({
-      where: { id: schoolId },
-      select: { currency: true },
+    const { feeIncome, otherIncome, monthlyIncome, monthlyExpenses, cashPosition } = calculateSchoolFinanceSummary({
+      monthlyTransactions: monthlyTransactions.map((transaction) => ({
+        type: transaction.type,
+        amount: transaction.amount,
+        description: transaction.description,
+        category: transaction.category,
+      })),
+      monthlyPayments: monthlyPayments.map((payment) => ({
+        amount: payment.amount,
+      })),
     });
 
     // Get recent transactions
@@ -109,10 +172,16 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
 
     res.json({
       cashPosition,
-      monthlyIncome: income,
-      monthlyExpenses: expenses,
+      feeIncome,
+      otherIncome,
+      monthlyIncome,
+      monthlyExpenses,
       currency: school?.currency || 'NGN',
       recentTransactions,
+      range: {
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+      },
     });
   } catch (error) {
     console.error('Bursar overview error:', error);
