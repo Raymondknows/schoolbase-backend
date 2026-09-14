@@ -99,12 +99,41 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
     const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const rawStartDate = typeof req.query.startDate === 'string' ? req.query.startDate : undefined;
     const rawEndDate = typeof req.query.endDate === 'string' ? req.query.endDate : undefined;
+    const rawAcademicYearId = typeof req.query.academicYearId === 'string' ? req.query.academicYearId : undefined;
+    const rawTermId = typeof req.query.termId === 'string' ? req.query.termId : undefined;
 
     const startDate = rawStartDate ? new Date(rawStartDate) : firstDayOfMonth;
     const endDate = rawEndDate ? new Date(rawEndDate) : today;
 
     if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
       return res.status(400).json({ error: 'Invalid date range' });
+    }
+
+    const feePaymentWhere: any = {
+      invoice: {
+        schoolId,
+      },
+      paidAt: {
+        gte: startDate,
+        lte: endDate,
+      },
+    };
+
+    const feeScheduleFilter: Record<string, any> = {};
+    if (rawTermId) {
+      feeScheduleFilter.termId = rawTermId;
+    }
+    if (rawAcademicYearId) {
+      feeScheduleFilter.term = {
+        academicYearId: rawAcademicYearId,
+      };
+    }
+
+    if (Object.keys(feeScheduleFilter).length > 0) {
+      feePaymentWhere.invoice = {
+        ...feePaymentWhere.invoice,
+        feeSchedule: feeScheduleFilter,
+      };
     }
 
     const [monthlyTransactions, monthlyPayments, school] = await Promise.all([
@@ -122,15 +151,7 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
         },
       }),
       prisma.payment.findMany({
-        where: {
-          invoice: {
-            schoolId,
-          },
-          paidAt: {
-            gte: startDate,
-            lte: endDate,
-          },
-        },
+        where: feePaymentWhere,
         select: {
           amount: true,
           paidAt: true,
