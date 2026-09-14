@@ -421,6 +421,22 @@ async function syncFeeScheduleAmount(scheduleId: string, schoolId: string) {
   });
 }
 
+async function resolveUserId(req: Request): Promise<string | null> {
+  const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
+  if (!token) return null;
+
+  try {
+    const { payload } = await jwtVerify(token, secret());
+    if (payload && typeof payload === 'object' && 'userId' in payload) {
+      return String((payload as any).userId);
+    }
+  } catch (err) {
+    console.error('[resolveUserId] JWT verification failed:', (err as Error).message);
+  }
+
+  return null;
+}
+
 async function resolveSchoolId(req: Request) {
   // Check query parameter first
   const schoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string);
@@ -3022,6 +3038,7 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
       }
     }
 
+    const userId = await resolveUserId(req);
     const { payment, updatedInvoice } = await prisma.$transaction(async (transaction) => {
       const payment = await transaction.payment.create({
         data: {
@@ -3029,6 +3046,7 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
           amount: amountInCents,
           method,
           reference: reference || null,
+          recordedBy: userId ?? null,
         },
       });
 
@@ -3052,6 +3070,78 @@ router.post('/fees/payments/record', requireSubscription, async (req: Request, r
 
       return { payment, updatedInvoice };
     });
+
+    const accountingRecorderId = userId ?? payment.recordedBy ?? (await prisma.user.findFirst({
+      where: {
+        schoolId,
+        role: { in: ['SCHOOL_ADMIN', 'BURSAR'] },
+      },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    }))?.id ?? null;
+
+    const accountingCategoryName = invoice.items.some((item) => /tuition|books|uniform|wear|transport|boarding|registration/i.test(item.name))
+      ? 'Tuition Fees'
+      : 'School Fees';
+
+    const accountingCategory = await prisma.accountCategory.upsert({
+      where: {
+        schoolId_type_name: {
+          schoolId,
+          type: 'INCOME',
+          name: accountingCategoryName,
+        },
+      },
+      update: {
+        isActive: true,
+        description: 'Fee income captured from invoice payments',
+      },
+      create: {
+        schoolId,
+        type: 'INCOME',
+        name: accountingCategoryName,
+        description: 'Fee income captured from invoice payments',
+      },
+    });
+
+    let accountingTransaction: any = null;
+    if (accountingRecorderId) {
+      accountingTransaction = await prisma.financialTransaction.create({
+        data: {
+          schoolId,
+          categoryId: accountingCategory.id,
+          type: 'INCOME',
+          amount: amountInCents,
+          description: `Fee payment received for ${invoice.pupil.firstName} ${invoice.pupil.lastName} (${invoice.invoiceNo})`,
+          referenceNumber: invoice.invoiceNo || payment.reference || payment.id,
+          transactionDate: new Date(),
+          status: 'POSTED',
+          createdBy: accountingRecorderId,
+          postedAt: new Date(),
+          postedBy: accountingRecorderId,
+        },
+      });
+
+      if (userId) {
+        await prisma.financialAuditLog.create({
+          data: {
+            schoolId,
+            transactionId: accountingTransaction.id,
+            action: 'FEE_PAYMENT_SYNCED_TO_ACCOUNTING',
+            previousValues: JSON.stringify({ status: 'DRAFT' }),
+            newValues: JSON.stringify({
+              invoiceId,
+              paymentId: payment.id,
+              amount: amountInCents,
+              category: accountingCategoryName,
+            }),
+            changedBy: userId,
+          },
+        });
+      }
+    } else {
+      console.warn('[fees/payments/record] Skipped accounting ledger sync because no valid staff user could be resolved for school', schoolId);
+    }
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
@@ -5697,9 +5787,11 @@ router.post('/teachers', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'School ID required' });
     }
 
-    const { name, email, password, classIds = [], subjectIds = [] } = req.body;
+    const { name, email, password, classIds = [], subjectIds = [], role = 'TEACHER' } = req.body;
 
-    console.log('[POST /teachers] Extracted fields:', { name, email, classIds, subjectIds });
+    const normalizedRole = role === 'BURSAR' || role === 'ACCOUNTANT' ? 'BURSAR' : 'TEACHER';
+
+    console.log('[POST /teachers] Extracted fields:', { name, email, classIds, subjectIds, role: normalizedRole });
 
     if (!name || !email || !password) {
       console.error('[POST /teachers] Missing required fields:', { name: !!name, email: !!email, password: !!password });
@@ -5719,15 +5811,15 @@ router.post('/teachers', async (req: Request, res: Response) => {
     // Hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // Create teacher user
-    console.log('[POST /teachers] Creating user with:', { name, email: email.toLowerCase().trim(), role: 'TEACHER', schoolId });
+    // Create staff user
+    console.log('[POST /teachers] Creating user with:', { name, email: email.toLowerCase().trim(), role: normalizedRole, schoolId });
     
     const teacher = await prisma.user.create({
       data: {
         name,
         email: email.toLowerCase().trim(),
         passwordHash,
-        role: 'TEACHER',
+        role: normalizedRole,
         schoolId,
       },
     });
@@ -5792,7 +5884,7 @@ router.post('/teachers', async (req: Request, res: Response) => {
         email: teacher.email,
         role: teacher.role,
       },
-      message: 'Teacher created successfully. Login credentials sent to their email.',
+      message: normalizedRole === 'BURSAR' ? 'Bursar / accountant created successfully. Login credentials sent to their email.' : 'Teacher created successfully. Login credentials sent to their email.',
     });
   } catch (error) {
     console.error('Error creating teacher:', error);

@@ -129,6 +129,8 @@ async function loadRoutes() {
     console.log('✓ Loaded assessment setup routes');
     const { default: resultPinRoutes } = await import('./routes/result-pins.js');
     console.log('✓ Loaded result PIN routes');
+    const { default: bursarRoutes } = await import('./routes/bursar.js');
+    console.log('✓ Loaded bursar routes');
 
     app.use('/api/admin', adminRoutes);
     app.use('/api/admin/assessment-components', adminComponentsRoutes);
@@ -146,6 +148,7 @@ async function loadRoutes() {
     app.use('/api/parent', parentRoutes);
     app.use('/api/admin', dashboardRoutes);
     app.use('/api/teacher', teacherRoutes);
+    app.use('/api/bursar', bursarRoutes);
     app.use('/api', timetableRoutes);
     app.use('/api/auth', authRoutes);
     app.use('/schoolbase-admin/api', schoolbaseAdminRoutes);

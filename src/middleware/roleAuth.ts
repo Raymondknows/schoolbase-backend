@@ -72,8 +72,21 @@ export function requireStaff(req: AuthenticatedRequest, res: Response, next: Nex
     return res.status(401).json({ error: 'Not authenticated' });
   }
 
-  if (req.user.role !== 'TEACHER' && req.user.role !== 'SCHOOL_ADMIN') {
+  if (req.user.role !== 'TEACHER' && req.user.role !== 'SCHOOL_ADMIN' && req.user.role !== 'BURSAR') {
     return res.status(403).json({ error: 'Forbidden: Staff access required' });
+  }
+
+  next();
+}
+
+// Ensure user is a bursar/accountant
+export function requireBursar(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  if (req.user.role !== 'BURSAR') {
+    return res.status(403).json({ error: 'Forbidden: Bursar/Accountant access required' });
   }
 
   next();

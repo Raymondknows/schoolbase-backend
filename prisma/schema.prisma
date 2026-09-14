@@ -107,6 +107,9 @@ model School {
   platformSupportRequests       PlatformSupportRequest[]
   auditLogs                     PlatformAuditLog[]
   emailLogs                     EmailLog[]
+  accountCategories             AccountCategory[]
+  financialTransactions         FinancialTransaction[]
+  financialAuditLogs            FinancialAuditLog[]
 
   status                        SchoolStatus      @default(TRIAL)
   plan                          SchoolPlan        @default(FREE)
@@ -402,6 +405,12 @@ model User {
   assignedTasks     SupportTeamTask[]     @relation("SupportTaskAssignee")
   timetableEntries  TimetableEntry[]
   school            School?               @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  
+  // Financial transactions
+  createdTransactions   FinancialTransaction[] @relation("FinancialTransactionCreatedBy")
+  postedTransactions    FinancialTransaction[] @relation("FinancialTransactionPostedBy")
+  reversedTransactions  FinancialTransaction[] @relation("FinancialTransactionReversedBy")
+  auditLogChanges       FinancialAuditLog[]
 
   @@index([schoolId], map: "User_schoolId_fkey")
 }
@@ -1583,6 +1592,17 @@ enum EmailStatus {
   CLICKED
 }
 
+enum TransactionType {
+  INCOME
+  EXPENSE
+}
+
+enum TransactionStatus {
+  DRAFT
+  POSTED
+  REVERSED
+}
+
 model EmailLog {
   id             String      @id @default(cuid())
   schoolId       String?
@@ -1602,4 +1622,72 @@ model EmailLog {
   @@index([schoolId], map: "EmailLog_schoolId_fkey")
   @@index([emailType])
   @@index([sentAt])
+}
+
+model AccountCategory {
+  id              String @id @default(cuid())
+  schoolId        String
+  school          School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  type            TransactionType
+  name            String
+  description     String?
+  isActive        Boolean @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  transactions    FinancialTransaction[]
+
+  @@unique([schoolId, type, name])
+  @@index([schoolId])
+  @@index([type])
+}
+
+model FinancialTransaction {
+  id                String            @id @default(cuid())
+  schoolId          String
+  school            School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  categoryId        String
+  category          AccountCategory   @relation(fields: [categoryId], references: [id])
+  type              TransactionType
+  amount            Int
+  description       String?
+  referenceNumber   String?
+  transactionDate   DateTime
+  status            TransactionStatus @default(DRAFT)
+  createdBy         String
+  createdByUser     User              @relation("FinancialTransactionCreatedBy", fields: [createdBy], references: [id])
+  postedAt          DateTime?
+  postedBy          String?
+  postedByUser      User?             @relation("FinancialTransactionPostedBy", fields: [postedBy], references: [id])
+  reversalDate      DateTime?
+  reversalReason    String?
+  reversedBy        String?
+  reversedByUser    User?             @relation("FinancialTransactionReversedBy", fields: [reversedBy], references: [id])
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  auditLogs         FinancialAuditLog[]
+
+  @@index([schoolId])
+  @@index([categoryId])
+  @@index([type])
+  @@index([status])
+  @@index([transactionDate])
+}
+
+model FinancialAuditLog {
+  id                  String @id @default(cuid())
+  schoolId            String
+  school              School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  transactionId       String
+  transaction         FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  action              String
+  previousValues      String? @db.LongText
+  newValues           String? @db.LongText
+  changedBy           String
+  changedByUser       User   @relation(fields: [changedBy], references: [id])
+  createdAt           DateTime @default(now())
+
+  @@index([schoolId])
+  @@index([transactionId])
 }

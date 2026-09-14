@@ -243,51 +243,55 @@ router.post('/login', handleSchoolLogin);
 router.post('/admin-login', handleSchoolLogin);
 
 // ============================================
-// POST /api/auth/verify
+// GET/POST /api/auth/verify
 // Verify current session
 // ============================================
-router.post('/verify', async (req: Request, res: Response) => {
+async function verifySessionRoute(req: Request, res: Response) {
   try {
-    const token = req.cookies?.schoolbase_session;
-    
+    const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
+
     if (!token) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         authenticated: false,
-        error: 'No session found' 
+        error: 'No session found',
       });
     }
 
     const { payload } = await jwtVerify(token, secret());
-      // Include basic school subscription state when available to help frontend gating
-      let schoolInfo = null;
-      try {
-        if (payload && typeof payload === 'object' && (payload as any).schoolId) {
-          const schoolId = String((payload as any).schoolId);
-          const school = await prisma.school.findUnique({
-            where: { id: schoolId },
-            select: { id: true, plan: true, status: true, trialEndsAt: true, subscriptionExpiresAt: true },
-          });
-          if (school) {
-            schoolInfo = school;
-          }
-        }
-      } catch (err) {
-        console.error('[AUTH] Failed to fetch school info for verify:', err);
-      }
 
-      res.json({
-        authenticated: true,
-        user: payload,
-        school: schoolInfo,
-      });
+    let schoolInfo = null;
+    try {
+      if (payload && typeof payload === 'object' && (payload as any).schoolId) {
+        const schoolId = String((payload as any).schoolId);
+        const school = await prisma.school.findUnique({
+          where: { id: schoolId },
+          select: { id: true, plan: true, status: true, trialEndsAt: true, subscriptionExpiresAt: true },
+        });
+        if (school) {
+          schoolInfo = school;
+        }
+      }
+    } catch (err) {
+      console.error('[AUTH] Failed to fetch school info for verify:', err);
+    }
+
+    return res.json({
+      authenticated: true,
+      user: payload,
+      session: payload,
+      school: schoolInfo,
+    });
   } catch (error) {
     console.error('[AUTH] Verify error:', error);
-    res.status(401).json({ 
+    return res.status(401).json({
       authenticated: false,
-      error: 'Invalid session' 
+      error: 'Invalid session',
     });
   }
-});
+}
+
+router.get('/verify', verifySessionRoute);
+router.post('/verify', verifySessionRoute);
 
 // ============================================
 // POST /api/auth/logout
