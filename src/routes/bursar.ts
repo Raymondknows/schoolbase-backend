@@ -80,6 +80,34 @@ async function ensureDefaultAccountCategories(schoolId: string) {
   });
 }
 
+async function resolveFeeInvoiceNumbersForAcademicContext(schoolId: string, academicYearId?: string, termId?: string) {
+  if (!academicYearId && !termId) {
+    return [];
+  }
+
+  const where: Record<string, any> = { schoolId };
+
+  if (termId) {
+    where.feeSchedule = { termId };
+  }
+
+  if (academicYearId) {
+    where.feeSchedule = {
+      ...where.feeSchedule,
+      term: {
+        academicYearId,
+      },
+    };
+  }
+
+  const invoices = await prisma.invoice.findMany({
+    where,
+    select: { invoiceNo: true },
+  });
+
+  return invoices.map((invoice) => invoice.invoiceNo).filter(Boolean);
+}
+
 // Middleware: Apply to all routes
 router.use(verifyAuth);
 router.use(requireBursar);
@@ -136,16 +164,26 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
       };
     }
 
+    const feeInvoiceNumbers = await resolveFeeInvoiceNumbersForAcademicContext(schoolId, rawAcademicYearId, rawTermId);
+
+    const financialTransactionWhere: Record<string, any> = {
+      schoolId,
+      status: 'POSTED',
+      transactionDate: {
+        gte: startDate,
+        lte: endDate,
+      },
+    };
+
+    if (rawAcademicYearId || rawTermId) {
+      financialTransactionWhere.referenceNumber = {
+        in: feeInvoiceNumbers.length > 0 ? feeInvoiceNumbers : ['__NO_MATCH__'],
+      };
+    }
+
     const [monthlyTransactions, monthlyPayments, school] = await Promise.all([
       prisma.financialTransaction.findMany({
-        where: {
-          schoolId,
-          status: 'POSTED',
-          transactionDate: {
-            gte: startDate,
-            lte: endDate,
-          },
-        },
+        where: financialTransactionWhere,
         include: {
           category: true,
         },
@@ -175,12 +213,23 @@ router.get('/overview', async (req: AuthenticatedRequest, res: Response) => {
       })),
     });
 
-    // Get recent transactions
-    const recentTransactions = await prisma.financialTransaction.findMany({
-      where: {
-        schoolId,
-        status: 'POSTED',
+    const recentTransactionWhere: Record<string, any> = {
+      schoolId,
+      status: 'POSTED',
+      transactionDate: {
+        gte: startDate,
+        lte: endDate,
       },
+    };
+
+    if (rawAcademicYearId || rawTermId) {
+      recentTransactionWhere.referenceNumber = {
+        in: feeInvoiceNumbers.length > 0 ? feeInvoiceNumbers : ['__NO_MATCH__'],
+      };
+    }
+
+    const recentTransactions = await prisma.financialTransaction.findMany({
+      where: recentTransactionWhere,
       include: {
         category: true,
         createdByUser: {

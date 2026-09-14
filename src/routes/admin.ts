@@ -840,6 +840,17 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentAccountName: true,
         manualPaymentAccountNumber: true,
         manualPaymentBankName: true,
+        admissionsEnabled: true,
+        admissionsOpeningDate: true,
+        admissionsClosingDate: true,
+        admissionsIntroText: true,
+        admissionsRequirements: true,
+        admissionsContactInfo: true,
+        resultAccessPinEnabled: true,
+        resultAccessMode: true,
+        resultAccessPinType: true,
+        resultAccessPinValidity: true,
+        resultAccessAllowRegeneration: true,
         paymentAccounts: {
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
@@ -871,6 +882,19 @@ router.get('/settings', async (req: Request, res: Response) => {
         manualPaymentAccountName: school.manualPaymentAccountName,
         manualPaymentAccountNumber: school.manualPaymentAccountNumber,
         manualPaymentBankName: school.manualPaymentBankName,
+        admissionsEnabled: school.admissionsEnabled,
+        admissionsOpeningDate: school.admissionsOpeningDate,
+        admissionsClosingDate: school.admissionsClosingDate,
+        admissionsIntroText: school.admissionsIntroText,
+        admissionsRequirements: school.admissionsRequirements,
+        admissionsContactInfo: school.admissionsContactInfo,
+        resultAccess: {
+          enabled: school.resultAccessPinEnabled,
+          mode: school.resultAccessMode,
+          pinType: school.resultAccessPinType,
+          pinValidity: school.resultAccessPinValidity,
+          allowRegeneration: school.resultAccessAllowRegeneration,
+        },
         paymentAccounts: school.paymentAccounts,
         hasPaystackPublic: Boolean(school.paystackPublicEncrypted),
         hasPaystackSecret: Boolean(school.paystackSecretEncrypted),
@@ -1069,6 +1093,17 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         manualPaymentAccountName: true,
         manualPaymentAccountNumber: true,
         manualPaymentBankName: true,
+        admissionsEnabled: true,
+        admissionsOpeningDate: true,
+        admissionsClosingDate: true,
+        admissionsIntroText: true,
+        admissionsRequirements: true,
+        admissionsContactInfo: true,
+        resultAccessPinEnabled: true,
+        resultAccessMode: true,
+        resultAccessPinType: true,
+        resultAccessPinValidity: true,
+        resultAccessAllowRegeneration: true,
         paymentAccounts: {
           where: { isActive: true },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
@@ -1109,6 +1144,19 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         manualPaymentAccountName: school.manualPaymentAccountName,
         manualPaymentAccountNumber: school.manualPaymentAccountNumber,
         manualPaymentBankName: school.manualPaymentBankName,
+        admissionsEnabled: school.admissionsEnabled,
+        admissionsOpeningDate: school.admissionsOpeningDate,
+        admissionsClosingDate: school.admissionsClosingDate,
+        admissionsIntroText: school.admissionsIntroText,
+        admissionsRequirements: school.admissionsRequirements,
+        admissionsContactInfo: school.admissionsContactInfo,
+        resultAccess: {
+          enabled: school.resultAccessPinEnabled,
+          mode: school.resultAccessMode,
+          pinType: school.resultAccessPinType,
+          pinValidity: school.resultAccessPinValidity,
+          allowRegeneration: school.resultAccessAllowRegeneration,
+        },
         paymentAccounts: school.paymentAccounts,
         paystackPublicKey:
           process.env.PAYSTACK_SUBSCRIPTION_PUBLIC_KEY ||
@@ -1123,6 +1171,96 @@ router.get('/settings/data', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching settings data:', error);
     res.status(500).json({ error: 'Failed to fetch settings data' });
+  }
+});
+
+// GET /api/admin/signatories - List signatories for the current school
+router.get('/signatories', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const signatories = await prisma.signatory.findMany({
+      where: { schoolId },
+      orderBy: [{ active: 'desc' }, { createdAt: 'asc' }],
+    });
+
+    return res.json({ signatories });
+  } catch (error) {
+    console.error('Error fetching signatories:', error);
+    return res.status(500).json({ error: 'Failed to fetch signatories' });
+  }
+});
+
+// POST /api/admin/signatories - Create a signatory for the current school
+router.post('/signatories', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const { name, title, phase, signatureUrl, active = true } = req.body ?? {};
+    if (!String(name ?? '').trim()) return res.status(400).json({ error: 'Name is required' });
+
+    const signatory = await prisma.signatory.create({
+      data: {
+        schoolId,
+        name: String(name).trim(),
+        title: title ? String(title).trim() : null,
+        phase: phase || null,
+        signatureUrl: signatureUrl || null,
+        active: Boolean(active),
+      },
+    });
+
+    return res.status(201).json({ signatory });
+  } catch (error) {
+    console.error('Error creating signatory:', error);
+    return res.status(500).json({ error: 'Failed to create signatory' });
+  }
+});
+
+// PUT /api/admin/signatories/:id - Update a school signatory
+router.put('/signatories/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const existing = await prisma.signatory.findFirst({ where: { id: req.params.id, schoolId } });
+    if (!existing) return res.status(404).json({ error: 'Signatory not found' });
+
+    const { name, title, phase, signatureUrl, active } = req.body ?? {};
+    const signatory = await prisma.signatory.update({
+      where: { id: existing.id },
+      data: {
+        ...(name !== undefined ? { name: String(name).trim() } : {}),
+        ...(title !== undefined ? { title: title ? String(title).trim() : null } : {}),
+        ...(phase !== undefined ? { phase: phase || null } : {}),
+        ...(signatureUrl !== undefined ? { signatureUrl: signatureUrl || null } : {}),
+        ...(active !== undefined ? { active: Boolean(active) } : {}),
+      },
+    });
+
+    return res.json({ signatory });
+  } catch (error) {
+    console.error('Error updating signatory:', error);
+    return res.status(500).json({ error: 'Failed to update signatory' });
+  }
+});
+
+// DELETE /api/admin/signatories/:id - Deactivate a school signatory
+router.delete('/signatories/:id', async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const existing = await prisma.signatory.findFirst({ where: { id: req.params.id, schoolId } });
+    if (!existing) return res.status(404).json({ error: 'Signatory not found' });
+
+    const signatory = await prisma.signatory.update({ where: { id: existing.id }, data: { active: false } });
+    return res.json({ signatory });
+  } catch (error) {
+    console.error('Error deactivating signatory:', error);
+    return res.status(500).json({ error: 'Failed to deactivate signatory' });
   }
 });
 
