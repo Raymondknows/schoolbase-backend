@@ -565,7 +565,21 @@ router.get('/admissions', async (req: Request, res: Response) => {
       orderBy: [{ createdAt: 'desc' }],
     });
 
-    res.json({ applications });
+    const studentIds = applications.map((application) => application.studentId).filter(Boolean) as string[];
+    const students = studentIds.length > 0
+      ? await prisma.pupil.findMany({
+          where: { schoolId, id: { in: studentIds } },
+          select: { id: true, admissionNo: true },
+        })
+      : [];
+    const admissionNumbers = new Map(students.map((student) => [student.id, student.admissionNo]));
+
+    res.json({
+      applications: applications.map((application) => ({
+        ...application,
+        admissionNo: application.studentId ? admissionNumbers.get(application.studentId) || null : null,
+      })),
+    });
   } catch (error) {
     console.error('Error fetching admission applications:', error);
     res.status(500).json({ error: 'Failed to fetch admissions' });
@@ -591,6 +605,156 @@ router.patch('/admissions/:id/status', async (req: Request, res: Response) => {
     });
 
     if (!application) return res.status(404).json({ error: 'Admission application not found' });
+
+    if (String(status) === 'APPROVED' && application.studentId) {
+      const repaired = await prisma.$transaction(async (transaction) => {
+        const existingStudent = await transaction.pupil.findFirst({
+          where: { id: application.studentId!, schoolId },
+          select: { id: true, admissionNo: true, firstName: true, lastName: true },
+        });
+
+        if (!existingStudent) {
+          throw new Error('Linked student record was not found');
+        }
+
+        let student = existingStudent;
+        if (!student.admissionNo) {
+          const [school, existingPupils] = await Promise.all([
+            transaction.school.findUnique({
+              where: { id: schoolId },
+              select: { name: true, initials: true },
+            }),
+            transaction.pupil.findMany({
+              where: { schoolId },
+              select: { id: true, schoolId: true, admissionNo: true },
+            }),
+          ]);
+
+          const admissionNo = getNextAdmissionNo({
+            schoolId,
+            schoolName: school?.name,
+            schoolInitials: school?.initials,
+            year: new Date().getFullYear(),
+            existingRecords: existingPupils,
+          });
+
+          student = await transaction.pupil.update({
+            where: { id: existingStudent.id },
+            data: { admissionNo },
+            select: { id: true, admissionNo: true, firstName: true, lastName: true },
+          });
+        }
+
+        const repairedApplication = await transaction.admissionApplication.update({
+          where: { id: application.id },
+          data: {
+            status: 'APPROVED',
+            reviewedAt: application.reviewedAt || new Date(),
+            reviewedBy: application.reviewedBy || await resolveUserName(req),
+          },
+        });
+
+        return { application: repairedApplication, student };
+      });
+
+      return res.status(200).json({
+        success: true,
+        alreadyProcessed: true,
+        application: repaired.application,
+        student: repaired.student,
+      });
+    }
+
+    if (String(status) === 'APPROVED') {
+      const result = await prisma.$transaction(async (transaction) => {
+        const school = await transaction.school.findUnique({
+          where: { id: schoolId },
+          select: { name: true, initials: true },
+        });
+
+        const existingPupils = await transaction.pupil.findMany({
+          where: { schoolId },
+          select: { id: true, schoolId: true, admissionNo: true },
+        });
+
+        const admissionNo = getNextAdmissionNo({
+          schoolId,
+          schoolName: school?.name,
+          schoolInitials: school?.initials,
+          year: new Date().getFullYear(),
+          existingRecords: existingPupils,
+        });
+
+        const intendedClass = application.intendedClass?.trim();
+        const classRecord = intendedClass
+          ? await transaction.class.findFirst({
+              where: { schoolId, name: intendedClass },
+              select: { id: true },
+            })
+          : null;
+
+        const student = await transaction.pupil.create({
+          data: {
+            schoolId,
+            firstName: application.studentFirstName || application.childName || application.firstName,
+            middleName: application.studentMiddleName,
+            lastName: application.studentLastName || application.childName || application.lastName,
+            admissionNo,
+            classId: classRecord?.id ?? null,
+            status: 'ACTIVE',
+            admissionDate: application.admissionDate || new Date(),
+            gender: application.gender,
+            dateOfBirth: application.dateOfBirth,
+            studentEmail: application.studentEmail,
+            studentPhone: application.studentPhone,
+            address: application.address,
+            bloodGroup: application.bloodGroup,
+            genotype: application.genotype,
+            medicalNotes: application.medicalNotes,
+            previousSchool: application.previousSchool,
+            previousClass: application.previousClass,
+            photoUrl: application.photoUrl,
+          },
+          select: { id: true, admissionNo: true, firstName: true, lastName: true },
+        });
+
+        const guardianFirst = application.guardianFirst || application.firstName;
+        const guardianLast = application.guardianLast || application.lastName;
+        const guardian = await transaction.guardian.create({
+          data: {
+            schoolId,
+            firstName: guardianFirst,
+            lastName: guardianLast,
+            phone: application.guardianPhone || application.phone || '',
+            altPhone: application.guardianAltPhone,
+            email: application.guardianEmail || application.email,
+            occupation: application.guardianOccupation,
+          },
+        });
+
+        await transaction.guardianPupil.create({
+          data: {
+            guardianId: guardian.id,
+            pupilId: student.id,
+            relation: application.guardianRelationship || 'Parent',
+          },
+        });
+
+        const updated = await transaction.admissionApplication.update({
+          where: { id: application.id },
+          data: {
+            status: 'APPROVED',
+            studentId: student.id,
+            reviewedAt: new Date(),
+            reviewedBy: await resolveUserName(req),
+          },
+        });
+
+        return { application: updated, student };
+      });
+
+      return res.status(200).json({ success: true, ...result });
+    }
 
     const updatedApplication = await prisma.admissionApplication.update({
       where: { id: application.id },

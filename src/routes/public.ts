@@ -437,11 +437,20 @@ router.post('/admissions', (req: Request, res: Response, next: any) => {
     const guardianAltPhone = normalizePublicAdmissionValue(req.body?.guardianAltPhone);
     const guardianOccupation = normalizePublicAdmissionValue(req.body?.guardianOccupation);
     const note = normalizePublicAdmissionValue(req.body?.note);
+    const requestId = normalizePublicAdmissionValue(req.headers['x-admission-request-id']);
     const parentName = `${guardianFirst || firstName || ''} ${guardianLast || lastName || ''}`.trim() || null;
     const childName = `${studentFirstName || ''} ${studentLastName || ''}`.trim() || null;
 
     if (!schoolSlug || !firstName || !lastName || !email || !phone || !studentFirstName || !studentLastName) {
       return res.status(400).json({ error: 'School, applicant name, applicant email, applicant phone, and student name are required' });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Please provide a valid applicant email address' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'Please upload a student photo before submitting' });
     }
 
     const school = await prisma.school.findUnique({
@@ -453,9 +462,57 @@ router.post('/admissions', (req: Request, res: Response, next: any) => {
       return res.status(404).json({ error: 'School not found' });
     }
 
+    const now = new Date();
+    if (!school.admissionsEnabled) {
+      return res.status(403).json({ error: 'Online admissions are currently closed' });
+    }
+
+    if (school.admissionsOpeningDate && now < school.admissionsOpeningDate) {
+      return res.status(403).json({
+        error: 'Online admissions are not open yet',
+        openingDate: school.admissionsOpeningDate.toISOString(),
+      });
+    }
+
+    if (school.admissionsClosingDate && now > school.admissionsClosingDate) {
+      return res.status(403).json({
+        error: 'Online admissions are closed',
+        closingDate: school.admissionsClosingDate.toISOString(),
+      });
+    }
+
+    if (requestId) {
+      const previousApplication = await prisma.admissionApplication.findFirst({
+        where: { schoolId: school.id, applicationNumber: requestId },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          childName: true,
+          intendedClass: true,
+          status: true,
+          createdAt: true,
+        },
+      });
+
+      if (previousApplication) {
+        return res.status(200).json({
+          ok: true,
+          message: 'Admission request already received.',
+          application: {
+            ...previousApplication,
+            status: normalizeAdmissionStatus(previousApplication.status),
+          },
+        });
+      }
+    }
+
     const application = await prisma.admissionApplication.create({
       data: {
         schoolId: school.id,
+        applicationNumber: requestId,
         firstName,
         lastName,
         email,
