@@ -4042,19 +4042,60 @@ router.get('/students/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    // Fetch invoices and calculate fees balance
-    const invoices = await prisma.invoice.findMany({
-      where: { pupilId: id, schoolId },
-    });
+    const [invoices, invoiceTotals, attendanceRecords, termSummaries, promotionHistory] = await Promise.all([
+      prisma.invoice.findMany({
+        where: { pupilId: id, schoolId },
+        include: {
+          feeSchedule: { include: { term: { include: { academicYear: true } } } },
+          payments: { orderBy: { paidAt: 'desc' }, take: 5 },
+          adjustments: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 12,
+      }),
+      prisma.invoice.aggregate({
+        where: { pupilId: id, schoolId },
+        _sum: { amountDue: true, amountPaid: true },
+        _count: { _all: true },
+      }),
+      prisma.attendanceRecord.findMany({
+        where: { pupilId: id, schoolId },
+        orderBy: { date: 'desc' },
+        take: 30,
+      }),
+      prisma.studentTermSummary.findMany({
+        where: { pupilId: id, schoolId },
+        orderBy: { updatedAt: 'desc' },
+        take: 8,
+      }),
+      prisma.promotionRecord.findMany({
+        where: { pupilId: id, schoolId },
+        orderBy: { decidedAt: 'desc' },
+        take: 8,
+      }),
+    ]);
 
-    const totalDue = invoices.reduce((sum, inv) => sum + inv.amountDue, 0);
-    const totalPaid = invoices.reduce((sum, inv) => sum + inv.amountPaid, 0);
+    const totalDue = invoiceTotals._sum.amountDue || 0;
+    const totalPaid = invoiceTotals._sum.amountPaid || 0;
     const feesBalance = totalDue - totalPaid;
+    const attendance = {
+      total: attendanceRecords.length,
+      present: attendanceRecords.filter((record) => record.status === 'PRESENT').length,
+      absent: attendanceRecords.filter((record) => record.status === 'ABSENT').length,
+      late: attendanceRecords.filter((record) => record.status === 'LATE').length,
+    };
+    const attendancePercentage = attendance.total > 0
+      ? Math.round(((attendance.present + attendance.late * 0.5) / attendance.total) * 100)
+      : null;
 
     res.json({
       ...pupil,
       feesBalance,
-      invoiceCount: invoices.length,
+      invoiceCount: invoiceTotals._count._all,
+      invoices,
+      attendance: { ...attendance, percentage: attendancePercentage, records: attendanceRecords },
+      termSummaries,
+      promotionHistory,
     });
   } catch (error) {
     console.error('Error fetching student:', error);
@@ -4447,7 +4488,7 @@ router.get('/teachers/data', async (req: Request, res: Response) => {
         orderBy: { name: 'asc' },
       }),
       prisma.user.findMany({
-        where: { schoolId, role: 'TEACHER' },
+        where: { schoolId, role: { in: ['TEACHER', 'BURSAR'] } },
         orderBy: { name: 'asc' },
         include: {
           teacherClasses: { include: { class: true } },
@@ -6238,14 +6279,14 @@ router.patch('/teachers/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
     const { name, email, password, classIds = [], subjectIds = [] } = req.body;
 
-    // Verify teacher belongs to school
+    // Verify staff member belongs to school
     const teacher = await prisma.user.findFirst({
-      where: { id, schoolId, role: 'TEACHER' },
+      where: { id, schoolId, role: { in: ['TEACHER', 'BURSAR'] } },
     });
 
     if (!teacher) {
-      console.error('[PATCH /teachers/:id] Teacher not found:', id);
-      return res.status(404).json({ error: 'Teacher not found' });
+      console.error('[PATCH /teachers/:id] Staff member not found:', id);
+      return res.status(404).json({ error: 'Staff member not found' });
     }
 
     console.log('[PATCH /teachers/:id] Updating teacher:', { id, name, email });
@@ -6343,13 +6384,13 @@ router.delete('/teachers/:id', async (req: Request, res: Response) => {
 
     const { id } = req.params;
 
-    // Verify teacher belongs to school
+    // Verify staff member belongs to school
     const teacher = await prisma.user.findFirst({
-      where: { id, schoolId, role: 'TEACHER' },
+      where: { id, schoolId, role: { in: ['TEACHER', 'BURSAR'] } },
     });
 
     if (!teacher) {
-      return res.status(404).json({ error: 'Teacher not found' });
+      return res.status(404).json({ error: 'Staff member not found' });
     }
 
     // Delete teacher and all associations
