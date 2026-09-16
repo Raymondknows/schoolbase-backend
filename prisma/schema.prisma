@@ -404,6 +404,7 @@ model User {
   createdTasks      SupportTeamTask[]     @relation("SupportTaskCreator")
   assignedTasks     SupportTeamTask[]     @relation("SupportTaskAssignee")
   timetableEntries  TimetableEntry[]
+  passwordResets    PasswordReset[]
   school            School?               @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   
   // Financial transactions
@@ -432,6 +433,20 @@ model SignupOtp {
   verifiedAt   DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+}
+
+model PasswordReset {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "PasswordReset_userId_fkey")
 }
 
 model SupportRequest {
