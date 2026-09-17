@@ -523,6 +523,87 @@ router.get('/audit-logs', async (req: Request, res: Response) => {
   }
 });
 
+// GET /schoolbase-admin/api/activity-summary - Summarize school activity for operations
+router.get('/activity-summary', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const requestedDays = Number.parseInt(String(req.query.days || '30'), 10);
+    const days = Number.isFinite(requestedDays) ? Math.min(Math.max(requestedDays, 7), 90) : 30;
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const [logs, schools] = await Promise.all([
+      prisma.platformAuditLog.findMany({
+        where: { createdAt: { gte: since } },
+        orderBy: { createdAt: 'desc' },
+        take: 10000,
+        select: { id: true, schoolId: true, event: true, createdAt: true, school: { select: { name: true } } },
+      }),
+      prisma.school.findMany({
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, name: true, status: true, createdAt: true },
+      }),
+    ]);
+
+    const actionCounts = new Map<string, number>();
+    const schoolCounts = new Map<string, { count: number; lastActivity: Date | null; actions: Set<string> }>();
+    const dailyCounts = new Map<string, number>();
+
+    for (const log of logs) {
+      const action = log.event.replace(/^API_(GET|POST|PUT|PATCH|DELETE)_/, '').replace(/^API_/, '');
+      actionCounts.set(action, (actionCounts.get(action) || 0) + 1);
+
+      const day = log.createdAt.toISOString().slice(0, 10);
+      dailyCounts.set(day, (dailyCounts.get(day) || 0) + 1);
+
+      if (log.schoolId) {
+        const current = schoolCounts.get(log.schoolId) || { count: 0, lastActivity: null, actions: new Set<string>() };
+        current.count += 1;
+        current.lastActivity = current.lastActivity && current.lastActivity > log.createdAt ? current.lastActivity : log.createdAt;
+        current.actions.add(action);
+        schoolCounts.set(log.schoolId, current);
+      }
+    }
+
+    const schoolActivity = schools.map((school) => {
+      const activity = schoolCounts.get(school.id);
+      return {
+        id: school.id,
+        name: school.name,
+        status: school.status,
+        createdAt: school.createdAt,
+        activityCount: activity?.count || 0,
+        lastActivity: activity?.lastActivity || null,
+        actionCount: activity?.actions.size || 0,
+      };
+    }).sort((a, b) => {
+      if (b.activityCount !== a.activityCount) return b.activityCount - a.activityCount;
+      return a.name.localeCompare(b.name);
+    });
+
+    const activeSchools = schoolActivity.filter((school) => school.activityCount > 0).length;
+    const silentSchools = schoolActivity.filter((school) => school.activityCount === 0).length;
+    const trend = Array.from({ length: days }, (_, index) => {
+      const date = new Date(Date.now() - (days - index - 1) * 24 * 60 * 60 * 1000);
+      const key = date.toISOString().slice(0, 10);
+      return { date: key, count: dailyCounts.get(key) || 0 };
+    });
+
+    res.json({
+      days,
+      since,
+      totals: { events: logs.length, schools: schools.length, activeSchools, silentSchools },
+      actionBreakdown: Array.from(actionCounts.entries()).map(([action, count]) => ({ action, count })).sort((a, b) => b.count - a.count).slice(0, 12),
+      trend,
+      schoolActivity,
+    });
+  } catch (error) {
+    console.error('Error building activity summary:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to build activity summary' });
+  }
+});
+
 // GET /schoolbase-admin/api/schools - Get all schools with pagination and optional filtering
 router.get('/schools', async (req: Request, res: Response) => {
   const session = await requirePlatformAdminSession(req, res);

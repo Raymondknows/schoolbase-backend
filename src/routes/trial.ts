@@ -4,6 +4,7 @@ import { SignJWT } from 'jose';
 import { generateOtp, getSignupOtp, saveSignupOtp, verifySignupOtp, resendSignupOtp } from '../services/otp.js';
 import { sendSignupOtpEmail, sendWelcomeEmail } from '../services/email.js';
 import { sendInternalSignupNotification } from '../services/email.js';
+import { recordActivity } from '../middleware/activityAudit.js';
 import { getPlatformSettingValue } from '../services/platform-settings.js';
 
 const router = Router();
@@ -186,6 +187,13 @@ router.post('/verify-otp', async (req: Request, res: Response) => {
         schoolId: school.id,
       },
     });
+
+    await recordActivity({
+      event: 'SCHOOL_SIGNUP_COMPLETED',
+      details: `New school signup completed for ${school.name} by ${adminEmail}`,
+      userId: adminUser.id,
+      schoolId: school.id,
+    }).catch((error) => console.warn('Failed to record school signup activity:', error));
 
     // Mark OTP as verified in the database
     await prisma.signupOtp.update({

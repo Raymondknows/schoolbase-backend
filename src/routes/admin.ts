@@ -19,6 +19,7 @@ import { evaluateSchoolWhatsAppSend, getPersistedSchoolWhatsAppPolicyRecord, rea
 import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
 import type { NextFunction } from 'express';
 import { requireAccountingAccess, verifyAuth } from '../middleware/roleAuth.js';
+import { recordActivity } from '../middleware/activityAudit.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -744,6 +745,12 @@ router.patch('/admissions/:id/status', async (req: Request, res: Response) => {
 
         return { application: updated, student };
       });
+
+      await recordActivity({
+        event: 'ADMISSION_CONVERTED_TO_STUDENT',
+        details: `Approved admission converted to student: ${result.student.firstName} ${result.student.lastName}`,
+        schoolId,
+      }).catch((error) => console.warn('Failed to record admission conversion activity:', error));
 
       return res.status(200).json({ success: true, ...result });
     }
@@ -3874,6 +3881,12 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
         guardians: { include: { guardian: true } },
       },
     });
+
+    await recordActivity({
+      event: 'STUDENT_REGISTERED',
+      details: `Student registered: ${pupil.firstName} ${pupil.lastName}${pupil.admissionNo ? ` (${pupil.admissionNo})` : ''}`,
+      schoolId,
+    }).catch((error) => console.warn('Failed to record student registration activity:', error));
 
     // Create or find guardian and link to pupil
     if (guardianFirst && guardianLast) {

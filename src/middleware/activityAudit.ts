@@ -13,6 +13,16 @@ function getSessionToken(req: Request) {
 }
 
 function getEventName(method: string, path: string) {
+  const normalizedPath = path.toLowerCase();
+  if (method === 'POST' && normalizedPath.includes('/students/import')) return 'STUDENTS_IMPORTED';
+  if (method === 'POST' && /\/students(?:\/|$)/.test(normalizedPath)) return 'STUDENT_ACTIVITY';
+  if (method === 'POST' && normalizedPath.includes('/fees/schedules')) return 'FEE_SCHEDULE_CREATED';
+  if (method === 'POST' && normalizedPath.includes('/invoices')) return 'INVOICE_ISSUED';
+  if (method === 'POST' && normalizedPath.includes('/payments')) return 'PAYMENT_RECORDED';
+  if (method === 'POST' && normalizedPath.includes('/attendance')) return 'ATTENDANCE_RECORDED';
+  if (method === 'POST' && normalizedPath.includes('/admissions')) return 'ADMISSION_ACTIVITY';
+  if (method === 'POST' && (normalizedPath.includes('/publish') || normalizedPath.includes('/results/publish'))) return 'RESULTS_PUBLISHED';
+
   const route = path.replace(/^\/+/, '').replace(/\//g, '_').replace(/[^a-zA-Z0-9_:-]/g, '');
   return `API_${method}_${route || 'ROOT'}`.slice(0, 190);
 }
