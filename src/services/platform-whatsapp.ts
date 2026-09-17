@@ -1,4 +1,7 @@
 import { platformBaileysSessionManager } from '../communications/platform-whatsapp-baileys.js';
+import { PrismaClient } from '@prisma/client';
+
+export const platformWhatsAppPrisma = new PrismaClient();
 
 export type PlatformWhatsAppConnectionStatus = {
   connected: boolean;
@@ -53,6 +56,11 @@ export type PlatformWhatsAppReadiness = {
 };
 
 export class PlatformWhatsAppService {
+  private readonly prisma = platformWhatsAppPrisma;
+  private accountId: string | null = null;
+  private persistenceAvailable = true;
+  private lastAccountSyncAt = 0;
+
   private readonly seedTemplates: PlatformWhatsAppTemplate[] = [
     {
       id: 'tpl-001',
@@ -400,6 +408,55 @@ export class PlatformWhatsAppService {
   private campaignStore: PlatformWhatsAppCampaign[] = [...this.seedCampaigns];
   private logStore: PlatformWhatsAppLog[] = [...this.seedLogs];
 
+  private async ensurePersistentAccount(): Promise<string | null> {
+    if (!this.persistenceAvailable) return null;
+    if (this.accountId) return this.accountId;
+
+    try {
+      const account = await this.prisma.platformWhatsAppAccount.findFirst({
+        where: { status: { in: ['ACTIVE', 'DISCONNECTED', 'ERROR'] } },
+        orderBy: { updatedAt: 'desc' },
+        select: { id: true },
+      });
+
+      if (account) {
+        this.accountId = account.id;
+        return account.id;
+      }
+
+      const created = await this.prisma.platformWhatsAppAccount.create({
+        data: {
+          displayName: 'SchoolBase Platform WhatsApp',
+          provider: 'BAILEYS',
+          status: 'DISCONNECTED',
+        },
+        select: { id: true },
+      });
+      this.accountId = created.id;
+      return created.id;
+    } catch (error) {
+      this.persistenceAvailable = false;
+      console.warn('[platform-whatsapp] Persistence unavailable; using in-memory fallback.', error);
+      return null;
+    }
+  }
+
+  private async ensurePersistentTemplates(accountId: string): Promise<void> {
+    const existingCount = await this.prisma.platformWhatsAppTemplate.count({ where: { accountId } });
+    if (existingCount > 0) return;
+
+    await this.prisma.platformWhatsAppTemplate.createMany({
+      data: this.seedTemplates.map((template) => ({
+        accountId,
+        name: template.name,
+        category: template.category,
+        status: template.status.toUpperCase(),
+        body: template.message || '',
+        language: 'en',
+      })),
+    });
+  }
+
   async getOverview(): Promise<{
     connected: boolean;
     provider: string;
@@ -415,6 +472,11 @@ export class PlatformWhatsAppService {
     approved: number;
   }> {
     const session = platformBaileysSessionManager.getStatus();
+    await this.syncAccountStatus({
+      connected: session.connected,
+      phoneNumber: session.phoneNumber,
+      lastError: session.lastError,
+    });
 
     return {
       connected: session.connected,
@@ -434,6 +496,11 @@ export class PlatformWhatsAppService {
 
   async getStatus(): Promise<PlatformWhatsAppConnectionStatus> {
     const session = platformBaileysSessionManager.getStatus();
+    await this.syncAccountStatus({
+      connected: session.connected,
+      phoneNumber: session.phoneNumber,
+      lastError: session.lastError,
+    });
 
     return {
       connected: session.connected,
@@ -451,7 +518,58 @@ export class PlatformWhatsAppService {
     };
   }
 
+  async syncAccountStatus(status: { connected: boolean; phoneNumber?: string | null; lastError?: string }, force = false): Promise<void> {
+    const accountId = await this.ensurePersistentAccount();
+    if (!accountId) return;
+
+    const now = Date.now();
+    if (!force && now - this.lastAccountSyncAt < 30_000) return;
+    this.lastAccountSyncAt = now;
+
+    try {
+      const currentAccount = await this.prisma.platformWhatsAppAccount.findUnique({
+        where: { id: accountId },
+        select: { status: true },
+      });
+      const nextStatus = status.lastError ? 'ERROR' : status.connected ? 'ACTIVE' : 'DISCONNECTED';
+      await this.prisma.platformWhatsAppAccount.update({
+        where: { id: accountId },
+        data: {
+          status: nextStatus,
+          phoneNumber: status.phoneNumber || undefined,
+          connectedAt: status.connected && currentAccount?.status !== 'ACTIVE' ? new Date() : undefined,
+          disconnectedAt: !status.connected && currentAccount?.status !== 'DISCONNECTED' ? new Date() : undefined,
+          lastHealthCheckAt: new Date(),
+          lastError: status.lastError || null,
+        },
+      });
+    } catch (error) {
+      console.warn('[platform-whatsapp] Could not sync platform account status.', error);
+    }
+  }
+
   async getTemplates(): Promise<PlatformWhatsAppTemplate[]> {
+    const accountId = await this.ensurePersistentAccount();
+    if (accountId) {
+      try {
+        await this.ensurePersistentTemplates(accountId);
+        const templates = await this.prisma.platformWhatsAppTemplate.findMany({
+          where: { accountId },
+          orderBy: { updatedAt: 'desc' },
+        });
+        return templates.map((template) => ({
+          id: template.id,
+          name: template.name,
+          category: template.category,
+          status: template.status.toLowerCase(),
+          lastUpdated: template.updatedAt.toISOString(),
+          message: template.body,
+        }));
+      } catch (error) {
+        this.persistenceAvailable = false;
+        console.warn('[platform-whatsapp] Template persistence failed; using in-memory fallback.', error);
+      }
+    }
     return this.templateStore;
   }
 
@@ -498,6 +616,33 @@ export class PlatformWhatsAppService {
       message: payload.message || 'Hello {{schoolName}}, this is a platform message from SchoolBase.',
     };
 
+    const accountId = await this.ensurePersistentAccount();
+    if (accountId) {
+      try {
+        const saved = await this.prisma.platformWhatsAppTemplate.create({
+          data: {
+            accountId,
+            name,
+            category,
+            status: template.status.toUpperCase(),
+            body: template.message || '',
+            language: 'en',
+          },
+        });
+        return {
+          id: saved.id,
+          name: saved.name,
+          category: saved.category,
+          status: saved.status.toLowerCase(),
+          lastUpdated: saved.updatedAt.toISOString(),
+          message: saved.body,
+        };
+      } catch (error) {
+        this.persistenceAvailable = false;
+        console.warn('[platform-whatsapp] Template persistence failed; using in-memory fallback.', error);
+      }
+    }
+
     this.templateStore.unshift(template);
     return template;
   }
@@ -514,7 +659,7 @@ export class PlatformWhatsAppService {
     summary: string;
   }> {
     const audience = payload.audience || 'All schools';
-    const template = this.templateStore.find((item) => item.id === payload.templateId) || null;
+    const template = (await this.getTemplates()).find((item) => item.id === payload.templateId) || null;
     const estimatedRecipients = Number(payload.schoolCount ?? 0);
 
     return {
@@ -534,8 +679,9 @@ export class PlatformWhatsAppService {
     message?: string;
     scheduled?: string;
     schoolCount?: number;
+    recipients?: Array<{ schoolId: string; recipientName: string; phoneNumber: string }>;
   } = {}): Promise<PlatformWhatsAppCampaign> {
-    const selectedTemplate = this.templateStore.find((item) => item.id === payload.templateId) || null;
+    const selectedTemplate = (await this.getTemplates()).find((item) => item.id === payload.templateId) || null;
     const audience = payload.audience || 'All schools';
     const preview = await this.previewCampaign({
       audience,
@@ -543,6 +689,40 @@ export class PlatformWhatsAppService {
       message: payload.message,
       schoolCount: payload.schoolCount,
     });
+    const accountId = await this.ensurePersistentAccount();
+    if (accountId) {
+      try {
+        const saved = await this.prisma.platformWhatsAppCampaign.create({
+          data: {
+            accountId,
+            templateId: selectedTemplate?.id,
+            name: payload.name || selectedTemplate?.name || 'Platform campaign',
+            audienceType: 'SCHOOL_FILTER',
+            audienceFilter: JSON.stringify({ audience, message: payload.message || selectedTemplate?.message || '' }),
+            status: 'QUEUED',
+            recipientsCount: preview.estimatedRecipients,
+            scheduledAt: payload.scheduled && !Number.isNaN(Date.parse(payload.scheduled))
+              ? new Date(payload.scheduled)
+              : null,
+            recipients: payload.recipients?.length
+              ? { create: payload.recipients }
+              : undefined,
+          },
+        });
+        return {
+          id: saved.id,
+          name: saved.name,
+          audience,
+          status: saved.status.toLowerCase() as PlatformWhatsAppCampaignStatus,
+          recipients: saved.recipientsCount,
+          scheduled: saved.scheduledAt?.toISOString() || payload.scheduled || 'Queued for review',
+        };
+      } catch (error) {
+        this.persistenceAvailable = false;
+        console.warn('[platform-whatsapp] Campaign persistence failed; using in-memory fallback.', error);
+      }
+    }
+
     const campaign: PlatformWhatsAppCampaign = {
       id: `camp-${Date.now()}`,
       name: payload.name || selectedTemplate?.name || 'Platform campaign',
@@ -557,10 +737,55 @@ export class PlatformWhatsAppService {
   }
 
   async getCampaigns(): Promise<PlatformWhatsAppCampaign[]> {
+    const accountId = await this.ensurePersistentAccount();
+    if (accountId) {
+      try {
+        const campaigns = await this.prisma.platformWhatsAppCampaign.findMany({
+          where: { accountId },
+          orderBy: { createdAt: 'desc' },
+        });
+        return campaigns.map((campaign) => {
+          let audience = 'All schools';
+          try {
+            audience = JSON.parse(campaign.audienceFilter || '{}')?.audience || audience;
+          } catch {
+            // Preserve the default audience for legacy or malformed filters.
+          }
+          return {
+            id: campaign.id,
+            name: campaign.name,
+            audience,
+            status: campaign.status.toLowerCase() as PlatformWhatsAppCampaignStatus,
+            recipients: campaign.recipientsCount,
+            scheduled: campaign.scheduledAt?.toISOString() || 'Queued for review',
+          };
+        });
+      } catch (error) {
+        this.persistenceAvailable = false;
+        console.warn('[platform-whatsapp] Campaign persistence failed; using in-memory fallback.', error);
+      }
+    }
     return this.campaignStore;
   }
 
   async updateCampaignStatus(campaignId: string, status: PlatformWhatsAppCampaignStatus): Promise<PlatformWhatsAppCampaign | null> {
+    const accountId = await this.ensurePersistentAccount();
+    if (accountId) {
+      try {
+        const saved = await this.prisma.platformWhatsAppCampaign.updateMany({
+          where: { id: campaignId, accountId },
+          data: { status: status.toUpperCase() },
+        });
+        if (saved.count > 0) {
+          const campaigns = await this.getCampaigns();
+          return campaigns.find((campaign) => campaign.id === campaignId) || null;
+        }
+      } catch (error) {
+        this.persistenceAvailable = false;
+        console.warn('[platform-whatsapp] Campaign status persistence failed; using in-memory fallback.', error);
+      }
+    }
+
     const campaign = this.campaignStore.find((item) => item.id === campaignId);
     if (!campaign) return null;
 
@@ -588,23 +813,116 @@ export class PlatformWhatsAppService {
   }
 
   async sendCampaign(campaignId: string): Promise<PlatformWhatsAppCampaign | null> {
+    const accountId = await this.ensurePersistentAccount();
+    if (accountId) {
+      const campaign = await this.prisma.platformWhatsAppCampaign.findFirst({
+        where: { id: campaignId, accountId },
+        include: { recipients: true },
+      });
+      if (!campaign) return null;
+      if (campaign.status !== 'APPROVED') {
+        throw new Error('Campaign must be approved before it can be sent.');
+      }
+
+      let message = '';
+      try {
+        message = JSON.parse(campaign.audienceFilter || '{}')?.message || '';
+      } catch {
+        message = '';
+      }
+      if (!message.trim()) {
+        throw new Error('Campaign message is missing. Create the campaign again with a message.');
+      }
+
+      for (const recipient of campaign.recipients) {
+        const slotAvailable = await platformBaileysSessionManager.waitForNextSendSlot();
+        if (!slotAvailable) {
+          await this.prisma.platformWhatsAppCampaignRecipient.update({
+            where: { id: recipient.id },
+            data: { status: 'FAILED', lastError: 'Platform WhatsApp send limit reached.' },
+          });
+          continue;
+        }
+
+        const renderedMessage = message.replace(/\{\{\s*schoolName\s*\}\}/g, recipient.recipientName || 'School');
+        const result = await platformBaileysSessionManager.sendTextMessage(recipient.phoneNumber, renderedMessage);
+        await this.prisma.platformWhatsAppCampaignRecipient.update({
+          where: { id: recipient.id },
+          data: {
+            status: result.success ? 'SENT' : 'FAILED',
+            deliveredAt: result.success ? new Date() : null,
+            lastError: result.error,
+          },
+        });
+        await this.prisma.platformWhatsAppMessageLog.create({
+          data: {
+            accountId,
+            campaignId,
+            schoolId: recipient.schoolId,
+            recipientName: recipient.recipientName,
+            recipientPhone: recipient.phoneNumber,
+            contentPreview: renderedMessage.slice(0, 500),
+            status: result.success ? 'SENT' : 'FAILED',
+            providerMessageId: result.messageId,
+            lastError: result.error,
+          },
+        });
+      }
+
+      const failedCount = await this.prisma.platformWhatsAppCampaignRecipient.count({
+        where: { campaignId, status: 'FAILED' },
+      });
+      await this.prisma.platformWhatsAppCampaign.update({
+        where: { id: campaignId },
+        data: {
+          status: failedCount ? 'FAILED' : 'SENT',
+          sentAt: new Date(),
+          lastError: failedCount ? `${failedCount} recipient(s) failed.` : null,
+        },
+      });
+      const campaigns = await this.getCampaigns();
+      return campaigns.find((item) => item.id === campaignId) || null;
+    }
+
     const campaign = this.campaignStore.find((item) => item.id === campaignId);
     if (!campaign) return null;
+    if (campaign.status !== 'approved') {
+      throw new Error('Campaign must be approved before it can be sent.');
+    }
 
-    campaign.status = 'sent';
-    campaign.scheduled = 'Sent now';
+    campaign.status = 'failed';
+    campaign.scheduled = 'Delivery unavailable';
     this.logStore.unshift({
       id: `log-${Date.now()}`,
-      title: `${campaign.name} sent`,
-      status: 'sent',
+      title: `${campaign.name} delivery unavailable`,
+      status: 'failed',
       time: 'Just now',
-      details: `Delivery started for ${campaign.recipients} recipients.`,
+      details: 'Campaign persistence is not available, so no messages were sent.',
     });
 
     return campaign;
   }
 
   async getLogs(): Promise<PlatformWhatsAppLog[]> {
+    const accountId = await this.ensurePersistentAccount();
+    if (accountId) {
+      try {
+        const logs = await this.prisma.platformWhatsAppMessageLog.findMany({
+          where: { accountId },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        });
+        return logs.map((log) => ({
+          id: log.id,
+          title: `${log.direction === 'OUTBOUND' ? 'Message to' : 'Reply from'} ${log.recipientName || log.recipientPhone}`,
+          status: log.status.toLowerCase() as PlatformWhatsAppLog['status'],
+          time: log.createdAt.toISOString(),
+          details: log.lastError || log.contentPreview || 'Platform WhatsApp message recorded.',
+        }));
+      } catch (error) {
+        console.warn('[platform-whatsapp] Message log persistence unavailable; using in-memory fallback.', error);
+      }
+    }
     return this.logStore;
   }
 

@@ -59,7 +59,7 @@ function maskWhatsappRecipient(value: string): string {
 function makeConsolePinoLogger(): any {
   const base: any = {
     child: () => base,
-    trace: (...args: any[]) => console.trace('[baileys]', ...args),
+    trace: (...args: any[]) => console.debug('[baileys]', ...args),
     debug: (...args: any[]) => console.debug('[baileys]', ...args),
     info: (...args: any[]) => console.log('[baileys]', ...args),
     warn: (...args: any[]) => console.warn('[baileys]', ...args),

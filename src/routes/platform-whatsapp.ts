@@ -1,10 +1,9 @@
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { jwtVerify } from 'jose';
 import { platformBaileysSessionManager } from '../communications/platform-whatsapp-baileys.js';
-import { platformWhatsAppService } from '../services/platform-whatsapp.js';
+import { platformWhatsAppPrisma, platformWhatsAppService } from '../services/platform-whatsapp.js';
 
-const prisma = new PrismaClient();
+const prisma = platformWhatsAppPrisma;
 
 const router = Router();
 
@@ -107,6 +106,11 @@ router.post('/connect', async (req: Request, res: Response) => {
       typeof phoneNumber === 'string' ? phoneNumber : undefined,
       Boolean(usePairingCode),
     );
+    await platformWhatsAppService.syncAccountStatus({
+      connected: status.connected,
+      phoneNumber: status.phoneNumber,
+      lastError: status.lastError,
+    }, true);
     res.json({ success: true, session: status });
   } catch (error) {
     console.error('[platform-whatsapp] connect error:', error);
@@ -120,6 +124,11 @@ router.post('/disconnect', async (req: Request, res: Response) => {
 
   try {
     const status = await platformBaileysSessionManager.disconnect();
+    await platformWhatsAppService.syncAccountStatus({
+      connected: status.connected,
+      phoneNumber: status.phoneNumber,
+      lastError: status.lastError,
+    }, true);
     res.json({ success: true, session: status });
   } catch (error) {
     console.error('[platform-whatsapp] disconnect error:', error);
@@ -135,6 +144,7 @@ router.post('/send-message', async (req: Request, res: Response) => {
     const { phoneNumber, phoneNumbers, message, schoolId, schoolIds } = req.body ?? {};
     let recipients: string[] = Array.isArray(phoneNumbers) ? phoneNumbers : phoneNumber ? [phoneNumber] : [];
     const schoolNameByPhone = new Map<string, string>();
+    const schoolIdByPhone = new Map<string, string>();
 
     if ((!recipients.length && schoolId) || (!recipients.length && Array.isArray(schoolIds) && schoolIds.length)) {
       const schoolLookupIds = Array.isArray(schoolIds) ? schoolIds : schoolId ? [schoolId] : [];
@@ -149,12 +159,27 @@ router.post('/send-message', async (req: Request, res: Response) => {
           if (normalizedPhone && school.name) {
             schoolNameByPhone.set(normalizedPhone, school.name);
           }
+          if (normalizedPhone) {
+            schoolIdByPhone.set(normalizedPhone, school.id);
+          }
         }
       }
     }
 
     if (!recipients.length || !message) {
       return res.status(400).json({ error: 'phoneNumber(s), schoolId(s), or a valid school contact and message are required' });
+    }
+
+    let platformAccountId: string | null = null;
+    try {
+      const account = await prisma.platformWhatsAppAccount.findFirst({
+        where: { status: { in: ['ACTIVE', 'DISCONNECTED', 'ERROR'] } },
+        orderBy: { updatedAt: 'desc' },
+        select: { id: true },
+      });
+      platformAccountId = account?.id || null;
+    } catch (error) {
+      console.warn('[platform-whatsapp] Could not load platform account for message logging.', error);
     }
 
     const results = [] as Array<{ recipient: string; success: boolean; messageId?: string; error?: string }>;
@@ -175,6 +200,25 @@ router.post('/send-message', async (req: Request, res: Response) => {
         : String(message);
       const result = await platformBaileysSessionManager.sendTextMessage(recipient, renderedMessage);
       results.push({ recipient, ...result });
+
+      if (platformAccountId) {
+        try {
+          await prisma.platformWhatsAppMessageLog.create({
+            data: {
+              accountId: platformAccountId,
+              schoolId: schoolIdByPhone.get(recipient.trim()),
+              recipientName: schoolName,
+              recipientPhone: recipient,
+              contentPreview: renderedMessage.slice(0, 500),
+              status: result.success ? 'SENT' : 'FAILED',
+              providerMessageId: result.messageId,
+              lastError: result.error,
+            },
+          });
+        } catch (error) {
+          console.warn('[platform-whatsapp] Could not persist message log.', error);
+        }
+      }
     }
 
     const failures = results.filter((result) => !result.success);
@@ -272,9 +316,20 @@ router.post('/campaigns', async (req: Request, res: Response) => {
     const payload = req.body ?? {};
     const audienceWhere = getAudienceFilters(payload.audience);
     const schoolCount = await prisma.school.count({ where: audienceWhere });
+    const audienceSchools = await prisma.school.findMany({
+      where: audienceWhere,
+      select: { id: true, name: true, phone: true },
+    });
     const campaign = await platformWhatsAppService.createCampaign({
       ...payload,
       schoolCount,
+      recipients: audienceSchools
+        .filter((school) => Boolean(school.phone))
+        .map((school) => ({
+          schoolId: school.id,
+          recipientName: school.name,
+          phoneNumber: String(school.phone).trim(),
+        })),
     });
     res.json({ success: true, campaign });
   } catch (error) {
