@@ -150,6 +150,10 @@ export class PlatformBaileysSessionManager {
     };
   }
 
+  async waitForNextSendSlot(): Promise<boolean> {
+    return this.rateLimiter.waitForNextSlot(this.sessionNamespace);
+  }
+
   getStatus(): PlatformWhatsAppSessionSnapshot {
     const snapshot = baileysSessionManager.getStatus(this.sessionNamespace);
     this.syncSessionSnapshot(snapshot);

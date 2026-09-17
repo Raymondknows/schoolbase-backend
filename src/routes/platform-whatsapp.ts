@@ -157,14 +157,25 @@ router.post('/send-message', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'phoneNumber(s), schoolId(s), or a valid school contact and message are required' });
     }
 
-    const results = await Promise.all(recipients.map(async (recipient: string) => {
+    const results = [] as Array<{ recipient: string; success: boolean; messageId?: string; error?: string }>;
+    for (const recipient of recipients) {
+      const slotAvailable = await platformBaileysSessionManager.waitForNextSendSlot();
+      if (!slotAvailable) {
+        results.push({
+          recipient,
+          success: false,
+          error: 'The platform WhatsApp send limit has been reached. Please retry later.',
+        });
+        continue;
+      }
+
       const schoolName = schoolNameByPhone.get(recipient.trim());
       const renderedMessage = schoolName
         ? String(message).replace(/\{\{\s*schoolName\s*\}\}/g, schoolName)
         : String(message);
       const result = await platformBaileysSessionManager.sendTextMessage(recipient, renderedMessage);
-      return { recipient, ...result };
-    }));
+      results.push({ recipient, ...result });
+    }
 
     const failures = results.filter((result) => !result.success);
     if (failures.length) {
