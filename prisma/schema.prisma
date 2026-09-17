@@ -842,7 +842,7 @@ model PlatformPayment {
   reference  String?
   createdAt  DateTime      @default(now())
   recordedBy String?
-  note       String?
+  note       String?   @db.Text
 }
 
 model Assessment {
