@@ -65,7 +65,7 @@ export class PlatformWhatsAppService {
         '',
         'Welcome to SchoolBase. We are excited to have your school on board and look forward to supporting your team as you begin this important setup journey.',
         '',
-        'Our goal is to help you complete your configuration smoothly and begin using SchoolBase effectively across admissions, student records, attendance, fees, results, communication, and parent engagement. This is a critical step in creating more efficient operations and a more professional school experience for staff, parents, and students.',
+        'Our goal is to help you complete your configuration smoothly and begin using SchoolBase effectively across admissions, student records, attendance, timetable, fees, results, communication, and parent engagement. This is a critical step in creating more efficient operations and a more professional school experience for staff, parents, and students.',
         '',
         'To get started, please confirm your school profile, complete the core setup steps, add your staff and students, and prepare the modules your school will use first. Once your records and workflows are in place, your team will be able to move faster, reduce manual work, and create better visibility across the school.',
         '',
