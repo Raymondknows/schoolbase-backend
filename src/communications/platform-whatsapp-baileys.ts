@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { SchoolWhatsAppRateLimiter } from '../services/whatsapp-rate-limiter.js';
 import { baileysSessionManager } from './whatsapp-baileys.js';
 
 export type PlatformWhatsAppProvider = 'BAILEYS';
@@ -25,6 +26,12 @@ const platformSessionDirectory = path.resolve(process.cwd(), '.baileys-session',
 
 export class PlatformBaileysSessionManager {
   private readonly sessionNamespace = platformSessionNamespace;
+  private readonly rateLimiter = new SchoolWhatsAppRateLimiter({
+    minIntervalMs: Number(process.env.PLATFORM_WHATSAPP_MIN_SEND_INTERVAL_MS || 1000),
+    perMinuteLimit: Number(process.env.PLATFORM_WHATSAPP_PER_MINUTE_LIMIT || 30),
+    perHourLimit: Number(process.env.PLATFORM_WHATSAPP_PER_HOUR_LIMIT || 250),
+    perDayLimit: Number(process.env.PLATFORM_WHATSAPP_PER_DAY_LIMIT || 2000),
+  });
   private readonly session: {
     status: PlatformWhatsAppSessionStatus;
     phoneNumber: string | null;
@@ -97,6 +104,14 @@ export class PlatformBaileysSessionManager {
   }
 
   async sendTextMessage(recipient: string, message: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    const canSend = await this.rateLimiter.tryAcquire(this.sessionNamespace);
+    if (!canSend) {
+      return {
+        success: false,
+        error: 'SchoolBase platform-admin has exceeded the WhatsApp send rate limit. Please retry later.',
+      };
+    }
+
     if (this.session.socket && this.session.status === 'connected') {
       try {
         const result = await this.session.socket.sendMessage(recipient, { text: message });
@@ -108,7 +123,10 @@ export class PlatformBaileysSessionManager {
       }
     }
 
-    return baileysSessionManager.sendTextMessage(this.sessionNamespace, recipient, message);
+    return {
+      success: false,
+      error: 'Platform WhatsApp is not connected. Please connect the platform session before sending a message.',
+    };
   }
 
   getStatus(): PlatformWhatsAppSessionSnapshot {
