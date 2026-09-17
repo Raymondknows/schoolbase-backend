@@ -167,6 +167,33 @@ router.post('/send-message', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/audience-counts', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const labels = [
+      'All schools',
+      'Trial schools',
+      'Incomplete setups',
+      'Expiring schools',
+      'Renewal reminders',
+    ] as const;
+
+    const counts = await Promise.all(labels.map(async (label) => {
+      const audienceWhere = getAudienceFilters(label);
+      const total = await prisma.school.count({ where: audienceWhere });
+      return [label, total] as const;
+    }));
+
+    const result = Object.fromEntries(counts) as Record<string, number>;
+    res.json({ success: true, counts: result });
+  } catch (error) {
+    console.error('[platform-whatsapp] audience-counts error:', error);
+    res.status(500).json({ message: 'Failed to load platform WhatsApp audience counts.' });
+  }
+});
+
 router.get('/templates', async (req: Request, res: Response) => {
   const session = await requirePlatformAdminSession(req, res);
   if (!session) return;

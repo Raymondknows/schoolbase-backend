@@ -75,3 +75,19 @@ test('platform WhatsApp service resolves school ids into valid recipient phone n
 
   assert.deepEqual(recipients, ['+2348000000001', '+2348000000002']);
 });
+
+test('platform campaign creation preserves the calculated audience size instead of defaulting to zero', async () => {
+  const { platformWhatsAppService } = await import('../../services/platform-whatsapp.js');
+
+  const campaign = await platformWhatsAppService.createCampaign({
+    name: 'Audience count regression',
+    audience: 'All schools',
+    templateId: 'tpl-001',
+    message: 'Test message',
+    scheduled: 'Tomorrow',
+    schoolCount: 25,
+  });
+
+  assert.equal(campaign.recipients, 25);
+  assert.equal(campaign.audience, 'All schools');
+});
