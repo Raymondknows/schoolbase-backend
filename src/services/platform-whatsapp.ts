@@ -199,6 +199,39 @@ export class PlatformWhatsAppService {
       ].join('\n'),
     },
     {
+      id: 'tpl-016',
+      name: 'Payment issue and retry',
+      category: 'Billing',
+      status: 'approved',
+      lastUpdated: 'Today',
+      message: [
+        'Hello {{schoolName}},',
+        '',
+        'We noticed that your recent attempt to complete a SchoolBase subscription payment was not completed successfully.',
+        '',
+        'No subscription has been activated from that attempt. Please return to the SchoolBase subscription page and try the payment again. You may use another supported payment method if the first method continues to fail.',
+        '',
+        'If you were charged but your SchoolBase account is not updated, please do not pay again. Reply to this message with the payment reference or a screenshot of the transaction, and our support team will investigate it promptly.',
+        '',
+        'If online payment continues to fail, you may use our alternative bank-transfer option:',
+        'Account name: ClickBase Technologies Ltd',
+        'Account number: 1228481040',
+        'Bank: Zenith',
+        '',
+        'After making a bank transfer, please reply with your transaction ID or payment receipt so we can confirm it and update your school account.',
+        '',
+        'Retry your payment here:',
+        'https://schoolbase.live/admin/subscribe',
+        '',
+        'We apologise for the inconvenience and are ready to help you complete your subscription.',
+        '',
+        'Warm regards,',
+        'SchoolBase Support',
+        'SchoolBase — Everything your school needs in one simple platform.',
+        'Need help? Reply to this message or contact the SchoolBase support team.',
+      ].join('\n'),
+    },
+    {
       id: 'tpl-007',
       name: 'Support update',
       category: 'Support',
@@ -442,19 +475,25 @@ export class PlatformWhatsAppService {
   }
 
   private async ensurePersistentTemplates(accountId: string): Promise<void> {
-    const existingCount = await this.prisma.platformWhatsAppTemplate.count({ where: { accountId } });
-    if (existingCount > 0) return;
-
-    await this.prisma.platformWhatsAppTemplate.createMany({
-      data: this.seedTemplates.map((template) => ({
+    const existingTemplates = await this.prisma.platformWhatsAppTemplate.findMany({
+      where: { accountId },
+      select: { name: true },
+    });
+    const existingNames = new Set(existingTemplates.map((template) => template.name));
+    const missingTemplates = this.seedTemplates
+      .filter((template) => !existingNames.has(template.name))
+      .map((template) => ({
         accountId,
         name: template.name,
         category: template.category,
         status: template.status.toUpperCase(),
         body: template.message || '',
         language: 'en',
-      })),
-    });
+      }));
+
+    if (missingTemplates.length) {
+      await this.prisma.platformWhatsAppTemplate.createMany({ data: missingTemplates });
+    }
   }
 
   async getOverview(): Promise<{
