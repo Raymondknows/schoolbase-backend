@@ -1369,6 +1369,122 @@ model WhatsAppPolicy {
   @@index([schoolId])
 }
 
+model PlatformWhatsAppAccount {
+  id                     String                     @id @default(cuid())
+  status                 String                     @default("DISCONNECTED")
+  provider               String                     @default("META_CLOUD_API")
+  displayName            String?
+  phoneNumber            String?
+  phoneNumberId          String?
+  businessAccountId      String?
+  accessTokenEncrypted   String?
+  webhookUrl             String?
+  webhookVerifyToken     String?
+  connectedAt            DateTime?
+  disconnectedAt         DateTime?
+  lastHealthCheckAt      DateTime?
+  lastError              String?                    @db.Text
+  createdAt              DateTime                   @default(now())
+  updatedAt              DateTime                   @updatedAt
+  templates              PlatformWhatsAppTemplate[]
+  campaigns              PlatformWhatsAppCampaign[]
+  webhookEvents          PlatformWhatsAppWebhookEvent[]
+  messageLogs            PlatformWhatsAppMessageLog[]
+
+  @@index([status])
+}
+
+model PlatformWhatsAppTemplate {
+  id          String   @id @default(cuid())
+  accountId   String
+  name        String
+  category    String   @default("GENERAL")
+  status      String   @default("DRAFT")
+  body        String   @db.Text
+  language    String   @default("en")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  account     PlatformWhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaigns   PlatformWhatsAppCampaign[]
+
+  @@index([accountId, status])
+}
+
+model PlatformWhatsAppCampaign {
+  id                String   @id @default(cuid())
+  accountId         String
+  templateId        String?
+  name              String
+  audienceType      String   @default("SCHOOL_FILTER")
+  audienceFilter    String?  @db.LongText
+  status            String   @default("DRAFT")
+  recipientsCount   Int      @default(0)
+  scheduledAt       DateTime?
+  sentAt            DateTime?
+  approvedBy        String?
+  approvalNote      String?  @db.Text
+  lastError         String?  @db.Text
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  account           PlatformWhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  template          PlatformWhatsAppTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  recipients        PlatformWhatsAppCampaignRecipient[]
+  messageLogs       PlatformWhatsAppMessageLog[]
+
+  @@index([accountId, status])
+  @@index([scheduledAt])
+}
+
+model PlatformWhatsAppCampaignRecipient {
+  id            String   @id @default(cuid())
+  campaignId    String
+  schoolId      String?
+  recipientName String?
+  phoneNumber   String
+  status        String   @default("PENDING")
+  deliveredAt   DateTime?
+  lastError     String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  campaign      PlatformWhatsAppCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, status])
+  @@index([schoolId])
+}
+
+model PlatformWhatsAppMessageLog {
+  id                 String   @id @default(cuid())
+  accountId          String
+  campaignId         String?
+  schoolId           String?
+  recipientName      String?
+  recipientPhone     String
+  direction          String   @default("OUTBOUND")
+  contentPreview     String?  @db.VarChar(500)
+  status             String   @default("QUEUED")
+  providerMessageId  String?
+  lastError          String?  @db.Text
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  account            PlatformWhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign           PlatformWhatsAppCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([accountId, status])
+  @@index([campaignId])
+  @@index([schoolId])
+}
+
+model PlatformWhatsAppWebhookEvent {
+  id          String   @id @default(cuid())
+  accountId   String
+  eventType   String
+  payload     String   @db.LongText
+  createdAt   DateTime @default(now())
+  account     PlatformWhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, eventType])
+}
+
 model CommunicationRule {
   id        String   @id @default(cuid())
   schoolId  String

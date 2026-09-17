@@ -104,6 +104,8 @@ async function loadRoutes() {
     console.log('✓ Loaded whatsapp routes');
     const { default: schoolbaseAdminRoutes } = await import('./routes/schoolbase-admin.js');
     console.log('✓ Loaded schoolbase-admin routes');
+    const { default: platformWhatsAppRoutes } = await import('./routes/platform-whatsapp.js');
+    console.log('✓ Loaded platform WhatsApp routes');
     // @ts-ignore: Runtime loader resolves the .js path for TS sources in this environment
     const { default: parentRoutes } = await import('./routes/parent.js');
     console.log('✓ Loaded parent routes');
@@ -151,6 +153,7 @@ async function loadRoutes() {
     app.use('/api/bursar', bursarRoutes);
     app.use('/api', timetableRoutes);
     app.use('/api/auth', authRoutes);
+    app.use('/schoolbase-admin/api/whatsapp', platformWhatsAppRoutes);
     app.use('/schoolbase-admin/api', schoolbaseAdminRoutes);
     
     console.log('✓ All routes mounted successfully');
