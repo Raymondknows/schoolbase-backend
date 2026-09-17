@@ -134,15 +134,22 @@ router.post('/send-message', async (req: Request, res: Response) => {
   try {
     const { phoneNumber, phoneNumbers, message, schoolId, schoolIds } = req.body ?? {};
     let recipients: string[] = Array.isArray(phoneNumbers) ? phoneNumbers : phoneNumber ? [phoneNumber] : [];
+    const schoolNameByPhone = new Map<string, string>();
 
     if ((!recipients.length && schoolId) || (!recipients.length && Array.isArray(schoolIds) && schoolIds.length)) {
       const schoolLookupIds = Array.isArray(schoolIds) ? schoolIds : schoolId ? [schoolId] : [];
       if (schoolLookupIds.length) {
         const schools = await prisma.school.findMany({
           where: { id: { in: schoolLookupIds } },
-          select: { id: true, phone: true },
+          select: { id: true, name: true, phone: true },
         });
         recipients = await platformWhatsAppService.resolveSchoolRecipients(schoolLookupIds, schools);
+        for (const school of schools) {
+          const normalizedPhone = String(school.phone || '').trim();
+          if (normalizedPhone && school.name) {
+            schoolNameByPhone.set(normalizedPhone, school.name);
+          }
+        }
       }
     }
 
@@ -151,7 +158,11 @@ router.post('/send-message', async (req: Request, res: Response) => {
     }
 
     const results = await Promise.all(recipients.map(async (recipient: string) => {
-      const result = await platformBaileysSessionManager.sendTextMessage(recipient, String(message));
+      const schoolName = schoolNameByPhone.get(recipient.trim());
+      const renderedMessage = schoolName
+        ? String(message).replace(/\{\{\s*schoolName\s*\}\}/g, schoolName)
+        : String(message);
+      const result = await platformBaileysSessionManager.sendTextMessage(recipient, renderedMessage);
       return { recipient, ...result };
     }));
 

@@ -32,7 +32,39 @@ test('platform sends use a dedicated outgoing namespace and keep platform state 
   assert.equal((manager as any).getSession().sessionNamespace, 'platform-admin');
 });
 
+test('platform sends should succeed when the real Baileys manager reports the platform session as connected without a cached local socket', async () => {
+  const { baileysSessionManager } = await import('../whatsapp-baileys.js');
+  const sharedSession = (baileysSessionManager as any).getOrCreateSession('platform-admin');
+  sharedSession.status = 'connected';
+  sharedSession.phoneNumber = '+2348000000000';
+
+  const manager = new PlatformBaileysSessionManager();
+  const session = (manager as any).getSession();
+  (session as any).status = 'disconnected';
+  (session as any).phoneNumber = null;
+  (session as any).socket = null;
+
+  const original = baileysSessionManager.sendTextMessage;
+  baileysSessionManager.sendTextMessage = async (schoolId: string, recipient: string, message: string) => {
+    assert.equal(schoolId, 'platform-admin');
+    assert.equal(recipient, '+2348000000001');
+    assert.equal(message, 'Platform connected via shared manager');
+    return { success: true, messageId: 'shared-manager-platform-message' };
+  };
+
+  try {
+    const result = await manager.sendTextMessage('+2348000000001', 'Platform connected via shared manager');
+    assert.equal(result.success, true);
+    assert.equal(result.messageId, 'shared-manager-platform-message');
+  } finally {
+    baileysSessionManager.sendTextMessage = original;
+  }
+});
+
 test('platform Baileys exposes the same QR and pairing metadata used by the school connection flow', async () => {
+  const { baileysSessionManager } = await import('../whatsapp-baileys.js');
+  await baileysSessionManager.disconnect('platform-admin');
+
   const manager = new PlatformBaileysSessionManager();
   const status = await manager.connect();
 

@@ -112,10 +112,31 @@ export class PlatformBaileysSessionManager {
       };
     }
 
+    const liveStatus = baileysSessionManager.getStatus(this.sessionNamespace);
+    const realSessionIsConnected = liveStatus.status === 'connected' || Boolean(liveStatus.phoneNumber);
+
     if (this.session.socket && this.session.status === 'connected') {
       try {
         const result = await this.session.socket.sendMessage(recipient, { text: message });
         return { success: true, messageId: result?.key?.id || `platform-${Date.now()}` };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.session.lastError = errorMessage;
+        return { success: false, error: errorMessage };
+      }
+    }
+
+    if (realSessionIsConnected) {
+      try {
+        const result = await baileysSessionManager.sendTextMessage(this.sessionNamespace, recipient, message);
+        if (result.success) {
+          this.session.status = 'connected';
+          this.session.phoneNumber = liveStatus.phoneNumber ?? this.session.phoneNumber ?? null;
+          this.session.lastError = undefined;
+          return result;
+        }
+        this.session.lastError = result.error;
+        return result;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.session.lastError = errorMessage;
