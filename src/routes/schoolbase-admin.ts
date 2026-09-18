@@ -484,27 +484,30 @@ router.get('/audit-logs', async (req: Request, res: Response) => {
 
   try {
     const limit = parseInt(req.query.limit as string) || 20;
-    const logs = await prisma.platformAuditLog.findMany({
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      select: {
-        id: true,
-        event: true,
-        details: true,
-        createdAt: true,
-        user: {
-          select: {
-            name: true,
-            email: true,
+    const [logs, total] = await Promise.all([
+      prisma.platformAuditLog.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          event: true,
+          details: true,
+          createdAt: true,
+          user: {
+            select: {
+              name: true,
+              email: true,
+            },
+          },
+          school: {
+            select: {
+              name: true,
+            },
           },
         },
-        school: {
-          select: {
-            name: true,
-          },
-        },
-      },
-    });
+      }),
+      prisma.platformAuditLog.count(),
+    ]);
 
     res.json({
       logs: logs.map((log: any) => ({
@@ -516,6 +519,7 @@ router.get('/audit-logs', async (req: Request, res: Response) => {
         user: log.user,
         school: log.school,
       })),
+      pagination: { limit, total, pages: Math.ceil(total / limit) },
     });
   } catch (error) {
     console.error('Error fetching audit logs:', error);

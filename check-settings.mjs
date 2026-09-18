@@ -21,7 +21,7 @@ async function main() {
         data: [
           { key: 'platformName', value: 'SchoolBase' },
           { key: 'supportEmail', value: 'support@schoolbase.live' },
-          { key: 'supportPhone', value: '+234 903 136 8963' },
+          { key: 'supportPhone', value: '+234903 225 0338' },
           { key: 'maintenanceMode', value: 'false' },
           { key: 'maxSchools', value: '100' },
         ],

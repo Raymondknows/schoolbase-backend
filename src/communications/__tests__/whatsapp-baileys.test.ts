@@ -16,14 +16,14 @@ test('sendTextMessages handles multiple recipients and reports failures', async 
     },
   };
 
-  const result = await manager.sendTextMessages('test-school-id', ['+250793225342', '+2349031368963'], 'Test message');
+  const result = await manager.sendTextMessages('test-school-id', ['+250793225342', '+2349032250338'], 'Test message');
 
   assert.equal(result.success, false);
   assert.equal(result.results.length, 2);
   assert.equal(result.results[0].recipient, '+250793225342');
   assert.equal(result.results[0].success, false);
   assert.ok(result.results[0].error?.includes('Failed to deliver'));
-  assert.equal(result.results[1].recipient, '+2349031368963');
+  assert.equal(result.results[1].recipient, '+2349032250338');
   assert.equal(result.results[1].success, true);
 });
 

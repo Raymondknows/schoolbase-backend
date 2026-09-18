@@ -4,7 +4,7 @@ import readline from 'readline';
 // CLI-friendly, production-safe test sender.
 // Usage: DEV_SCHOOL_ID=<id> node backend/scripts/baileys-send-targets.js --school-id <id> --confirm
 
-const targetsDefault = ['+250793225342', '+2349031368963'];
+const targetsDefault = ['+250793225342', '+2349032250338'];
 const messageDefault = 'SchoolBase verification message: this is a test send via Baileys.';
 
 function parseArgs() {
