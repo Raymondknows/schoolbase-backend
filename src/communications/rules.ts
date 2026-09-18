@@ -101,6 +101,7 @@ export const DEFAULT_COMMUNICATION_RULES: Record<string, CommunicationRuleDefini
   ResultsPublished: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Results' },
   PinDelivered: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Results' },
   AdmissionCreated: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Admission' },
+  StudentAccessResent: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'StudentAccess' },
   AnnouncementCreated: { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Announcement' },
 };
 

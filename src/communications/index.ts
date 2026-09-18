@@ -88,6 +88,8 @@ export class RulesEngine {
           return { template: 'Invoice', channels: ['EMAIL', 'WHATSAPP'] };
         case 'AdmissionCreated':
           return { template: 'Admission', channels: ['EMAIL', 'WHATSAPP'] };
+        case 'StudentAccessResent':
+          return { template: 'StudentAccess', channels: ['EMAIL', 'WHATSAPP'] };
         case 'AnnouncementCreated':
           return { template: 'Announcement', channels: ['EMAIL', 'WHATSAPP'] };
         case 'FeePaymentReceived':
@@ -137,6 +139,7 @@ export class TemplateEngine {
     FeeReminder: 'Fee reminder for {{studentName}}. Amount due: {{amount}}. Balance: {{balance}}.',
     Announcement: '{{title}}\n\n{{message}}',
     Admission: 'Admission completed for {{studentName}}. Admission No: {{admissionNo}}.',
+    StudentAccess: 'Parent portal access reminder for {{studentName}}. Admission No: {{admissionNo}}. Open {{parentPortalUrl}} to sign in.',
     Default: 'Hello {{recipientName}}, a new communication update is available.',
   };
 

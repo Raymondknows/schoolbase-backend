@@ -7,7 +7,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendFeePaymentReceiptEmail, sendAnnouncementEmail, sendPlatformCommunicationEmail, sendSubscriptionPaymentSuccessEmail } from '../services/email.js';
+import { sendPasswordResetEmail, sendFeeReminderEmail, sendAttendanceNotificationEmail, sendTeacherWelcomeEmail, sendAdmissionNotificationEmail, sendStudentAccessReminderEmail, sendFeePaymentReceiptEmail, sendAnnouncementEmail, sendPlatformCommunicationEmail, sendSubscriptionPaymentSuccessEmail } from '../services/email.js';
 import { CommunicationService, RulesEngine, TemplateEngine, RecipientResolver, DeliveryQueue, DriverManager, EmailDriver, WhatsAppDriver } from '../communications/index.js';
 import baileysSessionManager from '../communications/whatsapp-baileys.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
@@ -20,6 +20,7 @@ import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
 import type { NextFunction } from 'express';
 import { requireAccountingAccess, verifyAuth } from '../middleware/roleAuth.js';
 import { recordActivity } from '../middleware/activityAudit.js';
+import { buildGuardianNotificationRecipients } from '../services/guardian-notification-recipients.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -42,6 +43,16 @@ const sharedDriverManager = new DriverManager({
 
     if (request.event === 'AdmissionCreated') {
       await sendAdmissionNotificationEmail(
+        recipient.address,
+        recipient.name ?? 'Guardian',
+        studentName,
+        className,
+        String(metadata.admissionNo ?? 'N/A'),
+        schoolName,
+        logoUrl,
+      );
+    } else if (request.event === 'StudentAccessResent') {
+      await sendStudentAccessReminderEmail(
         recipient.address,
         recipient.name ?? 'Guardian',
         studentName,
@@ -627,6 +638,7 @@ router.patch('/admissions/:id/status', async (req: Request, res: Response) => {
               where: { id: schoolId },
               select: { name: true, initials: true },
             }),
+
           ]);
 
           const admissionNo = await reserveNextAdmissionNo({
@@ -769,6 +781,70 @@ router.patch('/admissions/:id/status', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error updating admission application status:', error);
     res.status(500).json({ error: 'Failed to update admission status' });
+  }
+});
+
+// POST /api/admin/students/send-access-notifications - Re-share parent portal access
+router.post('/students/send-access-notifications', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    const pupilIds = Array.from(new Set((Array.isArray(req.body?.pupilIds) ? req.body.pupilIds : []).map((id: unknown) => String(id || '').trim()).filter(Boolean)));
+    const channels = Array.from(new Set((Array.isArray(req.body?.channels) ? req.body.channels : ['EMAIL', 'WHATSAPP']).filter((channel: unknown) => channel === 'EMAIL' || channel === 'WHATSAPP'))) as Array<'EMAIL' | 'WHATSAPP'>;
+    const forceResend = req.body?.forceResend === true;
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+    if (pupilIds.length === 0) return res.status(400).json({ error: 'Select at least one student' });
+    if (pupilIds.length > 100) return res.status(400).json({ error: 'You can notify up to 100 students at a time' });
+    if (channels.length === 0) return res.status(400).json({ error: 'Select at least one delivery channel' });
+
+    const pupils = await prisma.pupil.findMany({ where: { id: { in: pupilIds }, schoolId }, include: { class: true, guardians: { include: { guardian: true } } } });
+    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { name: true, logoUrl: true } });
+    if (!school) return res.status(404).json({ error: 'School not found' });
+
+    const whatsappCount = pupils.reduce((total, pupil) => total + pupil.guardians.reduce((count, link) => count + (buildGuardianNotificationRecipients(link.guardian).some((recipient) => recipient.channel === 'WHATSAPP') ? 1 : 0), 0), 0);
+    if (channels.includes('WHATSAPP') && whatsappCount > 0) {
+      const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
+      const evaluation = evaluateSchoolWhatsAppSend(policy, { recipientCount: whatsappCount, approvedForBulk: req.body?.approvedForBulk === true });
+      if (!evaluation.allowed) return res.status(429).json({ error: evaluation.reason || 'WhatsApp sending is currently unavailable' });
+    }
+
+    const service = createCommunicationService();
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const totals = { sent: 0, queued: 0, failed: 0, skipped: 0, missingContact: 0, duplicateSuppressed: 0 };
+    const results: Array<Record<string, unknown>> = [];
+    for (const pupil of pupils) {
+      const studentName = `${pupil.firstName} ${pupil.lastName}`.trim();
+      const className = pupil.class ? `${pupil.class.name}${pupil.class.arm ? ` ${pupil.class.arm}` : ''}` : 'Unassigned';
+      const channelResults: Array<Record<string, unknown>> = [];
+      for (const link of pupil.guardians) {
+        const guardian = link.guardian;
+        const recipients = buildGuardianNotificationRecipients(link.guardian).filter((recipient) => channels.includes(recipient.channel));
+        if (recipients.length === 0) { totals.missingContact++; continue; }
+        const recent = forceResend ? [] : await prisma.notification.findMany({ where: { schoolId, guardianId: guardian.id, relatedId: pupil.id, type: 'STUDENT_ACCESS_RESEND', createdAt: { gte: cutoff } }, select: { channel: true } });
+        const recentChannels = new Set(recent.map((notification) => notification.channel));
+        const deliverable = recipients.filter((recipient) => !recentChannels.has(recipient.channel));
+        recipients.filter((recipient) => recentChannels.has(recipient.channel)).forEach((recipient) => { totals.duplicateSuppressed++; channelResults.push({ guardianId: guardian.id, channel: recipient.channel, status: 'SKIPPED', reason: 'Recently sent' }); });
+        if (deliverable.length === 0) continue;
+        const parentPortalUrl = `${(process.env.FRONTEND_URL || 'https://www.schoolbase.live').replace(/\/$/, '')}/parent/login`;
+        const message = `Hello ${guardian.firstName},\n\nYour parent portal access for ${studentName} is ready.\n\nAdmission number: ${pupil.admissionNo || 'N/A'}\nClass: ${className}\n\nOpen ${parentPortalUrl} and use the registered phone number with the admission number to sign in. No password is required.`;
+        const dispatch = await service.dispatch({ event: 'StudentAccessResent', schoolId, recipients: deliverable, template: 'StudentAccess', subject: `Parent portal access for ${studentName}`, body: message, data: { studentName, className, admissionNo: String(pupil.admissionNo || 'N/A'), parentPortalUrl, schoolName: school.name, recipientName: guardian.firstName }, metadata: { guardianId: guardian.id, logoUrl: school.logoUrl ?? undefined } });
+        for (const delivery of dispatch.deliveries) {
+          const status = delivery.status === 'QUEUED' ? 'PENDING' : delivery.status;
+          await prisma.notification.create({ data: { schoolId, guardianId: guardian.id, type: 'STUDENT_ACCESS_RESEND', title: 'Parent Portal Access Reminder', body: truncateNotificationBody(message), channel: delivery.channel, status, sentAt: delivery.status === 'SENT' || delivery.status === 'QUEUED' ? new Date() : undefined, failureReason: delivery.error, relatedId: pupil.id, reference: String(pupil.admissionNo || 'N/A') } });
+          if (status === 'PENDING') totals.queued++; else if (status === 'SENT') totals.sent++; else totals.failed++;
+          channelResults.push({ guardianId: guardian.id, channel: delivery.channel, status, error: delivery.error });
+        }
+      }
+      if (channelResults.length === 0) totals.skipped++;
+      results.push({ pupilId: pupil.id, studentName, channels: channelResults });
+    }
+    await recordActivity({ event: 'STUDENT_ACCESS_RESEND', details: `Parent portal access notifications requested for ${pupils.length} student(s)`, schoolId }).catch((error) => console.warn('Failed to record access resend activity:', error));
+    return res.json({ totals, results, requested: pupilIds.length, processed: pupils.length });
+  } catch (error) {
+    console.error('Error sending student access notifications:', error);
+    return res.status(500).json({
+      error: 'Failed to send parent access notifications',
+      ...(process.env.NODE_ENV !== 'production' ? { details: error instanceof Error ? error.message : String(error) } : {}),
+    });
   }
 });
 

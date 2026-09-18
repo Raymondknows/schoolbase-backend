@@ -1611,6 +1611,34 @@ export async function sendAdmissionNotificationEmail(
   }
 }
 
+export async function sendStudentAccessReminderEmail(
+  email: string,
+  guardianName: string,
+  pupilName: string,
+  className: string,
+  admissionNo: string,
+  schoolName: string,
+  schoolLogo?: string,
+) {
+  if (!isValidEmail(email)) {
+    throw new Error(`Invalid email address: ${email}`);
+  }
+
+  const parentPortalUrl = `${(process.env.FRONTEND_URL || 'https://www.schoolbase.live').replace(/\/$/, '')}/parent/login`;
+  const textBody = `Parent portal access reminder\n\nHello ${guardianName},\n\nYou can access ${pupilName}'s school information on the ${schoolName} parent portal.\n\nAdmission number: ${admissionNo}\nClass: ${className}\n\nOpen ${parentPortalUrl} and enter the registered phone number and admission number to sign in. No password is required.`;
+  const schoolLogoInline = await fetchInlineLogo(schoolLogo);
+  const attachments = schoolLogoInline?.attachment ? [schoolLogoInline.attachment] : undefined;
+
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+    to: email,
+    subject: `Parent portal access for ${pupilName}`,
+    text: textBody,
+    ...(attachments ? { attachments } : {}),
+    html: `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${EMAIL_STYLES}</style></head><body><div class="email-container"><div class="header">${schoolLogoInline ? `<img src="${schoolLogoInline.src}" alt="${schoolName}" class="logo" style="width:60px;height:60px;border-radius:50%;object-fit:cover;">` : ''}<h1>${schoolName}</h1><p class="header-subtitle">Parent portal access reminder</p></div><div class="content"><p>Hello ${guardianName},</p><p>Your parent portal access for <strong>${pupilName}</strong> is ready.</p><div class="info-box"><p><strong>Student:</strong> ${pupilName}</p><p><strong>Admission number:</strong> ${admissionNo}</p><p><strong>Class:</strong> ${className}</p></div><p>Use the registered phone number and the admission number to sign in. No password is required.</p><div class="button-container"><a href="${parentPortalUrl}" class="button">Open Parent Portal</a></div><p>From the portal you can view fees, results, attendance, notices, and other school updates.</p></div><div class="footer"><p class="footer-text">This message was sent by ${schoolName}.</p></div></div></body></html>`,
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // TEMPLATE 8: SETUP COMPLETION REMINDER EMAIL
 // ═══════════════════════════════════════════════════════════════════════════════
