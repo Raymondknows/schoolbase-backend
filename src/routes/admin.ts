@@ -534,6 +534,7 @@ router.use((req: Request, res: Response, next: any) => {
     '/school/',
     '/subscribe',
     '/subscription/status',
+    '/impersonate',
     '/request-password-reset',
     '/reset-password',
     '/paystack',
