@@ -3825,6 +3825,14 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
       });
     }
 
+    const hasGuardianName = Boolean(guardianFirst || guardianLast);
+    if (hasGuardianName && (!guardianFirst || !guardianLast || !normalizedGuardianPhone)) {
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(400).json({
+        error: 'Guardian first name, last name, and phone are required together',
+      });
+    }
+
     if (normalizedAdmissionNo) {
       const existingPupils = await prisma.pupil.findMany({
         where: { schoolId },
@@ -3897,6 +3905,7 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
           firstName: guardianFirst,
           lastName: guardianLast,
           phone: normalizedGuardianPhone || '',
+          whatsapp: normalizedGuardianPhone || '',
           altPhone: normalizedGuardianAltPhone,
           email: normalizedGuardianEmail,
           occupation: normalizedGuardianOccupation,
@@ -4137,6 +4146,7 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
     // Verify student exists and belongs to school
     const existingPupil = await prisma.pupil.findFirst({
       where: { id, schoolId },
+      include: { guardians: true },
     });
 
     if (!existingPupil) {
@@ -4214,29 +4224,85 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
       }
     }
 
-    // Update pupil
-    const updatedPupil = await prisma.pupil.update({
+    const optionalText = (value: unknown) => {
+      if (value === undefined || value === null) return undefined;
+      const trimmed = String(value).trim();
+      return trimmed || null;
+    };
+
+    const guardianLink = existingPupil.guardians[0];
+    await prisma.$transaction(async (transaction) => {
+      await transaction.pupil.update({
+        where: { id },
+        data: {
+          firstName: firstName || existingPupil.firstName,
+          middleName: optionalText(middleName),
+          lastName: lastName || existingPupil.lastName,
+          classId: optionalText(classId),
+          status: optionalText(status),
+          admissionDate: admissionDate ? new Date(admissionDate) : null,
+          gender: optionalText(gender),
+          dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+          studentEmail: optionalText(studentEmail),
+          studentPhone: optionalText(studentPhone),
+          address: optionalText(address),
+          bloodGroup: optionalText(bloodGroup),
+          genotype: optionalText(genotype),
+          medicalNotes: optionalText(medicalNotes),
+          previousSchool: optionalText(previousSchool),
+          previousClass: optionalText(previousClass),
+          admissionNo: updateAdmissionNo,
+          photoUrl,
+        },
+      });
+
+      if (guardianLink) {
+        await transaction.guardian.update({
+          where: { id: guardianLink.guardianId },
+          data: {
+            firstName: guardianFirst?.trim() || undefined,
+            lastName: guardianLast?.trim() || undefined,
+            phone: guardianPhone?.trim() || undefined,
+            whatsapp: guardianPhone?.trim() || undefined,
+            altPhone: optionalText(guardianAltPhone),
+            email: optionalText(guardianEmail),
+            occupation: optionalText(guardianOccupation),
+          },
+        });
+        await transaction.guardianPupil.update({
+          where: {
+            guardianId_pupilId: {
+              guardianId: guardianLink.guardianId,
+              pupilId: id,
+            },
+          },
+          data: { relation: guardianRelationship?.trim() || 'Parent' },
+        });
+      } else if (guardianFirst?.trim() && guardianLast?.trim() && guardianPhone?.trim()) {
+        const guardian = await transaction.guardian.create({
+          data: {
+            schoolId,
+            firstName: guardianFirst.trim(),
+            lastName: guardianLast.trim(),
+            phone: guardianPhone.trim(),
+            whatsapp: guardianPhone.trim(),
+            altPhone: optionalText(guardianAltPhone),
+            email: optionalText(guardianEmail),
+            occupation: optionalText(guardianOccupation),
+          },
+        });
+        await transaction.guardianPupil.create({
+          data: {
+            guardianId: guardian.id,
+            pupilId: id,
+            relation: guardianRelationship?.trim() || 'Parent',
+          },
+        });
+      }
+    });
+
+    const updatedPupil = await prisma.pupil.findUnique({
       where: { id },
-      data: {
-        firstName: firstName || undefined,
-        middleName: middleName || undefined,
-        lastName: lastName || undefined,
-        classId: classId || undefined,
-        status: status || undefined,
-        admissionDate: admissionDate ? new Date(admissionDate) : undefined,
-        gender: gender || undefined,
-        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
-        studentEmail: studentEmail || undefined,
-        studentPhone: studentPhone || undefined,
-        address: address || undefined,
-        bloodGroup: bloodGroup || undefined,
-        genotype: genotype || undefined,
-        medicalNotes: medicalNotes || undefined,
-        previousSchool: previousSchool || undefined,
-        previousClass: previousClass || undefined,
-        admissionNo: updateAdmissionNo,
-        photoUrl,
-      },
       include: {
         class: true,
         guardians: { include: { guardian: true } },
