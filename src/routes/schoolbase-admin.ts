@@ -10,6 +10,10 @@ import { getPlatformSettings, serializePlatformSettingValue, normalizeEmailList,
 import { sendPendingSignupReminderEmail, sendWelcomeEmail, sendInternalSignupNotification } from '../services/email.js';
 import { generateOtp, resendSignupOtp } from '../services/otp.js';
 import { getSessionSecret } from '../services/security-config.js';
+import { spawn } from 'node:child_process';
+import { access, mkdtemp, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import { URL } from 'node:url';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -132,6 +136,172 @@ const requirePlatformAdminSession = async (req: Request, res: Response): Promise
     return null;
   }
 };
+
+router.get('/operations/status', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const startedAt = Date.now();
+  const localApiBase = `http://127.0.0.1:${process.env.API_PORT || 3006}`;
+  const frontendBase = (process.env.FRONTEND_URL || '').split(',')[0].trim().replace(/\/$/, '');
+  const endpointDefinitions = [
+    { key: 'api', label: 'Core API', url: `${localApiBase}/health` },
+    { key: 'admin', label: 'Admin API', url: `${localApiBase}/api/admin/verify` },
+    { key: 'parent', label: 'Parent API', url: `${localApiBase}/api/parent/verify` },
+    { key: 'teacher', label: 'Teacher API', url: `${localApiBase}/api/teacher/dashboard` },
+    { key: 'bursar', label: 'Bursar API', url: `${localApiBase}/api/bursar/overview` },
+    { key: 'results', label: 'Results API', url: `${localApiBase}/api/results/data` },
+    { key: 'communications', label: 'Communication API', url: `${localApiBase}/api/admin/notifications/data` },
+    ...(frontendBase ? [{ key: 'frontend', label: 'Frontend', url: `${frontendBase}/login` }] : []),
+  ];
+
+  const endpointChecks = await Promise.all(endpointDefinitions.map(async (endpoint) => {
+    const checkStartedAt = Date.now();
+    try {
+      const response = await fetch(endpoint.url, { method: 'GET', signal: AbortSignal.timeout(5000), redirect: 'manual' });
+      const reachable = response.status < 500;
+      return { ...endpoint, status: reachable ? 'UP' : 'DOWN', httpStatus: response.status, responseMs: Date.now() - checkStartedAt };
+    } catch (error) {
+      return { ...endpoint, status: 'DOWN', httpStatus: null, responseMs: Date.now() - checkStartedAt, error: error instanceof Error ? error.message : 'Request failed' };
+    }
+  }));
+
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    const database = { status: 'UP', responseMs: Date.now() - startedAt };
+    const downCount = endpointChecks.filter((check) => check.status === 'DOWN').length;
+    return res.json({
+      service: downCount === endpointChecks.length ? 'down' : downCount > 0 ? 'degraded' : 'ready',
+      database,
+      endpointChecks,
+      uptimeSeconds: Math.floor(process.uptime()),
+      checkedAt: new Date().toISOString(),
+      responseMs: Date.now() - startedAt,
+      environment: process.env.NODE_ENV || 'development',
+    });
+  } catch (error) {
+    console.error('[platform operations] status check failed:', error);
+    return res.status(503).json({ service: 'degraded', database: { status: 'DOWN', responseMs: Date.now() - startedAt }, endpointChecks, checkedAt: new Date().toISOString() });
+  }
+});
+
+router.get('/operations/database-export', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) return res.status(503).json({ error: 'DATABASE_URL is not configured' });
+
+  let tempDir: string | null = null;
+  let defaultsFile: string | null = null;
+  try {
+    const parsed = new URL(databaseUrl);
+    if (parsed.protocol !== 'mysql:') {
+      return res.status(501).json({ error: 'Database export currently supports MySQL only' });
+    }
+
+    const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+    if (!databaseName) return res.status(503).json({ error: 'Database name is missing from DATABASE_URL' });
+
+    const dumpCandidates = [
+      process.env.MYSQLDUMP_PATH,
+      'mysqldump',
+      '/usr/bin/mysqldump',
+      '/usr/local/bin/mysqldump',
+      '/Applications/XAMPP/xamppfiles/bin/mysqldump',
+    ].filter((candidate): candidate is string => Boolean(candidate));
+    let dumpBinary: string | null = null;
+    for (const candidate of dumpCandidates) {
+      if (candidate === 'mysqldump') {
+        dumpBinary = candidate;
+        break;
+      }
+      try {
+        await access(candidate);
+        dumpBinary = candidate;
+        break;
+      } catch {
+        // Try the next known installation path.
+      }
+    }
+    if (!dumpBinary) return res.status(503).json({ error: 'mysqldump is not installed or MYSQLDUMP_PATH is invalid' });
+
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'schoolbase-db-export-'));
+    defaultsFile = path.join(tempDir, 'client.cnf');
+    const config = [
+      '[client]',
+      `host=${parsed.hostname}`,
+      `user=${decodeURIComponent(parsed.username)}`,
+      `password=${decodeURIComponent(parsed.password)}`,
+      ...(parsed.port ? [`port=${parsed.port}`] : []),
+      '',
+    ].join('\n');
+    await writeFile(defaultsFile, config, { mode: 0o600 });
+    const cleanup = async () => {
+      if (defaultsFile) await unlink(defaultsFile).catch(() => {});
+      if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    };
+
+    await prisma.platformAuditLog.create({
+      data: {
+        userId: session,
+        event: 'DATABASE_EXPORT_STARTED',
+        details: 'Platform administrator requested a complete database export.',
+      },
+    });
+
+    const filename = `schoolbase-database-${new Date().toISOString().replace(/[:.]/g, '-')}.sql`;
+    const dumpFile = path.join(tempDir, 'database.sql');
+    const dump = spawn(dumpBinary, [
+      `--defaults-extra-file=${defaultsFile}`,
+      '--single-transaction',
+      '--quick',
+      '--routines',
+      '--triggers',
+      '--set-gtid-purged=OFF',
+      databaseName,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stderr = '';
+    dump.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    const outputChunks: Buffer[] = [];
+    dump.stdout.on('data', (chunk) => outputChunks.push(Buffer.from(chunk)));
+    const dumpResult = await new Promise<{ code: number | null }>((resolve, reject) => {
+      dump.on('error', reject);
+      dump.on('close', (code) => resolve({ code }));
+    });
+    await writeFile(dumpFile, Buffer.concat(outputChunks), { mode: 0o600 });
+    const dumpStats = await stat(dumpFile);
+    if (dumpResult.code !== 0 || dumpStats.size === 0) {
+      console.error('[platform operations] mysqldump failed:', dumpResult.code, stderr);
+      await prisma.platformAuditLog.create({
+        data: {
+          userId: session,
+          event: 'DATABASE_EXPORT_FAILED',
+          details: `Database export failed with exit code ${dumpResult.code ?? 'unknown'}${stderr ? `: ${stderr.slice(0, 500)}` : '.'}`,
+        },
+      }).catch((error) => console.error('[platform operations] export audit failed:', error));
+      await cleanup();
+      return res.status(502).json({ error: 'Database export failed. No download was created.' });
+    }
+
+    await prisma.platformAuditLog.create({
+      data: { userId: session, event: 'DATABASE_EXPORT_COMPLETED', details: 'Complete database export finished.' },
+    }).catch((error) => console.error('[platform operations] export audit failed:', error));
+    res.status(200);
+    res.setHeader('Content-Type', 'application/sql');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    const output = await readFile(dumpFile);
+    await cleanup();
+    res.send(output);
+  } catch (error) {
+    if (defaultsFile) await unlink(defaultsFile).catch(() => {});
+    if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    console.error('[platform operations] database export setup failed:', error);
+    return res.status(500).json({ error: 'Could not prepare database export' });
+  }
+});
 
 // GET /schoolbase-admin/api/subscription-payments - Get platform subscription payment history
 router.get('/subscription-payments', async (req: Request, res: Response) => {
