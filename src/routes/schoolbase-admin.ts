@@ -8,6 +8,7 @@ import fs from 'fs';
 import { sendSetupReminderEmail } from '../services/email.js';
 import { getPlatformSettings, serializePlatformSettingValue, normalizeEmailList, parsePlatformSettingValue, platformSettingDefaults } from '../services/platform-settings.js';
 import { sendPendingSignupReminderEmail, sendWelcomeEmail, sendInternalSignupNotification } from '../services/email.js';
+import { sendAdvertiserStatusEmail } from '../services/email.js';
 import { generateOtp, resendSignupOtp } from '../services/otp.js';
 import { getSessionSecret } from '../services/security-config.js';
 import { spawn } from 'node:child_process';
@@ -227,6 +228,8 @@ router.post('/ads/advertisers/:id/verify', async (req: Request, res: Response) =
     data: { verificationStatus: 'VERIFIED', verifiedAt: new Date(), rejectionReason: null },
   });
 
+  await sendAdvertiserStatusEmail({ email: advertiser.email, contactName: advertiser.contactName, companyName: advertiser.companyName, status: 'VERIFIED' }).catch((error) => console.error('[ADS] Advertiser verification email failed:', error));
+
   res.json({ advertiser });
 });
 
@@ -239,6 +242,8 @@ router.post('/ads/advertisers/:id/reject', async (req: Request, res: Response) =
     where: { id: req.params.id },
     data: { verificationStatus: 'REJECTED', rejectionReason: reason, verifiedAt: null },
   });
+
+  await sendAdvertiserStatusEmail({ email: advertiser.email, contactName: advertiser.contactName, companyName: advertiser.companyName, status: 'REJECTED', reason }).catch((error) => console.error('[ADS] Advertiser rejection email failed:', error));
 
   res.json({ advertiser });
 });
@@ -376,6 +381,9 @@ router.post('/ads/campaigns/:id/approve', async (req: Request, res: Response) =>
       notes: req.body?.notes ? String(req.body.notes).trim() : 'Approved by platform admin',
     },
   });
+
+  const approvedAdvertiser = await prisma.advertiser.findUnique({ where: { id: campaign.advertiserId }, select: { email: true, contactName: true, companyName: true } });
+  if (approvedAdvertiser) await sendAdvertiserStatusEmail({ ...approvedAdvertiser, status: 'APPROVED' }).catch((error) => console.error('[ADS] Campaign approval email failed:', error));
 
   res.json({ campaign });
 });

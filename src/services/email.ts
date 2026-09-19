@@ -573,6 +573,54 @@ export async function sendInternalSignupNotification(schoolName: string, adminEm
   }
 }
 
+function getAdsNotificationRecipients(): string[] {
+  return (process.env.ADS_NOTIFICATION_EMAILS || process.env.SUPPORT_EMAIL || 'support@schoolbase.live')
+    .split(',')
+    .map((email) => email.trim())
+    .filter(Boolean);
+}
+
+function escapeEmailHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character));
+}
+
+export async function sendAdvertiserApplicationNotification(input: {
+  companyName: string;
+  contactName: string;
+  email: string;
+  campaignTitle: string;
+  landingUrl: string;
+  placementTypes: string[];
+}) {
+  const details = `Company: ${input.companyName}\nContact: ${input.contactName} <${input.email}>\nCampaign: ${input.campaignTitle}\nLanding URL: ${input.landingUrl}\nRequested placements: ${input.placementTypes.join(', ') || 'Not specified'}`;
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+    to: getAdsNotificationRecipients().join(','),
+    subject: `New advertising application: ${input.companyName}`,
+    text: `A new SchoolBase advertising application needs review.\n\n${details}`,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><h2>New SchoolBase advertising application</h2><p>A new advertiser application is waiting for review.</p><pre style="white-space:pre-wrap">${escapeEmailHtml(details)}</pre><p>Open Platform Admin &gt; Ads &amp; Marketplace to review it.</p></div>`,
+  });
+}
+
+export async function sendAdvertiserStatusEmail(input: {
+  email: string;
+  contactName: string;
+  companyName: string;
+  status: 'RECEIVED' | 'VERIFIED' | 'REJECTED' | 'APPROVED';
+  reason?: string | null;
+}) {
+  const statusText = input.status === 'RECEIVED' ? 'advertising application has been received and is awaiting review' : input.status === 'VERIFIED' ? 'advertiser profile has been verified' : input.status === 'APPROVED' ? 'campaign has been approved for launch' : 'application needs changes before it can proceed';
+  const subject = input.status === 'REJECTED' ? `SchoolBase advertising application update: ${input.companyName}` : `SchoolBase advertising update: ${input.companyName}`;
+  const message = `Hello ${input.contactName},\n\nYour ${input.companyName} ${statusText}.${input.reason ? `\n\nReview note: ${input.reason}` : ''}\n\nThe SchoolBase team will contact you about the next step.\n\nSchoolBase`;
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM || 'noreply@schoolbase.live',
+    to: input.email,
+    subject,
+    text: message,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><h2>SchoolBase advertising update</h2><p>Hello ${escapeEmailHtml(input.contactName)},</p><p>Your <strong>${escapeEmailHtml(input.companyName)}</strong> ${escapeEmailHtml(statusText)}.</p>${input.reason ? `<p><strong>Review note:</strong> ${escapeEmailHtml(input.reason)}</p>` : ''}<p>The SchoolBase team will contact you about the next step.</p></div>`,
+  });
+}
+
 // Notify support team about a new support request from a school
 export async function sendSupportRequestNotification(
   requestId: string,

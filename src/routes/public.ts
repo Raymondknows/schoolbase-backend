@@ -12,6 +12,7 @@ import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../comm
 import { normalizeAdmissionStatus } from './admissions-utils.js';
 import { getConfiguredPaymentPlans, getPublicPaymentPlans } from '../services/platform-settings.js';
 import { isValidLandingUrl, normalizePlacementType } from './ads-utils.js';
+import { sendAdvertiserApplicationNotification, sendAdvertiserStatusEmail } from '../services/email.js';
 
 type PublicAdmissionsSchool = {
   id: string;
@@ -45,6 +46,7 @@ type ExtendedPrismaClient = PrismaClient & {
 
 const router = Router();
 const prisma = new PrismaClient() as ExtendedPrismaClient;
+const adApplicationAttempts = new Map<string, number[]>();
 
 router.get('/pricing', async (_req: Request, res: Response) => {
   try {
@@ -128,7 +130,17 @@ router.post('/ads/placements', async (req: Request, res: Response) => {
 });
 
 router.post('/ads/apply', async (req: Request, res: Response) => {
-  const { companyName, contactName, email, phone, website, category, campaignTitle, headline, summary, landingUrl, placementTypes = [], budget, currency = 'NGN' } = req.body || {};
+  const { companyName, contactName, email, phone, website, category, campaignTitle, headline, summary, landingUrl, placementTypes = [], budget, currency = 'NGN', companyWebsite = '' } = req.body || {};
+  const honeypot = String(req.body?.companyWebsite || companyWebsite || '').trim();
+  if (honeypot) return res.status(400).json({ message: 'Unable to submit application.' });
+
+  const clientKey = String(req.ip || req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
+  const now = Date.now();
+  const recentAttempts = (adApplicationAttempts.get(clientKey) || []).filter((timestamp) => now - timestamp < 60 * 60 * 1000);
+  if (recentAttempts.length >= 5) return res.status(429).json({ message: 'Too many applications from this network. Please try again later.' });
+  recentAttempts.push(now);
+  adApplicationAttempts.set(clientKey, recentAttempts);
+
   const requiredValues = [companyName, contactName, email, campaignTitle, landingUrl];
   if (requiredValues.some((value) => !String(value || '').trim())) {
     return res.status(400).json({ message: 'Company, contact, email, campaign title, and landing URL are required.' });
@@ -139,12 +151,24 @@ router.post('/ads/apply', async (req: Request, res: Response) => {
   if (!isValidLandingUrl(String(landingUrl).trim())) {
     return res.status(400).json({ message: 'Landing URL must use http or https.' });
   }
+  if (String(companyName).trim().length > 160 || String(contactName).trim().length > 120 || String(campaignTitle).trim().length > 160 || String(summary || '').trim().length > 2000) {
+    return res.status(400).json({ message: 'One or more fields are too long.' });
+  }
 
   const requestedTypes = Array.isArray(placementTypes) ? placementTypes.map((value) => String(value)) : [];
   const placements = await prisma.adPlacement.findMany({
     where: { type: { in: requestedTypes as any }, enabled: true },
     select: { id: true },
   });
+  if (requestedTypes.length > 0 && placements.length !== new Set(requestedTypes).size) {
+    return res.status(400).json({ message: 'One or more selected placements are unavailable.' });
+  }
+
+  const existingApplication = await prisma.advertiser.findFirst({
+    where: { email: String(email).trim(), verificationStatus: 'PENDING', campaigns: { some: { status: 'DRAFT' } } },
+    select: { id: true },
+  });
+  if (existingApplication) return res.status(409).json({ message: 'An application from this email is already awaiting review.' });
 
   try {
     const result = await (prisma as any).$transaction(async (tx: any) => {
@@ -177,6 +201,8 @@ router.post('/ads/apply', async (req: Request, res: Response) => {
       });
       return { advertiserId: advertiser.id, campaignId: campaign.id };
     });
+    await sendAdvertiserApplicationNotification({ companyName: String(companyName).trim(), contactName: String(contactName).trim(), email: String(email).trim(), campaignTitle: String(campaignTitle).trim(), landingUrl: String(landingUrl).trim(), placementTypes: requestedTypes }).catch((error) => console.error('[PUBLIC ADS] Internal notification failed:', error));
+    await sendAdvertiserStatusEmail({ email: String(email).trim(), contactName: String(contactName).trim(), companyName: String(companyName).trim(), status: 'RECEIVED' }).catch((error) => console.error('[PUBLIC ADS] Applicant confirmation email failed:', error));
     return res.status(201).json({ success: true, message: 'Application received. SchoolBase will review it and contact you.', ...result });
   } catch (error) {
     console.error('[PUBLIC ADS] Application failed:', error);
