@@ -358,9 +358,15 @@ router.post('/ads/campaigns/:id/approve', async (req: Request, res: Response) =>
   const session = await requirePlatformAdminSession(req, res);
   if (!session) return;
 
-  const existingCampaign = await prisma.adCampaign.findUnique({ where: { id: req.params.id } });
+  const existingCampaign = await prisma.adCampaign.findUnique({
+    where: { id: req.params.id },
+    include: { advertiser: { select: { verificationStatus: true } } },
+  });
   if (!existingCampaign || existingCampaign.status !== 'SUBMITTED') {
     return res.status(400).json({ message: 'Only submitted campaigns can be approved.' });
+  }
+  if (existingCampaign.advertiser.verificationStatus !== 'VERIFIED') {
+    return res.status(400).json({ message: 'Verify the advertiser before approving this campaign.' });
   }
 
   const campaign = await prisma.adCampaign.update({
@@ -500,7 +506,7 @@ router.get('/operations/status', async (req: Request, res: Response) => {
     const database = { status: 'UP', responseMs: Date.now() - startedAt };
     const downCount = endpointChecks.filter((check) => check.status === 'DOWN').length;
     const signalSince = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const [recentAuditEvents, openSupportRequests] = await Promise.all([
+    const [recentAuditEvents, openSupportRequests, adCampaignCounts, adEventCounts] = await Promise.all([
       prisma.platformAuditLog.findMany({
         where: { createdAt: { gte: signalSince } },
         select: { id: true, event: true, details: true, createdAt: true },
@@ -508,6 +514,8 @@ router.get('/operations/status', async (req: Request, res: Response) => {
         take: 12,
       }),
       (prisma as any).platformSupportRequest?.count?.({ where: { status: { in: ['OPEN', 'IN_PROGRESS'] } } }) ?? Promise.resolve(0),
+      prisma.adCampaign.groupBy({ by: ['status'], _count: { _all: true } }).catch(() => []),
+      prisma.adAnalyticsEvent.groupBy({ by: ['eventType'], _count: { _all: true } }).catch(() => []),
     ]);
     const attentionEvents = recentAuditEvents.filter((event) => /FAIL|ERROR|REJECT|DOWN|SCOPE/i.test(event.event));
     return res.json({
@@ -522,6 +530,11 @@ router.get('/operations/status', async (req: Request, res: Response) => {
         recentAuditEvents,
         attentionEvents,
         openSupportRequests,
+      },
+      ads: {
+        campaignsByStatus: Object.fromEntries(adCampaignCounts.map((entry: any) => [entry.status, entry._count?._all || 0])),
+        impressions: adEventCounts.find((entry: any) => entry.eventType === 'IMPRESSION')?._count?._all || 0,
+        clicks: adEventCounts.find((entry: any) => entry.eventType === 'CLICK')?._count?._all || 0,
       },
     });
   } catch (error) {

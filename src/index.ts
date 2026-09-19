@@ -13,7 +13,13 @@ import baileysSessionManager from './communications/whatsapp-baileys.js';
 
 dotenv.config();
 
-const prisma = new PrismaClient();
+type ExtendedPrismaClient = PrismaClient & {
+  adPlacement: {
+    upsert: (...args: any[]) => Promise<any>;
+  };
+};
+
+const prisma = new PrismaClient() as ExtendedPrismaClient;
 const app = express();
 const PORT = process.env.API_PORT || 3006;
 let subscriptionExpiryTask: any = null;
