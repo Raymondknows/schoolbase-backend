@@ -23,6 +23,7 @@ import { recordActivity } from '../middleware/activityAudit.js';
 import { buildGuardianNotificationRecipients } from '../services/guardian-notification-recipients.js';
 import { resolveSchoolScope } from '../services/security-context.js';
 import { getSessionSecret } from '../services/security-config.js';
+import { buildSchoolSetupStatus } from '../services/onboarding.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -5555,13 +5556,32 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
 
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
+      select: {
+        id: true,
+        name: true,
+        country: true,
+        currency: true,
+        address: true,
+        city: true,
+        phone: true,
+        email: true,
+        logoUrl: true,
+        principalName: true,
+        principalComment: true,
+        principalSignatureUrl: true,
+        stampUrl: true,
+        manualPaymentAccountName: true,
+        manualPaymentAccountNumber: true,
+        manualPaymentBankName: true,
+        paystackPublicEncrypted: true,
+        paystackSecretEncrypted: true,
+      },
     });
 
     if (!school) {
       return res.status(404).json({ error: 'School not found' });
     }
 
-    // Check setup completion items
     const [
       enabledPhases,
       academicYears,
@@ -5569,6 +5589,9 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
       subjects,
       teacherClasses,
       feeSchedules,
+      pupils,
+      announcements,
+      assessments,
     ] = await Promise.all([
       prisma.schoolOnPhase.count({ where: { schoolId } }),
       prisma.academicYear.count({ where: { schoolId } }),
@@ -5576,32 +5599,27 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
       prisma.subject.count({ where: { schoolId } }),
       prisma.teacherClass.count({ where: { schoolId } }),
       prisma.feeSchedule.count({ where: { schoolId } }),
+      prisma.pupil.count({ where: { schoolId, isActive: true } }),
+      prisma.announcement.count({ where: { schoolId } }),
+      prisma.assessment.count({ where: { schoolId } }),
     ]);
 
-    const setupItems = {
-      hasEnabledPhases: enabledPhases > 0,
-      hasAcademicYears: academicYears > 0,
-      hasClasses: classes > 0,
-      hasSubjects: subjects > 0,
-      hasStaff: teacherClasses > 0,
-      hasFees: feeSchedules > 0,
-    };
-
-    // School is considered complete if it has all setup items
-    const isComplete = Object.values(setupItems).every((item) => item === true);
-
-    const incompleteItems = Object.entries(setupItems)
-      .filter(([, value]) => !value)
-      .map(([key]) => key);
-
-    res.json({
-      isComplete,
-      setupItems,
-      incompleteItems,
-      completionPercentage: Math.round(
-        (Object.values(setupItems).filter((v) => v).length / Object.values(setupItems).length) * 100
-      ),
+    const result = buildSchoolSetupStatus({
+      school,
+      counts: {
+        enabledPhases,
+        academicYears,
+        classes,
+        subjects,
+        teacherClasses,
+        feeSchedules,
+        students: pupils,
+        announcements,
+        assessments,
+      },
     });
+
+    res.json(result);
   } catch (error) {
     console.error('Error fetching setup status:', error);
     res.status(500).json({ error: 'Failed to fetch setup status' });

@@ -11,6 +11,7 @@ import { sendPendingSignupReminderEmail, sendWelcomeEmail, sendInternalSignupNot
 import { sendAdvertiserStatusEmail } from '../services/email.js';
 import { generateOtp, resendSignupOtp } from '../services/otp.js';
 import { getSessionSecret } from '../services/security-config.js';
+import { buildSchoolSetupStatus } from '../services/onboarding.js';
 import { spawn } from 'node:child_process';
 import { access, mkdtemp, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -31,7 +32,7 @@ const supportDb = prisma as any;
 type AdCampaignStatusValue = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'LIVE' | 'PAUSED' | 'EXPIRED';
 
 async function getSchoolSetupChecklistData(schoolId: string) {
-  const [school, enabledPhases, academicYears, classes, subjects, teacherClasses, feeSchedules] = await Promise.all([
+  const [school, enabledPhases, academicYears, classes, subjects, teacherClasses, feeSchedules, pupils, announcements, assessments] = await Promise.all([
     prisma.school.findUnique({
       where: { id: schoolId },
       select: {
@@ -61,58 +62,78 @@ async function getSchoolSetupChecklistData(schoolId: string) {
     prisma.subject.count({ where: { schoolId } }),
     prisma.teacherClass.count({ where: { schoolId } }),
     prisma.feeSchedule.count({ where: { schoolId } }),
+    prisma.pupil.count({ where: { schoolId, isActive: true } }),
+    prisma.announcement.count({ where: { schoolId } }),
+    prisma.assessment.count({ where: { schoolId } }),
   ]);
 
-  const setupItems = {
-    hasEnabledPhases: enabledPhases > 0,
-    hasAcademicYears: academicYears > 0,
-    hasClasses: classes > 0,
-    hasSubjects: subjects > 0,
-    hasStaff: teacherClasses > 0,
-    hasFees: feeSchedules > 0,
-    hasSchoolProfile: Boolean(
-      school?.name && school?.address && school?.city && school?.country && school?.currency && school?.phone && school?.email,
-    ),
-    hasSchoolLogo: Boolean(school?.logoUrl),
-    hasPrincipalInfo: Boolean(school?.principalName || school?.principalComment),
-    hasPrincipalSignature: Boolean(school?.principalSignatureUrl),
-    hasSchoolStamp: Boolean(school?.stampUrl),
-    hasPaymentSetup: Boolean(
-      (school?.manualPaymentAccountName && school?.manualPaymentAccountNumber && school?.manualPaymentBankName) ||
-      (school?.paystackPublicEncrypted && school?.paystackSecretEncrypted),
-    ),
-  };
+  const status = buildSchoolSetupStatus({
+    school,
+    counts: {
+      enabledPhases,
+      academicYears,
+      classes,
+      subjects,
+      teacherClasses,
+      feeSchedules,
+      students: pupils,
+      announcements,
+      assessments,
+    },
+  });
 
-  const itemLabels: Record<string, string> = {
-    hasEnabledPhases: 'Enabled school phases',
-    hasAcademicYears: 'Academic years',
-    hasClasses: 'Classes',
-    hasSubjects: 'Subjects',
-    hasStaff: 'Staff / teacher setup',
-    hasFees: 'Fee schedules',
-    hasSchoolProfile: 'School profile details',
-    hasSchoolLogo: 'School logo / branding',
-    hasPrincipalInfo: 'Principal info',
-    hasPrincipalSignature: 'Principal signature',
-    hasSchoolStamp: 'School stamp',
-    hasPaymentSetup: 'Payment setup',
-  };
-
-  const completedItems = Object.entries(setupItems)
+  const completedItems = Object.entries(status.setupItems)
     .filter(([, value]) => Boolean(value))
-    .map(([key]) => itemLabels[key] || key);
+    .map(([key]) => {
+      const labels: Record<string, string> = {
+        hasEnabledPhases: 'Enabled school phases',
+        hasAcademicYears: 'Academic years',
+        hasClasses: 'Classes',
+        hasSubjects: 'Subjects',
+        hasStaff: 'Staff / teacher setup',
+        hasFees: 'Fee schedules',
+        hasStudents: 'Students registered',
+        hasSchoolProfile: 'School profile details',
+        hasSchoolLogo: 'School logo / branding',
+        hasPrincipalInfo: 'Principal info',
+        hasPrincipalSignature: 'Principal signature',
+        hasSchoolStamp: 'School stamp',
+        hasPaymentSetup: 'Payment setup',
+        hasAnnouncement: 'Send your first announcement',
+        hasAssessment: 'Publish your first assessment',
+      };
+      return labels[key] || key;
+    });
 
-  const missingItems = Object.entries(setupItems)
+  const missingItems = Object.entries(status.setupItems)
     .filter(([, value]) => !Boolean(value))
-    .map(([key]) => itemLabels[key] || key);
+    .map(([key]) => {
+      const labels: Record<string, string> = {
+        hasEnabledPhases: 'Enabled school phases',
+        hasAcademicYears: 'Academic years',
+        hasClasses: 'Classes',
+        hasSubjects: 'Subjects',
+        hasStaff: 'Staff / teacher setup',
+        hasFees: 'Fee schedules',
+        hasStudents: 'Students registered',
+        hasSchoolProfile: 'School profile details',
+        hasSchoolLogo: 'School logo / branding',
+        hasPrincipalInfo: 'Principal info',
+        hasPrincipalSignature: 'Principal signature',
+        hasSchoolStamp: 'School stamp',
+        hasPaymentSetup: 'Payment setup',
+        hasAnnouncement: 'Send your first announcement',
+        hasAssessment: 'Publish your first assessment',
+      };
+      return labels[key] || key;
+    });
 
   return {
     completedItems,
     missingItems,
-    completionPercentage: Math.round(
-      (Object.values(setupItems).filter((value) => Boolean(value)).length / Object.values(setupItems).length) * 100,
-    ),
-    setupItems,
+    completionPercentage: status.completionPercentage,
+    setupItems: status.setupItems,
+    isComplete: status.isComplete,
   };
 }
 
@@ -1429,7 +1450,7 @@ router.post('/reminders/send-bulk', async (req: Request, res: Response) => {
     // Find all schools with incomplete setup (those created more than 7 days ago but not all data entered)
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     
-    const incompleteSchools = await prisma.school.findMany({
+    const allSchools = await prisma.school.findMany({
       where: {
         createdAt: { lt: sevenDaysAgo },
       },
@@ -1444,7 +1465,15 @@ router.post('/reminders/send-bulk', async (req: Request, res: Response) => {
       },
     });
 
-    console.log(`Found ${incompleteSchools.length} schools to send reminders to`);
+    const incompleteSchools: Array<typeof allSchools[number]> = [];
+    for (const school of allSchools) {
+      const checklist = await getSchoolSetupChecklistData(school.id);
+      if (!checklist.isComplete) {
+        incompleteSchools.push(school);
+      }
+    }
+
+    console.log(`Found ${incompleteSchools.length} incomplete schools to send reminders to`);
 
     let sentCount = 0;
     let failedCount = 0;
@@ -1579,6 +1608,13 @@ router.post('/reminders/send-single', async (req: Request, res: Response) => {
 
     try {
       const checklist = await getSchoolSetupChecklistData(school.id);
+
+      if (checklist.isComplete) {
+        return res.status(200).json({
+          success: false,
+          message: 'This school has already completed onboarding. No reminder email was sent.',
+        });
+      }
 
       // Send actual email
       await sendSetupReminderEmail(

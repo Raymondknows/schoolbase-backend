@@ -1867,6 +1867,12 @@ export async function sendSetupReminderEmail(
       ? `<p style="margin-top: 12px;"><strong>Current progress:</strong> ${completionPercentage}% complete</p>`
       : '';
 
+    const checklistNote = `
+      <p style="margin-top: 16px; color: ${BRAND.textMuted}; font-size: 13px;">
+        This reminder tracks the full 15-step onboarding checklist. A school is considered ready when the required core setup is complete, even if some optional academic setup items are still being refined.
+      </p>
+    `;
+
     await transporter.sendMail({
       from: process.env.SMTP_FROM || process.env.EMAIL_FROM || 'noreply@schoolbase.live',
       to: email,
@@ -1890,6 +1896,7 @@ export async function sendSetupReminderEmail(
                 <p>We noticed you created your SchoolBase workspace but haven't fully set it up yet. We're here to help make it super quick and easy!</p>
 
                 ${progressLabel}
+                ${checklistNote}
                 <h2 style="font-size: 16px; margin-top: 24px;">Setup status</h2>
                 ${taskSectionHtml}
 
