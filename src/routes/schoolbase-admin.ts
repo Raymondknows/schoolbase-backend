@@ -170,6 +170,17 @@ router.get('/operations/status', async (req: Request, res: Response) => {
     await prisma.$queryRaw`SELECT 1`;
     const database = { status: 'UP', responseMs: Date.now() - startedAt };
     const downCount = endpointChecks.filter((check) => check.status === 'DOWN').length;
+    const signalSince = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [recentAuditEvents, openSupportRequests] = await Promise.all([
+      prisma.platformAuditLog.findMany({
+        where: { createdAt: { gte: signalSince } },
+        select: { id: true, event: true, details: true, createdAt: true },
+        orderBy: { createdAt: 'desc' },
+        take: 12,
+      }),
+      (prisma as any).platformSupportRequest?.count?.({ where: { status: { in: ['OPEN', 'IN_PROGRESS'] } } }) ?? Promise.resolve(0),
+    ]);
+    const attentionEvents = recentAuditEvents.filter((event) => /FAIL|ERROR|REJECT|DOWN|SCOPE/i.test(event.event));
     return res.json({
       service: downCount === endpointChecks.length ? 'down' : downCount > 0 ? 'degraded' : 'ready',
       database,
@@ -178,6 +189,11 @@ router.get('/operations/status', async (req: Request, res: Response) => {
       checkedAt: new Date().toISOString(),
       responseMs: Date.now() - startedAt,
       environment: process.env.NODE_ENV || 'development',
+      attention: {
+        recentAuditEvents,
+        attentionEvents,
+        openSupportRequests,
+      },
     });
   } catch (error) {
     console.error('[platform operations] status check failed:', error);
