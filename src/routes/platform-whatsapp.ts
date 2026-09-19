@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { jwtVerify } from 'jose';
 import { platformBaileysSessionManager } from '../communications/platform-whatsapp-baileys.js';
 import { platformWhatsAppPrisma, platformWhatsAppService } from '../services/platform-whatsapp.js';
+import { getSessionSecret } from '../services/security-config.js';
 
 const prisma = platformWhatsAppPrisma;
 
@@ -36,7 +37,7 @@ function getAudienceFilters(audience?: string): any {
 }
 
 function secret() {
-  return new TextEncoder().encode(process.env.SESSION_SECRET || 'your-secret-key');
+  return getSessionSecret();
 }
 
 async function requirePlatformAdminSession(req: Request, res: Response): Promise<string | null> {

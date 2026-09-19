@@ -21,6 +21,8 @@ import type { NextFunction } from 'express';
 import { requireAccountingAccess, verifyAuth } from '../middleware/roleAuth.js';
 import { recordActivity } from '../middleware/activityAudit.js';
 import { buildGuardianNotificationRecipients } from '../services/guardian-notification-recipients.js';
+import { resolveSchoolScope } from '../services/security-context.js';
+import { getSessionSecret } from '../services/security-config.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -243,9 +245,7 @@ const settingsUpload = multer({
 });
 
 function secret() {
-  return new TextEncoder().encode(
-    process.env.SESSION_SECRET ?? 'schoolbase-dev-secret-change-me',
-  );
+  return getSessionSecret();
 }
 
 function normalizeField(value: any): string | null {
@@ -451,38 +451,32 @@ async function resolveUserId(req: Request): Promise<string | null> {
 }
 
 async function resolveSchoolId(req: Request) {
-  // Check query parameter first
-  const schoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string);
-  if (schoolId) {
-    console.log('[resolveSchoolId] Found schoolId in query/headers:', schoolId);
-    return schoolId;
-  }
-
-  // Check request body
-  const bodySchoolId = (req.body as any)?.schoolId;
-  if (bodySchoolId) {
-    console.log('[resolveSchoolId] Found schoolId in body:', bodySchoolId);
-    return bodySchoolId;
-  }
-
   // Check unified session cookie (supports both old and new names for backward compatibility)
   const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
-  console.log('[resolveSchoolId] Checking cookies - schoolbase_session:', req.cookies?.schoolbase_session ? 'present' : 'missing', 
-    ', all cookies:', Object.keys(req.cookies || {}));
+  let authenticatedSchoolId: string | null = null;
+  let authenticatedRole: string | null = null;
   
   if (token) {
     try {
       const { payload } = await jwtVerify(token, secret());
-      console.log('[resolveSchoolId] JWT payload:', payload);
+      authenticatedRole = typeof payload.role === 'string' ? payload.role : null;
       if (payload && typeof payload === 'object' && 'schoolId' in payload) {
-        const resolvedId = String((payload as any).schoolId);
-        console.log('[resolveSchoolId] Resolved schoolId from token:', resolvedId);
-        return resolvedId;
+        authenticatedSchoolId = String((payload as any).schoolId);
       }
     } catch (err) {
       console.error('[resolveSchoolId] JWT verification failed:', (err as Error).message);
     }
   }
+
+  const requestedSchoolId = (req.query.schoolId as string)
+    || (req.headers['x-school-id'] as string)
+    || (req.body as any)?.schoolId;
+  const scoped = resolveSchoolScope({ authenticatedSchoolId, authenticatedRole, requestedSchoolId });
+  if (scoped.rejected) {
+    console.warn('[resolveSchoolId] Rejected cross-school scope request');
+    return null;
+  }
+  if (scoped.schoolId) return scoped.schoolId;
 
   let slug: string | null = null;
   const signedSlug = req.cookies?.schoolSlug_v2;

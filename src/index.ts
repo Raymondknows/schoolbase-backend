@@ -3,6 +3,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import { initializeSubscriptionExpiryJob, stopSubscriptionExpiryJob } from './jobs/checkSubscriptionExpiry.js';
 import { initializeSubscriptionEmailJob, stopSubscriptionEmailJob } from './jobs/subscriptionEmails.js';
@@ -66,6 +67,12 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(cookieParser());
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const requestId = req.headers['x-request-id'] || randomUUID();
+  res.setHeader('x-request-id', requestId);
+  (req as Request & { requestId?: string }).requestId = String(requestId);
+  next();
+});
 app.use(activityAuditMiddleware);
 
 // Serve static files from uploads directory
@@ -83,6 +90,15 @@ app.get('/health/db', async (req: Request, res: Response) => {
     res.json({ status: 'ok', database: 'connected' });
   } catch (error) {
     res.status(500).json({ status: 'error', database: 'disconnected' });
+  }
+});
+
+app.get('/health/ready', async (req: Request, res: Response) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: 'ready', service: 'SchoolBase API', uptimeSeconds: Math.floor(process.uptime()), timestamp: new Date().toISOString() });
+  } catch {
+    res.status(503).json({ status: 'not_ready', service: 'SchoolBase API', timestamp: new Date().toISOString() });
   }
 });
 
@@ -193,9 +209,11 @@ async function start() {
     
     // Error handling middleware (after routes)
     app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-      console.error(err);
+      const requestId = (req as Request & { requestId?: string }).requestId;
+      console.error(`[request:${requestId || 'unknown'}]`, err);
       res.status(500).json({
         error: err.message || 'Internal Server Error',
+        requestId,
         ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
       });
     });

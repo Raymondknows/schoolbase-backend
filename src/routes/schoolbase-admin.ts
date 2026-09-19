@@ -9,6 +9,7 @@ import { sendSetupReminderEmail } from '../services/email.js';
 import { getPlatformSettings, serializePlatformSettingValue, normalizeEmailList, parsePlatformSettingValue, platformSettingDefaults } from '../services/platform-settings.js';
 import { sendPendingSignupReminderEmail, sendWelcomeEmail, sendInternalSignupNotification } from '../services/email.js';
 import { generateOtp, resendSignupOtp } from '../services/otp.js';
+import { getSessionSecret } from '../services/security-config.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -102,9 +103,7 @@ async function getSchoolSetupChecklistData(schoolId: string) {
 
 // Helper to get JWT secret
 function secret() {
-  return new TextEncoder().encode(
-    process.env.SESSION_SECRET || 'your-secret-key'
-  );
+  return getSessionSecret();
 }
 
 // Middleware to verify platform admin session

@@ -1,13 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { jwtVerify } from 'jose';
 import { PrismaClient } from '@prisma/client';
+import { getJwtSecret } from '../services/security-config.js';
 
 const router = Router();
 const prisma = new PrismaClient();
 
-const secret = () => new TextEncoder().encode(
-  process.env.JWT_SECRET ?? 'schoolbase-secret-key-change-in-production'
-);
+const secret = getJwtSecret;
 
 // GET /api/admin/dashboard - Get dashboard statistics
 router.get('/dashboard', async (req: Request, res: Response) => {

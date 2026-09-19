@@ -1,9 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import { jwtVerify } from 'jose';
+import { getSessionSecret } from '../services/security-config.js';
 
-const SECRET = new TextEncoder().encode(
-  process.env.SESSION_SECRET || 'schoolbase-dev-secret-change-me'
-);
+const SECRET = getSessionSecret();
 
 export interface AuthenticatedRequest extends Request {
   user?: {

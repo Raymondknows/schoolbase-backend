@@ -2,15 +2,14 @@ import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { jwtVerify } from 'jose';
 import { ResultsDomainService } from '../domain/results/ResultsDomainService.js';
+import { getSessionSecret } from '../services/security-config.js';
 
 const router = Router();
 const prisma = new PrismaClient();
 const resultsDomain = new ResultsDomainService(prisma);
 
 function secret() {
-  return new TextEncoder().encode(
-    process.env.SESSION_SECRET ?? 'schoolbase-dev-secret-change-me'
-  );
+  return getSessionSecret();
 }
 
 /**

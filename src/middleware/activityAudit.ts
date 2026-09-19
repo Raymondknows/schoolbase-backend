@@ -1,11 +1,12 @@
 import type { NextFunction, Request, Response } from 'express';
 import { jwtVerify } from 'jose';
 import { PrismaClient } from '@prisma/client';
+import { getSessionSecret as getConfiguredSessionSecret } from '../services/security-config.js';
 
 const prisma = new PrismaClient();
 
 function getSessionSecret() {
-  return new TextEncoder().encode(process.env.SESSION_SECRET || 'your-secret-key');
+  return getConfiguredSessionSecret();
 }
 
 function getSessionToken(req: Request) {

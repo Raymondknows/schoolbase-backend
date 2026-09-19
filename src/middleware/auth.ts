@@ -5,8 +5,9 @@
 
 import { Request, Response, NextFunction } from "express";
 import { jwtVerify } from "jose";
+import { getJwtSecret } from "../services/security-config.js";
 
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "your-secret-key");
+const JWT_SECRET = getJwtSecret();
 
 declare global {
   namespace Express {

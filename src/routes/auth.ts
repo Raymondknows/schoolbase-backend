@@ -5,6 +5,7 @@ import bcrypt from 'bcryptjs';
 import { hasPendingOtp, resendSignupOtp, generateOtp, getSignupOtp } from '../services/otp.js';
 import { sendSignupOtpEmail } from '../services/email.js';
 import { recordActivity } from '../middleware/activityAudit.js';
+import { getSessionSecret } from '../services/security-config.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -13,9 +14,7 @@ const prisma = new PrismaClient();
 // HELPER: Get JWT secret
 // ============================================
 function secret() {
-  return new TextEncoder().encode(
-    process.env.SESSION_SECRET || 'your-secret-key'
-  );
+  return getSessionSecret();
 }
 
 function loginDetails(email: unknown, result: string) {

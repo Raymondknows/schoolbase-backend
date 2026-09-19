@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { recordActivity } from '../middleware/activityAudit.js';
 import bcrypt from 'bcryptjs';
 import { resolveSupportedCurrency } from '../services/currency.js';
+import { getSessionSecret } from '../services/security-config.js';
 
 const router = Router();
 const prisma = new PrismaClient() as PrismaClient & {
@@ -12,9 +13,7 @@ const prisma = new PrismaClient() as PrismaClient & {
 };
 
 function secret() {
-  return new TextEncoder().encode(
-    process.env.SESSION_SECRET ?? 'schoolbase-dev-secret-change-me',
-  );
+  return getSessionSecret();
 }
 
 function normalizePhone(phone: string, country?: string) {

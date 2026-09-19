@@ -11,6 +11,7 @@ import { buildGuardianNotificationRecipients, resolveGuardianNotificationTargets
 import { buildBulkPinNotificationBatches, validateBulkPinNotificationRequest } from '../services/pin-notification-batch-guards.js';
 import { resolvePublicResultsUrl } from '../services/public-url.js';
 import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
+import { getSessionSecret } from '../services/security-config.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -113,9 +114,7 @@ function truncateNotificationBody(body: string, maxLength = 180) {
 }
 
 function secret() {
-  return new TextEncoder().encode(
-    process.env.SESSION_SECRET ?? 'schoolbase-dev-secret-change-me',
-  );
+  return getSessionSecret();
 }
 
 function normalizePin(value: unknown): string {

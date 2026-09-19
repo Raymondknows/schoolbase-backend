@@ -1,13 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 import { jwtVerify } from 'jose';
 import { PrismaClient } from '@prisma/client';
+import { resolveSchoolScope } from '../services/security-context.js';
+import { getSessionSecret } from '../services/security-config.js';
 
 const prisma = new PrismaClient();
 
 function secret() {
-  return new TextEncoder().encode(
-    process.env.SESSION_SECRET ?? 'schoolbase-dev-secret-change-me'
-  );
+  return getSessionSecret();
 }
 
 export interface SubscriptionCheckResult {
@@ -67,13 +67,12 @@ export async function checkSubscription(schoolId: string): Promise<SubscriptionC
   }
 }
 
-function getSchoolIdFromRequest(req: Request) {
+function getRequestedSchoolId(req: Request) {
   const schoolId =
     (req.params?.schoolId as string) ||
     (req.query.schoolId as string) ||
     (req.headers['x-school-id'] as string) ||
-    (req.body?.schoolId as string) ||
-    (req as any).user?.schoolId;
+    (req.body?.schoolId as string);
 
   if (schoolId) return schoolId;
 
@@ -114,7 +113,16 @@ export async function requireSubscription(req: Request, res: Response, next: Nex
       console.log('[subscriptionGuard] No session token found');
     }
 
-    const schoolId = tokenSchoolId || getSchoolIdFromRequest(req);
+    const scope = resolveSchoolScope({
+      authenticatedSchoolId: tokenSchoolId,
+      authenticatedRole: tokenRole,
+      requestedSchoolId: getRequestedSchoolId(req),
+    });
+    if (scope.rejected) {
+      return res.status(403).json({ error: 'School scope does not match the authenticated account' });
+    }
+
+    const schoolId = scope.schoolId;
     if (!schoolId) return res.status(400).json({ error: 'School ID required to verify subscription' });
 
     const check = await checkSubscription(schoolId);
@@ -152,7 +160,11 @@ export async function checkSubscriptionStatus(req: Request, res: Response, next:
       }
     }
 
-    const schoolId = tokenSchoolId || getSchoolIdFromRequest(req);
+    const scope = resolveSchoolScope({
+      authenticatedSchoolId: tokenSchoolId,
+      requestedSchoolId: getRequestedSchoolId(req),
+    });
+    const schoolId = scope.rejected ? null : scope.schoolId;
     if (schoolId) {
       const check = await checkSubscription(schoolId);
       (req as any).subscriptionCheck = check;

@@ -6,14 +6,13 @@ import { sendSignupOtpEmail, sendWelcomeEmail } from '../services/email.js';
 import { sendInternalSignupNotification } from '../services/email.js';
 import { recordActivity } from '../middleware/activityAudit.js';
 import { getPlatformSettingValue } from '../services/platform-settings.js';
+import { getSessionSecret } from '../services/security-config.js';
 
 const router = Router();
 const prisma = new PrismaClient();
 
 function secret() {
-  return new TextEncoder().encode(
-    process.env.SESSION_SECRET ?? "schoolbase-dev-secret-change-me",
-  );
+  return getSessionSecret();
 }
 
 // POST /api/trial/request-otp - Request OTP for signup
