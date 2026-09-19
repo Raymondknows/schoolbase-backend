@@ -11,6 +11,7 @@ import baileysSessionManager from '../communications/whatsapp-baileys.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
 import { normalizeAdmissionStatus } from './admissions-utils.js';
 import { getConfiguredPaymentPlans, getPublicPaymentPlans } from '../services/platform-settings.js';
+import { isValidLandingUrl, normalizePlacementType } from './ads-utils.js';
 
 type PublicAdmissionsSchool = {
   id: string;
@@ -54,6 +55,135 @@ router.get('/pricing', async (_req: Request, res: Response) => {
     res.status(500).json({ error: 'Unable to load pricing.' });
   }
 });
+
+async function handleAdPlacementRequest(req: Request, res: Response) {
+  const requestedPath = String(req.query.path ?? '/login');
+  const placementType = normalizePlacementType(requestedPath);
+  const eventName = String(req.query.event ?? '').trim().toLowerCase();
+  const campaignId = typeof req.query.id === 'string' ? req.query.id : null;
+
+  if (eventName && campaignId) {
+    const campaign = await prisma.adCampaign.findUnique({ where: { id: campaignId }, select: { id: true, status: true, enabled: true } });
+    if (!campaign || campaign.status !== 'LIVE' || !campaign.enabled) {
+      return res.status(403).json({ success: false, message: 'Campaign is not active' });
+    }
+
+    await prisma.adAnalyticsEvent.create({
+      data: {
+        campaignId: campaign.id,
+        placementId: null,
+        eventType: eventName === 'click' ? 'CLICK' : 'IMPRESSION',
+        sourcePath: requestedPath,
+        userAgent: req.headers['user-agent'] ?? null,
+        referrer: req.headers.referer ?? null,
+      },
+    }).catch(() => {});
+
+    return res.json({ success: true, recorded: eventName });
+  }
+
+  const placement = await prisma.adPlacement.findUnique({
+    where: { type: placementType as any },
+    include: { campaigns: { include: { campaign: { include: { creatives: { orderBy: { createdAt: 'asc' } }, advertiser: true } } } } },
+  });
+
+  if (!placement) {
+    return res.json({ placementType, ads: [] });
+  }
+
+  const now = new Date();
+  const activeAds = placement.campaigns
+    .map((entry) => entry.campaign)
+    .filter((campaign) => {
+      const withinDates = (!campaign.startDate || campaign.startDate <= now) && (!campaign.endDate || campaign.endDate >= now);
+      return campaign.status === 'LIVE' && campaign.enabled && campaign.approvedAt && withinDates && campaign.advertiser.verificationStatus === 'VERIFIED';
+    })
+    .filter((campaign) => campaign.landingUrl && isValidLandingUrl(campaign.landingUrl))
+    .slice(0, 1)
+    .map((campaign) => {
+      const primaryCreative = campaign.creatives[0] ?? null;
+      return {
+        id: campaign.id,
+        title: campaign.title,
+        headline: campaign.headline || primaryCreative?.headline || campaign.title,
+        summary: campaign.summary || primaryCreative?.description || '',
+        landingUrl: campaign.landingUrl,
+        label: placement.label,
+        imageUrl: primaryCreative?.imageUrl || null,
+        ctaText: primaryCreative?.ctaText || 'Learn more',
+        description: primaryCreative?.description || campaign.summary || '',
+        advertiser: campaign.advertiser.companyName,
+      };
+    });
+
+  return res.json({ placementType, ads: activeAds });
+}
+
+router.get('/ads/placements', async (req: Request, res: Response) => {
+  await handleAdPlacementRequest(req, res);
+});
+
+router.post('/ads/placements', async (req: Request, res: Response) => {
+  await handleAdPlacementRequest(req, res);
+});
+
+router.post('/ads/apply', async (req: Request, res: Response) => {
+  const { companyName, contactName, email, phone, website, category, campaignTitle, headline, summary, landingUrl, placementTypes = [], budget, currency = 'NGN' } = req.body || {};
+  const requiredValues = [companyName, contactName, email, campaignTitle, landingUrl];
+  if (requiredValues.some((value) => !String(value || '').trim())) {
+    return res.status(400).json({ message: 'Company, contact, email, campaign title, and landing URL are required.' });
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) {
+    return res.status(400).json({ message: 'Enter a valid contact email.' });
+  }
+  if (!isValidLandingUrl(String(landingUrl).trim())) {
+    return res.status(400).json({ message: 'Landing URL must use http or https.' });
+  }
+
+  const requestedTypes = Array.isArray(placementTypes) ? placementTypes.map((value) => String(value)) : [];
+  const placements = await prisma.adPlacement.findMany({
+    where: { type: { in: requestedTypes as any }, enabled: true },
+    select: { id: true },
+  });
+
+  try {
+    const result = await (prisma as any).$transaction(async (tx: any) => {
+      const advertiser = await tx.advertiser.create({
+        data: {
+          companyName: String(companyName).trim(),
+          contactName: String(contactName).trim(),
+          email: String(email).trim(),
+          phone: phone ? String(phone).trim() : null,
+          website: website ? String(website).trim() : null,
+          category: category ? String(category).trim() : null,
+          verificationStatus: 'PENDING',
+          notes: 'Submitted through the public Advertise with SchoolBase form.',
+        },
+      });
+      const campaign = await tx.adCampaign.create({
+        data: {
+          advertiserId: advertiser.id,
+          title: String(campaignTitle).trim(),
+          slug: `${String(campaignTitle).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}`,
+          headline: headline ? String(headline).trim() : null,
+          summary: summary ? String(summary).trim() : null,
+          landingUrl: String(landingUrl).trim(),
+          budget: Number(budget || 0),
+          currency: String(currency || 'NGN').trim(),
+          status: 'DRAFT',
+          enabled: false,
+          placements: placements.length ? { createMany: { data: placements.map((placement: { id: string }) => ({ placementId: placement.id })) } } : undefined,
+        },
+      });
+      return { advertiserId: advertiser.id, campaignId: campaign.id };
+    });
+    return res.status(201).json({ success: true, message: 'Application received. SchoolBase will review it and contact you.', ...result });
+  } catch (error) {
+    console.error('[PUBLIC ADS] Application failed:', error);
+    return res.status(500).json({ message: 'Unable to submit the advertising application right now.' });
+  }
+});
+
 const reportCardService = new ReportCardService(prisma);
 
 const publicCommunicationRulesRegistry = new CommunicationRulesRegistry(DEFAULT_COMMUNICATION_RULES);

@@ -19,6 +19,25 @@ const PORT = process.env.API_PORT || 3006;
 let subscriptionExpiryTask: any = null;
 let subscriptionEmailTask: any = null;
 
+async function ensureDefaultAdPlacements() {
+  const placements = [
+    { name: 'Login Page Banner', type: 'LOGIN_PAGE_BANNER', path: '/login', label: 'Sponsored', sortOrder: 1 },
+    { name: 'Public Partner Strip', type: 'PUBLIC_PARTNER_STRIP', path: '/', label: 'SchoolBase Partner', sortOrder: 2 },
+    { name: 'Resource / Blog Sponsor', type: 'RESOURCE_SPONSOR', path: '/blog', label: 'SchoolBase Partner', sortOrder: 3 },
+    { name: 'Parent Login Banner', type: 'PARENT_LOGIN_BANNER', path: '/parent/login', label: 'Parent Partner', sortOrder: 4 },
+    { name: 'Results Checker Sponsor', type: 'RESULTS_CHECKER_SPONSOR', path: '/results/check', label: 'Parent Partner', sortOrder: 5 },
+    { name: 'Signup Partner Strip', type: 'SIGNUP_PARTNER_STRIP', path: '/signup', label: 'Education Partner', sortOrder: 6 },
+  ] as const;
+
+  for (const placement of placements) {
+    await prisma.adPlacement.upsert({
+      where: { type: placement.type },
+      update: { name: placement.name, path: placement.path, label: placement.label, enabled: true, sortOrder: placement.sortOrder },
+      create: { name: placement.name, type: placement.type, path: placement.path, label: placement.label, enabled: true, sortOrder: placement.sortOrder },
+    });
+  }
+}
+
 // Middleware
 const allowedOrigins = [
   'http://localhost:3000',
@@ -183,6 +202,7 @@ async function loadRoutes() {
 async function start() {
   try {
     await ensurePlatformPaymentPlans(prisma);
+    await ensureDefaultAdPlacements();
     await loadRoutes();
 
     try {

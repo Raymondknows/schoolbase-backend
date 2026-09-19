@@ -18,6 +18,7 @@ import { URL } from 'node:url';
 const router = Router();
 const prisma = new PrismaClient();
 const supportDb = prisma as any;
+type AdCampaignStatusValue = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'LIVE' | 'PAUSED' | 'EXPIRED';
 
 async function getSchoolSetupChecklistData(schoolId: string) {
   const [school, enabledPhases, academicYears, classes, subjects, teacherClasses, feeSchedules] = await Promise.all([
@@ -136,6 +137,295 @@ const requirePlatformAdminSession = async (req: Request, res: Response): Promise
     return null;
   }
 };
+
+router.get('/ads/overview', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const [advertisers, campaigns, placements] = await Promise.all([
+    prisma.advertiser.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { campaigns: true },
+    }),
+    prisma.adCampaign.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        advertiser: true,
+        placements: { include: { placement: true } },
+        creatives: { orderBy: { createdAt: 'asc' }, take: 1 },
+        approvalLogs: { orderBy: { createdAt: 'desc' }, take: 5 },
+      },
+    }),
+    prisma.adPlacement.findMany({ orderBy: { sortOrder: 'asc' } }),
+  ]);
+
+  const now = new Date();
+  const activeCampaigns = campaigns.filter((campaign) => campaign.status === 'LIVE' && campaign.enabled && (!campaign.startDate || campaign.startDate <= now) && (!campaign.endDate || campaign.endDate >= now)).length;
+  const pendingApprovals = campaigns.filter((campaign) => campaign.status === 'SUBMITTED' || campaign.status === 'DRAFT').length;
+  const monthlyRevenue = campaigns.filter((campaign) => campaign.status === 'LIVE').reduce((total, campaign) => total + Number(campaign.budget || 0), 0);
+  const impressions = await prisma.adAnalyticsEvent.count({ where: { eventType: 'IMPRESSION' } });
+  const clicks = await prisma.adAnalyticsEvent.count({ where: { eventType: 'CLICK' } });
+  const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+
+  res.json({
+    summary: {
+      activeCampaigns,
+      pendingApprovals,
+      monthlyRevenue,
+      impressions,
+      clicks,
+      ctr,
+    },
+    advertisers,
+    campaigns,
+    placements,
+  });
+});
+
+router.get('/ads/advertisers', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const advertisers = await prisma.advertiser.findMany({
+    orderBy: { createdAt: 'desc' },
+    include: { campaigns: true },
+  });
+
+  res.json({ advertisers });
+});
+
+router.post('/ads/advertisers', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const { companyName, contactName, email, phone, website, category } = req.body || {};
+  if (!companyName || !contactName || !email) {
+    return res.status(400).json({ message: 'companyName, contactName, and email are required.' });
+  }
+
+  const advertiser = await prisma.advertiser.create({
+    data: {
+      companyName: String(companyName).trim(),
+      contactName: String(contactName).trim(),
+      email: String(email).trim(),
+      phone: phone ? String(phone).trim() : null,
+      website: website ? String(website).trim() : null,
+      category: category ? String(category).trim() : null,
+      verificationStatus: 'PENDING',
+    },
+  });
+
+  res.status(201).json({ advertiser });
+});
+
+router.post('/ads/advertisers/:id/verify', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const advertiser = await prisma.advertiser.update({
+    where: { id: req.params.id },
+    data: { verificationStatus: 'VERIFIED', verifiedAt: new Date(), rejectionReason: null },
+  });
+
+  res.json({ advertiser });
+});
+
+router.post('/ads/advertisers/:id/reject', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const reason = req.body?.reason ? String(req.body.reason).trim() : 'Rejected by platform admin';
+  const advertiser = await prisma.advertiser.update({
+    where: { id: req.params.id },
+    data: { verificationStatus: 'REJECTED', rejectionReason: reason, verifiedAt: null },
+  });
+
+  res.json({ advertiser });
+});
+
+router.get('/ads/campaigns', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const campaigns = await prisma.adCampaign.findMany({
+    orderBy: { createdAt: 'desc' },
+    include: { advertiser: true, placements: { include: { placement: true } }, creatives: true, approvalLogs: { orderBy: { createdAt: 'desc' } } },
+  });
+
+  res.json({ campaigns });
+});
+
+router.post('/ads/campaigns', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const { advertiserId, title, headline, summary, landingUrl, startDate, endDate, budget, currency, placements = [], creative } = req.body || {};
+  if (!advertiserId || !title || !landingUrl) {
+    return res.status(400).json({ message: 'advertiserId, title, and landingUrl are required.' });
+  }
+
+  const advertiser = await prisma.advertiser.findUnique({ where: { id: advertiserId } });
+  if (!advertiser) {
+    return res.status(404).json({ message: 'Advertiser not found.' });
+  }
+
+  const campaign = await prisma.adCampaign.create({
+    data: {
+      advertiserId,
+      title: String(title).trim(),
+      slug: `${String(title).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}`,
+      headline: headline ? String(headline).trim() : null,
+      summary: summary ? String(summary).trim() : null,
+      landingUrl: String(landingUrl).trim(),
+      startDate: startDate ? new Date(startDate) : null,
+      endDate: endDate ? new Date(endDate) : null,
+      budget: Number(budget || 0),
+      currency: currency ? String(currency).trim() : 'NGN',
+      status: 'DRAFT',
+      enabled: true,
+      creatives: creative ? {
+        create: {
+          imageUrl: creative.imageUrl ? String(creative.imageUrl).trim() : null,
+          headline: creative.headline ? String(creative.headline).trim() : null,
+          description: creative.description ? String(creative.description).trim() : null,
+          ctaText: creative.ctaText ? String(creative.ctaText).trim() : 'Learn more',
+          altText: creative.altText ? String(creative.altText).trim() : null,
+        },
+      } : undefined,
+    },
+    include: { creatives: true, placements: true },
+  });
+
+  if (Array.isArray(placements) && placements.length > 0) {
+    await prisma.adCampaignPlacement.createMany({
+      data: placements.map((placementId: string) => ({ campaignId: campaign.id, placementId })),
+    });
+  }
+
+  res.status(201).json({ campaign });
+});
+
+router.patch('/ads/campaigns/:id', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const { id } = req.params;
+  const updates = req.body || {};
+  const nextStatus = updates.status ? String(updates.status) : undefined;
+
+  const validStatusValues = new Set(['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'LIVE', 'PAUSED', 'EXPIRED']);
+  if (nextStatus && !validStatusValues.has(nextStatus)) {
+    return res.status(400).json({ message: 'Invalid campaign status.' });
+  }
+
+  const campaign = await prisma.adCampaign.update({
+    where: { id },
+    data: {
+      title: updates.title ? String(updates.title).trim() : undefined,
+      headline: updates.headline !== undefined ? (updates.headline ? String(updates.headline).trim() : null) : undefined,
+      summary: updates.summary !== undefined ? (updates.summary ? String(updates.summary).trim() : null) : undefined,
+      landingUrl: updates.landingUrl ? String(updates.landingUrl).trim() : undefined,
+      startDate: updates.startDate ? new Date(updates.startDate) : undefined,
+      endDate: updates.endDate ? new Date(updates.endDate) : undefined,
+      budget: updates.budget !== undefined ? Number(updates.budget || 0) : undefined,
+      currency: updates.currency ? String(updates.currency).trim() : undefined,
+      enabled: updates.enabled !== undefined ? Boolean(updates.enabled) : undefined,
+      status: nextStatus as AdCampaignStatusValue | undefined,
+    },
+  });
+
+  res.json({ campaign });
+});
+
+router.post('/ads/campaigns/:id/submit', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const campaign = await prisma.adCampaign.update({
+    where: { id: req.params.id },
+    data: { status: 'SUBMITTED', submittedAt: new Date() },
+  });
+
+  res.json({ campaign });
+});
+
+router.post('/ads/campaigns/:id/approve', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const existingCampaign = await prisma.adCampaign.findUnique({ where: { id: req.params.id } });
+  if (!existingCampaign || existingCampaign.status !== 'SUBMITTED') {
+    return res.status(400).json({ message: 'Only submitted campaigns can be approved.' });
+  }
+
+  const campaign = await prisma.adCampaign.update({
+    where: { id: req.params.id },
+    data: {
+      status: 'APPROVED',
+      approvedBy: session,
+      approvedAt: new Date(),
+      rejectedReason: null,
+    },
+  });
+
+  await prisma.campaignApprovalLog.create({
+    data: {
+      campaignId: campaign.id,
+      reviewerId: session,
+      action: 'APPROVED',
+      notes: req.body?.notes ? String(req.body.notes).trim() : 'Approved by platform admin',
+    },
+  });
+
+  res.json({ campaign });
+});
+
+router.post('/ads/campaigns/:id/live', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const campaign = await prisma.adCampaign.findUnique({ where: { id: req.params.id } });
+  if (!campaign || campaign.status !== 'APPROVED') {
+    return res.status(400).json({ message: 'Only approved campaigns can go live.' });
+  }
+
+  const liveCampaign = await prisma.adCampaign.update({
+    where: { id: campaign.id },
+    data: { status: 'LIVE', enabled: true },
+  });
+
+  await prisma.campaignApprovalLog.create({
+    data: { campaignId: campaign.id, reviewerId: session, action: 'LIVE', notes: 'Activated by platform admin' },
+  });
+
+  res.json({ campaign: liveCampaign });
+});
+
+router.post('/ads/campaigns/:id/reject', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const { reason } = req.body || {};
+  const campaign = await prisma.adCampaign.update({
+    where: { id: req.params.id },
+    data: {
+      status: 'REJECTED',
+      approvedBy: session,
+      rejectedReason: reason ? String(reason).trim() : 'Rejected by platform admin',
+    },
+  });
+
+  await prisma.campaignApprovalLog.create({
+    data: {
+      campaignId: campaign.id,
+      reviewerId: session,
+      action: 'REJECTED',
+      reason: reason ? String(reason).trim() : 'Rejected by platform admin',
+    },
+  });
+
+  res.json({ campaign });
+});
 
 router.get('/operations/status', async (req: Request, res: Response) => {
   const session = await requirePlatformAdminSession(req, res);

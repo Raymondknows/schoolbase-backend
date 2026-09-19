@@ -579,6 +579,161 @@ model PlatformSupportMessage {
   @@index([requestId], map: "PlatformSupportMessage_requestId_fkey")
 }
 
+enum AdvertiserVerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum AdPlacementType {
+  LOGIN_PAGE_BANNER
+  PUBLIC_PARTNER_STRIP
+  RESOURCE_SPONSOR
+  PARENT_LOGIN_BANNER
+  RESULTS_CHECKER_SPONSOR
+  SIGNUP_PARTNER_STRIP
+}
+
+enum AdCampaignStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  LIVE
+  PAUSED
+  EXPIRED
+}
+
+enum AdAnalyticsEventType {
+  IMPRESSION
+  CLICK
+}
+
+model Advertiser {
+  id                  String                       @id @default(cuid())
+  companyName         String
+  contactName         String
+  email               String
+  phone               String?
+  website             String?
+  category            String?
+  verificationStatus  AdvertiserVerificationStatus @default(PENDING)
+  verifiedAt          DateTime?
+  rejectionReason     String?                      @db.Text
+  notes               String?                      @db.Text
+  createdAt           DateTime                     @default(now())
+  updatedAt           DateTime                     @updatedAt
+  campaigns           AdCampaign[]
+
+  @@index([verificationStatus])
+}
+
+model AdPlacement {
+  id            String         @id @default(cuid())
+  name          String
+  type          AdPlacementType @unique
+  path          String?
+  label         String         @default("Sponsored")
+  enabled       Boolean        @default(true)
+  sortOrder     Int            @default(0)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  campaigns     AdCampaignPlacement[]
+
+  @@index([enabled, sortOrder])
+}
+
+model AdCampaign {
+  id                 String                @id @default(cuid())
+  advertiserId       String
+  title              String
+  slug               String               @unique
+  headline           String?
+  summary            String?              @db.Text
+  landingUrl         String
+  status             AdCampaignStatus      @default(DRAFT)
+  startDate          DateTime?
+  endDate            DateTime?
+  budget             Float                @default(0)
+  currency           String               @default("NGN")
+  enabled            Boolean              @default(true)
+  approvedBy         String?
+  approvedAt         DateTime?
+  rejectedReason     String?              @db.Text
+  submittedAt        DateTime?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  advertiser         Advertiser           @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
+  placements         AdCampaignPlacement[]
+  creatives          AdCreative[]
+  approvalLogs       CampaignApprovalLog[]
+  analyticsEvents    AdAnalyticsEvent[]
+
+  @@index([advertiserId])
+  @@index([status])
+  @@index([startDate, endDate])
+}
+
+model AdCampaignPlacement {
+  id          String      @id @default(cuid())
+  campaignId  String
+  placementId String
+  sortOrder   Int         @default(0)
+  createdAt   DateTime    @default(now())
+  campaign    AdCampaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  placement   AdPlacement @relation(fields: [placementId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, placementId])
+  @@index([placementId])
+}
+
+model AdCreative {
+  id            String      @id @default(cuid())
+  campaignId    String
+  imageUrl      String?
+  headline      String?
+  description   String?     @db.Text
+  ctaText       String?     @default("Learn more")
+  altText       String?
+  assetType     String      @default("IMAGE")
+  isPrimary     Boolean     @default(true)
+  approvedAt    DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  campaign      AdCampaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+}
+
+model CampaignApprovalLog {
+  id          String      @id @default(cuid())
+  campaignId  String
+  reviewerId  String?
+  action      String
+  reason      String?     @db.Text
+  notes       String?     @db.Text
+  createdAt   DateTime    @default(now())
+  campaign    AdCampaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, createdAt])
+}
+
+model AdAnalyticsEvent {
+  id             String               @id @default(cuid())
+  campaignId     String
+  placementId    String?
+  eventType      AdAnalyticsEventType
+  sourcePath     String?
+  userAgent      String?
+  referrer       String?
+  ipHash         String?
+  createdAt      DateTime             @default(now())
+  campaign       AdCampaign           @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, eventType])
+  @@index([sourcePath])
+}
+
 model Subject {
   id                   String                @id @default(cuid())
   schoolId             String
