@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { jwtVerify } from 'jose';
 import { ResultsDomainService } from '../domain/results/ResultsDomainService.js';
 import { getSessionSecret } from '../services/security-config.js';
+import { resolveSchoolScope } from '../services/security-context.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -10,6 +11,36 @@ const resultsDomain = new ResultsDomainService(prisma);
 
 function secret() {
   return getSessionSecret();
+}
+
+async function resolveSchoolId(req: Request): Promise<string | null> {
+  const requestedSchoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string) || (req.body as any)?.schoolId;
+
+  const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
+  let authenticatedSchoolId: string | null = null;
+  let authenticatedRole: string | null = null;
+
+  if (token) {
+    try {
+      const { payload } = await jwtVerify(token, secret());
+      if (payload && typeof payload === 'object') {
+        authenticatedRole = typeof payload.role === 'string' ? payload.role : null;
+        if ('schoolId' in payload && payload.schoolId) {
+          authenticatedSchoolId = String((payload as any).schoolId);
+        }
+      }
+    } catch (error) {
+      console.error('[results-engine] Failed to resolve schoolId from token', error);
+    }
+  }
+
+  const scope = resolveSchoolScope({ authenticatedSchoolId, authenticatedRole, requestedSchoolId });
+  if (scope.rejected) {
+    console.warn('[results-engine] Rejected cross-school scope request');
+    return null;
+  }
+
+  return scope.schoolId;
 }
 
 /**
@@ -28,13 +59,13 @@ function secret() {
 router.post('/calculate-grades/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
     const userId = (req as any).user?.id || 'SYSTEM';
 
     if (!schoolId || !assessmentId) {
-      return res.status(400).json({
-        error: 'MISSING_PARAMETERS',
-        message: 'Missing school ID or assessment ID',
+      return res.status(403).json({
+        error: 'SCHOOL_SCOPE_REQUIRED',
+        message: 'School scope verification failed',
       });
     }
 
@@ -163,13 +194,13 @@ router.post('/calculate-grades/:assessmentId', async (req: Request, res: Respons
 router.post('/calculate-positions/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
     const userId = (req as any).user?.id || 'SYSTEM';
 
     if (!schoolId || !assessmentId) {
-      return res.status(400).json({
-        error: 'MISSING_PARAMETERS',
-        message: 'Missing school ID or assessment ID',
+      return res.status(403).json({
+        error: 'SCHOOL_SCOPE_REQUIRED',
+        message: 'School scope verification failed',
       });
     }
 
@@ -244,12 +275,12 @@ router.post('/calculate-positions/:assessmentId', async (req: Request, res: Resp
 router.post('/validate/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId || !assessmentId) {
-      return res.status(400).json({
-        error: 'MISSING_PARAMETERS',
-        message: 'Missing school ID or assessment ID',
+      return res.status(403).json({
+        error: 'SCHOOL_SCOPE_REQUIRED',
+        message: 'School scope verification failed',
       });
     }
 
@@ -290,13 +321,13 @@ router.post('/validate/:assessmentId', async (req: Request, res: Response) => {
 router.post('/lock/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
     const userId = (req as any).user?.id || 'SYSTEM';
 
     if (!schoolId || !assessmentId) {
-      return res.status(400).json({
-        error: 'MISSING_PARAMETERS',
-        message: 'Missing school ID or assessment ID',
+      return res.status(403).json({
+        error: 'SCHOOL_SCOPE_REQUIRED',
+        message: 'School scope verification failed',
       });
     }
 
@@ -338,13 +369,13 @@ router.post('/lock/:assessmentId', async (req: Request, res: Response) => {
 router.post('/unlock/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
     const userId = (req as any).user?.id || 'SYSTEM';
 
     if (!schoolId || !assessmentId) {
-      return res.status(400).json({
-        error: 'MISSING_PARAMETERS',
-        message: 'Missing school ID or assessment ID',
+      return res.status(403).json({
+        error: 'SCHOOL_SCOPE_REQUIRED',
+        message: 'School scope verification failed',
       });
     }
 
@@ -387,13 +418,13 @@ router.post('/unlock/:assessmentId', async (req: Request, res: Response) => {
 router.post('/publish/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
     const userId = (req as any).user?.id || 'SYSTEM';
 
     if (!schoolId || !assessmentId) {
-      return res.status(400).json({
-        error: 'MISSING_PARAMETERS',
-        message: 'Missing school ID or assessment ID',
+      return res.status(403).json({
+        error: 'SCHOOL_SCOPE_REQUIRED',
+        message: 'School scope verification failed',
       });
     }
 
@@ -441,13 +472,13 @@ router.post('/publish/:assessmentId', async (req: Request, res: Response) => {
 router.post('/unpublish/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
     const userId = (req as any).user?.id || 'SYSTEM';
 
     if (!schoolId || !assessmentId) {
-      return res.status(400).json({
-        error: 'MISSING_PARAMETERS',
-        message: 'Missing school ID or assessment ID',
+      return res.status(403).json({
+        error: 'SCHOOL_SCOPE_REQUIRED',
+        message: 'School scope verification failed',
       });
     }
 
@@ -488,12 +519,12 @@ router.post('/unpublish/:assessmentId', async (req: Request, res: Response) => {
 router.get('/assessment/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId || !assessmentId) {
-      return res.status(400).json({
-        error: 'MISSING_PARAMETERS',
-        message: 'Missing school ID or assessment ID',
+      return res.status(403).json({
+        error: 'SCHOOL_SCOPE_REQUIRED',
+        message: 'School scope verification failed',
       });
     }
 
@@ -545,10 +576,10 @@ router.get('/assessment/:assessmentId', async (req: Request, res: Response) => {
 router.get('/:resultId/audit', async (req: Request, res: Response) => {
   try {
     const { resultId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId) {
-      return res.status(400).json({ error: 'Missing school ID' });
+      return res.status(403).json({ error: 'SCHOOL_SCOPE_REQUIRED', message: 'School scope verification failed' });
     }
 
     const audits = await prisma.resultAudit.findMany({
@@ -578,14 +609,14 @@ router.get('/:resultId/audit', async (req: Request, res: Response) => {
 router.get('/assessment/:assessmentId/audits', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!assessmentId) {
       return res.status(400).json({ error: 'Missing assessment ID' });
     }
 
     if (!schoolId) {
-      return res.status(400).json({ error: 'Missing school ID' });
+      return res.status(403).json({ error: 'SCHOOL_SCOPE_REQUIRED', message: 'School scope verification failed' });
     }
 
     // Verify assessment exists and belongs to school

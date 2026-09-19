@@ -12,6 +12,7 @@ import { buildBulkPinNotificationBatches, validateBulkPinNotificationRequest } f
 import { resolvePublicResultsUrl } from '../services/public-url.js';
 import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
 import { getSessionSecret } from '../services/security-config.js';
+import { resolveSchoolScope } from '../services/security-context.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -149,22 +150,33 @@ function generatePinValue(length = 8, format = 'XXXX-XXXX'): string {
 }
 
 async function resolveSchoolId(req: Request): Promise<string | null> {
-  const schoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string) || (req.body as any)?.schoolId;
-  if (schoolId) return schoolId;
+  const requestedSchoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string) || (req.body as any)?.schoolId;
 
   const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
-  if (!token) return null;
+  let authenticatedSchoolId: string | null = null;
+  let authenticatedRole: string | null = null;
 
-  try {
-    const { payload } = await jwtVerify(token, secret());
-    if (payload && typeof payload === 'object' && 'schoolId' in payload) {
-      return String((payload as any).schoolId);
+  if (token) {
+    try {
+      const { payload } = await jwtVerify(token, secret());
+      if (payload && typeof payload === 'object') {
+        authenticatedRole = typeof payload.role === 'string' ? payload.role : null;
+        if ('schoolId' in payload && payload.schoolId) {
+          authenticatedSchoolId = String((payload as any).schoolId);
+        }
+      }
+    } catch (error) {
+      console.error('[result-pins] Failed to resolve schoolId from token', error);
     }
-  } catch (error) {
-    console.error('[result-pins] Failed to resolve schoolId from token', error);
   }
 
-  return null;
+  const scope = resolveSchoolScope({ authenticatedSchoolId, authenticatedRole, requestedSchoolId });
+  if (scope.rejected) {
+    console.warn('[result-pins] Rejected cross-school scope request');
+    return null;
+  }
+
+  return scope.schoolId;
 }
 
 async function ensureResultPinFeatureEnabled(schoolId: string) {

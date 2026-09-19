@@ -45,3 +45,16 @@ test('missing context remains unresolved instead of guessing a tenant', () => {
     rejected: false,
   });
 });
+
+test('unknown roles are treated as untrusted and do not resolve a school scope', () => {
+  assert.deepEqual(
+    resolveSchoolScope({
+      authenticatedSchoolId: 'school-a',
+      authenticatedRole: 'unknown-role',
+    }),
+    {
+      schoolId: null,
+      rejected: false,
+    },
+  );
+});

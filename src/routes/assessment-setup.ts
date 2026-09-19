@@ -1,8 +1,45 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { jwtVerify } from 'jose';
+import { getSessionSecret } from '../services/security-config.js';
+import { resolveSchoolScope } from '../services/security-context.js';
 
 const router = Router();
 const prisma = new PrismaClient();
+
+function secret() {
+  return getSessionSecret();
+}
+
+async function resolveSchoolId(req: Request): Promise<string | null> {
+  const requestedSchoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string) || (req.body as any)?.schoolId;
+
+  const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
+  let authenticatedSchoolId: string | null = null;
+  let authenticatedRole: string | null = null;
+
+  if (token) {
+    try {
+      const { payload } = await jwtVerify(token, secret());
+      if (payload && typeof payload === 'object') {
+        authenticatedRole = typeof payload.role === 'string' ? payload.role : null;
+        if ('schoolId' in payload && payload.schoolId) {
+          authenticatedSchoolId = String((payload as any).schoolId);
+        }
+      }
+    } catch (error) {
+      console.error('[assessment-setup] Failed to resolve schoolId from token', error);
+    }
+  }
+
+  const scope = resolveSchoolScope({ authenticatedSchoolId, authenticatedRole, requestedSchoolId });
+  if (scope.rejected) {
+    console.warn('[assessment-setup] Rejected cross-school scope request');
+    return null;
+  }
+
+  return scope.schoolId;
+}
 
 /**
  * Assessment Setup Routes - Quick Wizard for CA/Test/Exam Configuration
@@ -19,10 +56,10 @@ const prisma = new PrismaClient();
 router.get('/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId) {
-      return res.status(400).json({ error: 'Missing school ID' });
+      return res.status(403).json({ error: 'SCHOOL_SCOPE_REQUIRED', message: 'School scope verification failed' });
     }
 
     const assessment = await prisma.assessment.findFirst({
@@ -111,11 +148,11 @@ router.post('/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
     const { components } = req.body;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
     const userId = req.headers['x-user-id'] as string;
 
     if (!schoolId) {
-      return res.status(400).json({ error: 'Missing school ID' });
+      return res.status(403).json({ error: 'SCHOOL_SCOPE_REQUIRED', message: 'School scope verification failed' });
     }
 
     if (!Array.isArray(components) || components.length === 0) {
@@ -202,10 +239,10 @@ router.patch('/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
     const { components } = req.body;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId) {
-      return res.status(400).json({ error: 'Missing school ID' });
+      return res.status(403).json({ error: 'SCHOOL_SCOPE_REQUIRED', message: 'School scope verification failed' });
     }
 
     if (!Array.isArray(components)) {

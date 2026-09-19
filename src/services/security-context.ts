@@ -10,6 +10,21 @@ export type SecurityContextResult = {
   reason?: string;
 };
 
+const KNOWN_ROLES = new Set([
+  'SCHOOL_ADMIN',
+  'TEACHER',
+  'STUDENT',
+  'PARENT',
+  'BURSAR',
+  'PLATFORM_ADMIN',
+  'ADMIN',
+]);
+
+function normalizeRole(role?: string | null): string | null {
+  const normalized = normalize(role)?.toUpperCase() ?? null;
+  return normalized && KNOWN_ROLES.has(normalized) ? normalized : null;
+}
+
 /**
  * Resolve tenant scope without allowing school users to switch schools through
  * query parameters, headers, or request bodies.
@@ -17,9 +32,13 @@ export type SecurityContextResult = {
 export function resolveSchoolScope(input: SecurityContextInput): SecurityContextResult {
   const authenticatedSchoolId = normalize(input.authenticatedSchoolId);
   const requestedSchoolId = normalize(input.requestedSchoolId);
-  const role = normalize(input.authenticatedRole)?.toUpperCase() ?? null;
+  const role = normalizeRole(input.authenticatedRole);
 
   if (authenticatedSchoolId) {
+    if (!role) {
+      return { schoolId: null, rejected: false };
+    }
+
     if (requestedSchoolId && requestedSchoolId !== authenticatedSchoolId && role !== 'PLATFORM_ADMIN') {
       return {
         schoolId: null,

@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { jwtVerify } from 'jose';
 import PDFReportCardService from '../services/pdf-report-card.service.js';
+import { getSessionSecret } from '../services/security-config.js';
+import { resolveSchoolScope } from '../services/security-context.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -12,6 +15,40 @@ function sanitizeFilename(value: string): string {
     .replace(/[^a-zA-Z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 120);
+}
+
+function secret() {
+  return getSessionSecret();
+}
+
+async function resolveSchoolId(req: Request): Promise<string | null> {
+  const requestedSchoolId = (req.query.schoolId as string) || (req.headers['x-school-id'] as string) || (req.body as any)?.schoolId;
+
+  const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
+  let authenticatedSchoolId: string | null = null;
+  let authenticatedRole: string | null = null;
+
+  if (token) {
+    try {
+      const { payload } = await jwtVerify(token, secret());
+      if (payload && typeof payload === 'object') {
+        authenticatedRole = typeof payload.role === 'string' ? payload.role : null;
+        if ('schoolId' in payload && payload.schoolId) {
+          authenticatedSchoolId = String((payload as any).schoolId);
+        }
+      }
+    } catch (error) {
+      console.error('[pdf-reports] Failed to resolve schoolId from token', error);
+    }
+  }
+
+  const scope = resolveSchoolScope({ authenticatedSchoolId, authenticatedRole, requestedSchoolId });
+  if (scope.rejected) {
+    console.warn('[pdf-reports] Rejected cross-school scope request');
+    return null;
+  }
+
+  return scope.schoolId;
 }
 
 /**
@@ -28,10 +65,10 @@ function sanitizeFilename(value: string): string {
 router.get('/:assessmentId/:pupilId', async (req: Request, res: Response) => {
   try {
     const { assessmentId, pupilId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId || !assessmentId || !pupilId) {
-      return res.status(400).json({ error: 'Missing required parameters' });
+      return res.status(403).json({ error: 'School scope verification failed' });
     }
 
     // Get pupil for filename
@@ -82,10 +119,10 @@ router.get('/:assessmentId/:pupilId', async (req: Request, res: Response) => {
 router.get('/bulk/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId || !assessmentId) {
-      return res.status(400).json({ error: 'Missing school ID or assessment ID' });
+      return res.status(403).json({ error: 'School scope verification failed' });
     }
 
     const explicitSignatoryId = req.query.signatoryId as string | undefined;
@@ -116,10 +153,10 @@ router.get('/bulk/:assessmentId', async (req: Request, res: Response) => {
 router.get('/ranking/:assessmentId', async (req: Request, res: Response) => {
   try {
     const { assessmentId } = req.params;
-    const schoolId = req.headers['x-school-id'] as string;
+    const schoolId = await resolveSchoolId(req);
 
     if (!schoolId || !assessmentId) {
-      return res.status(400).json({ error: 'Missing school ID or assessment ID' });
+      return res.status(403).json({ error: 'School scope verification failed' });
     }
 
     const pdfBytes = await pdfService.generateClassRankingPDF(
