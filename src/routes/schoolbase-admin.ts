@@ -17,7 +17,16 @@ import os from 'node:os';
 import { URL } from 'node:url';
 
 const router = Router();
-const prisma = new PrismaClient();
+type AdsPrismaClient = PrismaClient & {
+  advertiser: any;
+  adCampaign: any;
+  adCampaignPlacement: any;
+  campaignApprovalLog: any;
+  adAnalyticsEvent: any;
+  adPlacement: any;
+  adCreative: any;
+};
+const prisma = new PrismaClient() as AdsPrismaClient;
 const supportDb = prisma as any;
 type AdCampaignStatusValue = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'LIVE' | 'PAUSED' | 'EXPIRED';
 
@@ -161,9 +170,9 @@ router.get('/ads/overview', async (req: Request, res: Response) => {
   ]);
 
   const now = new Date();
-  const activeCampaigns = campaigns.filter((campaign) => campaign.status === 'LIVE' && campaign.enabled && (!campaign.startDate || campaign.startDate <= now) && (!campaign.endDate || campaign.endDate >= now)).length;
-  const pendingApprovals = campaigns.filter((campaign) => campaign.status === 'SUBMITTED' || campaign.status === 'DRAFT').length;
-  const monthlyRevenue = campaigns.filter((campaign) => campaign.status === 'LIVE').reduce((total, campaign) => total + Number(campaign.budget || 0), 0);
+  const activeCampaigns = campaigns.filter((campaign: any) => campaign.status === 'LIVE' && campaign.enabled && (!campaign.startDate || campaign.startDate <= now) && (!campaign.endDate || campaign.endDate >= now)).length;
+  const pendingApprovals = campaigns.filter((campaign: any) => campaign.status === 'SUBMITTED' || campaign.status === 'DRAFT').length;
+  const monthlyRevenue = campaigns.filter((campaign: any) => campaign.status === 'LIVE').reduce((total: number, campaign: any) => total + Number(campaign.budget || 0), 0);
   const impressions = await prisma.adAnalyticsEvent.count({ where: { eventType: 'IMPRESSION' } });
   const clicks = await prisma.adAnalyticsEvent.count({ where: { eventType: 'CLICK' } });
   const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
@@ -475,6 +484,7 @@ router.get('/operations/status', async (req: Request, res: Response) => {
     { key: 'communications', label: 'Communication API', url: `${localApiBase}/api/admin/notifications/data` },
     { key: 'platformAdminApp', label: 'Platform Admin App', url: `${localApiBase}/schoolbase-admin/api/schools?limit=1` },
     { key: 'platformAdmin', label: 'Platform Admin API', url: `${localApiBase}/schoolbase-admin/api/stats` },
+    { key: 'adsApi', label: 'Ads API', url: `${localApiBase}/schoolbase-admin/api/ads/overview` },
     { key: 'platformWhatsApp', label: 'Platform WhatsApp', url: `${localApiBase}/schoolbase-admin/api/whatsapp/status` },
     ...(frontendBase ? [{ key: 'frontend', label: 'Frontend', url: `${frontendBase}/login` }] : []),
   ];
@@ -517,7 +527,7 @@ router.get('/operations/status', async (req: Request, res: Response) => {
       prisma.adCampaign.groupBy({ by: ['status'], _count: { _all: true } }).catch(() => []),
       prisma.adAnalyticsEvent.groupBy({ by: ['eventType'], _count: { _all: true } }).catch(() => []),
     ]);
-    const attentionEvents = recentAuditEvents.filter((event) => /FAIL|ERROR|REJECT|DOWN|SCOPE/i.test(event.event));
+    const attentionEvents = recentAuditEvents.filter((event: any) => /FAIL|ERROR|REJECT|DOWN|SCOPE/i.test(event.event));
     return res.json({
       service: downCount === endpointChecks.length ? 'down' : downCount > 0 ? 'degraded' : 'ready',
       database,

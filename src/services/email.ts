@@ -584,6 +584,60 @@ function escapeEmailHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character));
 }
 
+function buildSchoolBaseEmailTemplate({
+  title,
+  subtitle,
+  introHtml,
+  detailRows = [],
+  actionText,
+  actionUrl,
+  footerText,
+}: {
+  title: string;
+  subtitle: string;
+  introHtml: string;
+  detailRows?: Array<[string, string]>;
+  actionText?: string;
+  actionUrl?: string;
+  footerText?: string;
+}) {
+  const detailHtml = detailRows.length > 0
+    ? detailRows.map(([label, value]) => `<div style="margin: 10px 0; font-size: 14px; color: ${BRAND.text};"><strong>${escapeEmailHtml(label)}:</strong> ${escapeEmailHtml(value)}</div>`).join('')
+    : '';
+
+  const actionHtml = actionText && actionUrl
+    ? `<div style="text-align:center; margin: 28px 0 18px;"><a href="${escapeEmailHtml(actionUrl)}" style="display:inline-block; background-color:${BRAND.primary}; color:${BRAND.surface}; text-decoration:none; padding: 12px 24px; border-radius: 6px; font-weight: 700; font-size: 14px;">${escapeEmailHtml(actionText)}</a></div>`
+    : '';
+
+  return `<!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>${EMAIL_STYLES}</style>
+      </head>
+      <body>
+        <div class="email-container">
+          <div class="header">
+            <img src="https://schoolbase.live/logo.png" alt="SchoolBase Logo" class="logo" />
+            <h1>${escapeEmailHtml(title)}</h1>
+            <p class="header-subtitle">${escapeEmailHtml(subtitle)}</p>
+          </div>
+          <div class="content">
+            ${introHtml}
+            ${detailRows.length > 0 ? `<div class="info-box">${detailHtml}</div>` : ''}
+            ${actionHtml}
+            ${footerText ? `<p style="margin-top: 24px; font-size: 14px; color: ${BRAND.textMuted};">${escapeEmailHtml(footerText)}</p>` : ''}
+            <p style="margin-top: 24px;">Warm regards,<br><strong>The SchoolBase Team</strong></p>
+          </div>
+          <div class="footer">
+            <p class="footer-text">&copy; 2026 SchoolBase. All rights reserved.</p>
+            <p class="footer-text"><a href="https://schoolbase.live" style="color: ${BRAND.primary}; text-decoration: none;">SchoolBase</a> | <a href="mailto:support@schoolbase.live" style="color: ${BRAND.primary}; text-decoration: none;">Support</a></p>
+          </div>
+        </div>
+      </body>
+    </html>`;
+}
+
 export async function sendAdvertiserApplicationNotification(input: {
   companyName: string;
   contactName: string;
@@ -593,12 +647,29 @@ export async function sendAdvertiserApplicationNotification(input: {
   placementTypes: string[];
 }) {
   const details = `Company: ${input.companyName}\nContact: ${input.contactName} <${input.email}>\nCampaign: ${input.campaignTitle}\nLanding URL: ${input.landingUrl}\nRequested placements: ${input.placementTypes.join(', ') || 'Not specified'}`;
+  const subject = `New advertising application: ${input.companyName}`;
+  const html = buildSchoolBaseEmailTemplate({
+    title: 'New advertising application',
+    subtitle: 'Pending review',
+    introHtml: '<p>A new advertiser application is waiting for review.</p>',
+    detailRows: [
+      ['Company', input.companyName],
+      ['Contact', `${input.contactName} <${input.email}>`],
+      ['Campaign', input.campaignTitle],
+      ['Landing URL', input.landingUrl],
+      ['Requested placements', input.placementTypes.join(', ') || 'Not specified'],
+    ],
+    actionText: 'Open Platform Admin',
+    actionUrl: 'https://schoolbase.live/schoolbase-admin/ads',
+    footerText: 'Open Platform Admin > Ads & Marketplace to review it.',
+  });
+
   await transporter.sendMail({
     from: process.env.EMAIL_FROM || 'noreply@schoolbase.live',
     to: getAdsNotificationRecipients().join(','),
-    subject: `New advertising application: ${input.companyName}`,
+    subject,
     text: `A new SchoolBase advertising application needs review.\n\n${details}`,
-    html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><h2>New SchoolBase advertising application</h2><p>A new advertiser application is waiting for review.</p><pre style="white-space:pre-wrap">${escapeEmailHtml(details)}</pre><p>Open Platform Admin &gt; Ads &amp; Marketplace to review it.</p></div>`,
+    html,
   });
 }
 
@@ -612,12 +683,35 @@ export async function sendAdvertiserStatusEmail(input: {
   const statusText = input.status === 'RECEIVED' ? 'advertising application has been received and is awaiting review' : input.status === 'VERIFIED' ? 'advertiser profile has been verified' : input.status === 'APPROVED' ? 'campaign has been approved for launch' : 'application needs changes before it can proceed';
   const subject = input.status === 'REJECTED' ? `SchoolBase advertising application update: ${input.companyName}` : `SchoolBase advertising update: ${input.companyName}`;
   const message = `Hello ${input.contactName},\n\nYour ${input.companyName} ${statusText}.${input.reason ? `\n\nReview note: ${input.reason}` : ''}\n\nThe SchoolBase team will contact you about the next step.\n\nSchoolBase`;
+
+  const introHtml = input.reason
+    ? `<p>Hello ${escapeEmailHtml(input.contactName)},</p><p>Your <strong>${escapeEmailHtml(input.companyName)}</strong> ${escapeEmailHtml(statusText)}.</p><p><strong>Review note:</strong> ${escapeEmailHtml(input.reason)}</p><p>The SchoolBase team will contact you about the next step.</p>`
+    : `<p>Hello ${escapeEmailHtml(input.contactName)},</p><p>Your <strong>${escapeEmailHtml(input.companyName)}</strong> ${escapeEmailHtml(statusText)}.</p><p>The SchoolBase team will contact you about the next step.</p>`;
+
+  const detailRows: Array<[string, string]> = [
+    ['Company', input.companyName],
+    ['Status', statusText],
+  ];
+
+  if (input.reason) {
+    detailRows.push(['Review note', input.reason]);
+  }
+
+  const html = buildSchoolBaseEmailTemplate({
+    title: input.status === 'REJECTED' ? 'Application update' : 'Advertising update',
+    subtitle: input.status === 'APPROVED' ? 'Approved for launch' : input.status === 'VERIFIED' ? 'Profile verified' : input.status === 'REJECTED' ? 'Changes required' : 'Received and under review',
+    introHtml,
+    detailRows,
+    actionText: input.status === 'APPROVED' ? 'Open SchoolBase' : undefined,
+    actionUrl: input.status === 'APPROVED' ? 'https://schoolbase.live/login' : undefined,
+  });
+
   await transporter.sendMail({
     from: process.env.EMAIL_FROM || 'noreply@schoolbase.live',
     to: input.email,
     subject,
     text: message,
-    html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><h2>SchoolBase advertising update</h2><p>Hello ${escapeEmailHtml(input.contactName)},</p><p>Your <strong>${escapeEmailHtml(input.companyName)}</strong> ${escapeEmailHtml(statusText)}.</p>${input.reason ? `<p><strong>Review note:</strong> ${escapeEmailHtml(input.reason)}</p>` : ''}<p>The SchoolBase team will contact you about the next step.</p></div>`,
+    html,
   });
 }
 

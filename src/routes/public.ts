@@ -134,6 +134,8 @@ router.post('/ads/apply', async (req: Request, res: Response) => {
   const honeypot = String(req.body?.companyWebsite || companyWebsite || '').trim();
   if (honeypot) return res.status(400).json({ message: 'Unable to submit application.' });
 
+  const normalizedHeadline = headline ? String(headline).trim() : String(campaignTitle || '').trim();
+
   const clientKey = String(req.ip || req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
   const now = Date.now();
   const recentAttempts = (adApplicationAttempts.get(clientKey) || []).filter((timestamp) => now - timestamp < 60 * 60 * 1000);
@@ -189,7 +191,7 @@ router.post('/ads/apply', async (req: Request, res: Response) => {
           advertiserId: advertiser.id,
           title: String(campaignTitle).trim(),
           slug: `${String(campaignTitle).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}`,
-          headline: headline ? String(headline).trim() : null,
+          headline: normalizedHeadline || null,
           summary: summary ? String(summary).trim() : null,
           landingUrl: String(landingUrl).trim(),
           budget: Number(budget || 0),
