@@ -9,6 +9,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
+    "smoke:api": "node ../scripts/smoke-api.mjs",
     "test:platform-settings": "tsx tests/platform-settings.test.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",

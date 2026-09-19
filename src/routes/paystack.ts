@@ -13,6 +13,15 @@ const prisma = new PrismaClient();
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_BASE_URL = 'https://api.paystack.co';
 
+// GET /api/paystack/status - Safe provider configuration/readiness check
+router.get('/status', async (_req: Request, res: Response) => {
+  res.json({
+    provider: 'Paystack',
+    configured: Boolean(PAYSTACK_SECRET_KEY),
+    status: PAYSTACK_SECRET_KEY ? 'configured' : 'not_configured',
+  });
+});
+
 // POST /api/paystack/init - Initialize Paystack payment
 router.post('/init', async (req: Request, res: Response) => {
   try {

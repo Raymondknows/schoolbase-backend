@@ -146,12 +146,32 @@ router.get('/operations/status', async (req: Request, res: Response) => {
   const frontendBase = (process.env.FRONTEND_URL || '').split(',')[0].trim().replace(/\/$/, '');
   const endpointDefinitions = [
     { key: 'api', label: 'Core API', url: `${localApiBase}/health` },
+    { key: 'auth', label: 'Authentication API', url: `${localApiBase}/api/auth/login` },
+    { key: 'public', label: 'Public API', url: `${localApiBase}/api/pricing` },
+    { key: 'country', label: 'Country API', url: `${localApiBase}/api/country/config` },
+    { key: 'schoolAdminApp', label: 'School Admin App', url: `${localApiBase}/api/admin/students/data` },
     { key: 'admin', label: 'Admin API', url: `${localApiBase}/api/admin/verify` },
+    { key: 'subscription', label: 'Subscription API', url: `${localApiBase}/api/admin/subscribe/data` },
+    { key: 'adminComponents', label: 'Assessment Components', url: `${localApiBase}/api/admin/assessment-components` },
+    { key: 'flexibleResults', label: 'Flexible Results', url: `${localApiBase}/api/admin/flexible-results` },
+    { key: 'assessmentSetup', label: 'Assessment Setup', url: `${localApiBase}/api/assessments/setup` },
+    { key: 'parentsApp', label: 'Parents App', url: `${localApiBase}/api/parent/children` },
     { key: 'parent', label: 'Parent API', url: `${localApiBase}/api/parent/verify` },
+    { key: 'teachersApp', label: 'Teachers App', url: `${localApiBase}/api/teacher/classes` },
     { key: 'teacher', label: 'Teacher API', url: `${localApiBase}/api/teacher/dashboard` },
     { key: 'bursar', label: 'Bursar API', url: `${localApiBase}/api/bursar/overview` },
     { key: 'results', label: 'Results API', url: `${localApiBase}/api/results/data` },
+    { key: 'reportCards', label: 'Report Cards', url: `${localApiBase}/api/report-cards` },
+    { key: 'pdfReports', label: 'PDF Reports', url: `${localApiBase}/api/pdf-reports` },
+    { key: 'resultPins', label: 'Result PINs', url: `${localApiBase}/api/result-pins/status` },
+    { key: 'timetable', label: 'Timetable API', url: `${localApiBase}/api/admin/timetable` },
+    { key: 'paystack', label: 'Paystack API', url: `${localApiBase}/api/paystack/status` },
+    { key: 'signup', label: 'Signup & OTP API', url: `${localApiBase}/api/trial/status` },
+    { key: 'whatsapp', label: 'WhatsApp API', url: `${localApiBase}/api/whatsapp/status` },
     { key: 'communications', label: 'Communication API', url: `${localApiBase}/api/admin/notifications/data` },
+    { key: 'platformAdminApp', label: 'Platform Admin App', url: `${localApiBase}/schoolbase-admin/api/schools?limit=1` },
+    { key: 'platformAdmin', label: 'Platform Admin API', url: `${localApiBase}/schoolbase-admin/api/stats` },
+    { key: 'platformWhatsApp', label: 'Platform WhatsApp', url: `${localApiBase}/schoolbase-admin/api/whatsapp/status` },
     ...(frontendBase ? [{ key: 'frontend', label: 'Frontend', url: `${frontendBase}/login` }] : []),
   ];
 
@@ -160,7 +180,18 @@ router.get('/operations/status', async (req: Request, res: Response) => {
     try {
       const response = await fetch(endpoint.url, { method: 'GET', signal: AbortSignal.timeout(5000), redirect: 'manual' });
       const reachable = response.status < 500;
-      return { ...endpoint, status: reachable ? 'UP' : 'DOWN', httpStatus: response.status, responseMs: Date.now() - checkStartedAt };
+      let providerStatus: string | undefined;
+      try {
+        const payload = await response.clone().json() as { status?: unknown };
+        if (typeof payload?.status === 'string') providerStatus = payload.status;
+      } catch {
+        // Most protected endpoint checks return HTML or an empty body; reachability is still valid.
+      }
+      const normalizedProviderStatus = providerStatus?.toUpperCase();
+      const status = !reachable || normalizedProviderStatus === 'DOWN' ? 'DOWN'
+        : ['DEGRADED', 'NOT_CONFIGURED', 'NOT_READY', 'DISABLED'].includes(normalizedProviderStatus || '') ? 'DEGRADED'
+          : 'UP';
+      return { ...endpoint, status, httpStatus: response.status, responseMs: Date.now() - checkStartedAt, providerStatus };
     } catch (error) {
       return { ...endpoint, status: 'DOWN', httpStatus: null, responseMs: Date.now() - checkStartedAt, error: error instanceof Error ? error.message : 'Request failed' };
     }

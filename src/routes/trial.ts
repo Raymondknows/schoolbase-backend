@@ -15,6 +15,29 @@ function secret() {
   return getSessionSecret();
 }
 
+// GET /api/trial/status - Safe signup/OTP readiness check without sending mail or creating data
+router.get('/status', async (_req: Request, res: Response) => {
+  try {
+    const [maintenanceMode, allowSignup, allowTrial] = await Promise.all([
+      getPlatformSettingValue(prisma, 'maintenanceMode', false),
+      getPlatformSettingValue(prisma, 'allowSignup', true),
+      getPlatformSettingValue(prisma, 'allowTrial', true),
+    ]);
+    const emailConfigured = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD);
+    const enabled = !maintenanceMode && allowSignup && allowTrial;
+    const status = enabled && emailConfigured ? 'ready' : 'degraded';
+    res.json({
+      status,
+      signup: enabled ? 'enabled' : 'disabled',
+      email: emailConfigured ? 'configured' : 'not_configured',
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Signup readiness check failed:', error);
+    res.status(503).json({ status: 'down', signup: 'unknown', email: 'unknown' });
+  }
+});
+
 // POST /api/trial/request-otp - Request OTP for signup
 router.post('/request-otp', async (req: Request, res: Response) => {
   try {
