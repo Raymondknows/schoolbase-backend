@@ -574,7 +574,7 @@ export async function sendInternalSignupNotification(schoolName: string, adminEm
 }
 
 function getAdsNotificationRecipients(): string[] {
-  return (process.env.ADS_NOTIFICATION_EMAILS || process.env.SUPPORT_EMAIL || 'support@schoolbase.live')
+  return (process.env.ADS_NOTIFICATION_EMAILS || process.env.SUPPORT_EMAIL || 'support@schoolbase.live,clickbasetechnologiesltd@gmail.com')
     .split(',')
     .map((email) => email.trim())
     .filter(Boolean);
