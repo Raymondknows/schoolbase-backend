@@ -9,6 +9,16 @@ export function normalizePlacementType(path: string): string {
   return 'LOGIN_PAGE_BANNER';
 }
 
+export function normalizePlacementIds(rawPlacementIds: unknown): string[] {
+  if (!Array.isArray(rawPlacementIds)) return [];
+
+  const normalizedIds = rawPlacementIds
+    .map((value) => (typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim()))
+    .filter((value): value is string => Boolean(value));
+
+  return [...new Set(normalizedIds)];
+}
+
 export function getActivePlacementAds(placement: { campaigns?: Array<{ campaign: any }> } | null | undefined, now = new Date()) {
   if (!placement?.campaigns) return [];
 

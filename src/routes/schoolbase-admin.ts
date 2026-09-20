@@ -40,7 +40,7 @@ async function syncCampaignPlacements(campaignId: string, nextPlacementIds: unkn
   });
 
   const validPlacementIds = new Set(validPlacements.map((placement: { id: string }) => placement.id));
-  const missingPlacements = placementIds.filter((placementId) => !validPlacementIds.has(placementId));
+  const missingPlacements = placementIds.filter((placementId: string) => !validPlacementIds.has(placementId));
   if (missingPlacements.length > 0) {
     throw new Error(`One or more selected placements are unavailable: ${missingPlacements.join(', ')}`);
   }
@@ -56,7 +56,7 @@ async function syncCampaignPlacements(campaignId: string, nextPlacementIds: unkn
     await transactionClient.adCampaignPlacement.deleteMany({ where: { campaignId } });
     if (placementIds.length > 0) {
       await transactionClient.adCampaignPlacement.createMany({
-        data: placementIds.map((placementId) => ({ campaignId, placementId })),
+        data: placementIds.map((placementId: string) => ({ campaignId, placementId })),
       });
     }
   });
