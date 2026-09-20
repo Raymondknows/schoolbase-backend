@@ -9,6 +9,38 @@ export function normalizePlacementType(path: string): string {
   return 'LOGIN_PAGE_BANNER';
 }
 
+export function getActivePlacementAds(placement: { campaigns?: Array<{ campaign: any }> } | null | undefined, now = new Date()) {
+  if (!placement?.campaigns) return [];
+
+  return placement.campaigns
+    .map((entry) => entry.campaign)
+    .filter((campaign) => {
+      const withinDates = (!campaign.startDate || campaign.startDate <= now) && (!campaign.endDate || campaign.endDate >= now);
+      return campaign.status === 'LIVE' && campaign.enabled && campaign.approvedAt && withinDates && campaign.advertiser?.verificationStatus === 'VERIFIED';
+    })
+    .filter((campaign) => campaign.landingUrl && isValidLandingUrl(campaign.landingUrl))
+    .sort((a, b) => {
+      const aOrder = a?.placements?.[0]?.sortOrder ?? 0;
+      const bOrder = b?.placements?.[0]?.sortOrder ?? 0;
+      return aOrder - bOrder || a.title.localeCompare(b.title);
+    })
+    .map((campaign) => {
+      const primaryCreative = campaign.creatives?.[0] ?? null;
+      return {
+        id: campaign.id,
+        title: campaign.title,
+        headline: campaign.headline || primaryCreative?.headline || campaign.title,
+        summary: campaign.summary || primaryCreative?.description || '',
+        landingUrl: campaign.landingUrl,
+        label: 'Sponsored',
+        imageUrl: primaryCreative?.imageUrl || null,
+        ctaText: primaryCreative?.ctaText || 'Learn more',
+        description: primaryCreative?.description || campaign.summary || '',
+        advertiser: campaign.advertiser?.companyName,
+      };
+    });
+}
+
 export function isValidLandingUrl(url: string): boolean {
   try {
     const parsed = new URL(url);

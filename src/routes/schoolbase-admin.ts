@@ -31,6 +31,18 @@ const prisma = new PrismaClient() as AdsPrismaClient;
 const supportDb = prisma as any;
 type AdCampaignStatusValue = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'LIVE' | 'PAUSED' | 'EXPIRED';
 
+function getDeploymentVersion(): string {
+  const configuredVersion = process.env.GIT_COMMIT_SHA || process.env.RELEASE_VERSION || process.env.VERCEL_GIT_COMMIT_SHA;
+  if (configuredVersion) return configuredVersion;
+
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8')) as { version?: unknown };
+    return typeof packageJson.version === 'string' && packageJson.version.trim() ? packageJson.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 async function getSchoolSetupChecklistData(schoolId: string) {
   const [school, enabledPhases, academicYears, classes, subjects, teacherClasses, feeSchedules, pupils, announcements, assessments] = await Promise.all([
     prisma.school.findUnique({
@@ -445,6 +457,27 @@ router.post('/ads/campaigns/:id/live', async (req: Request, res: Response) => {
   res.json({ campaign: liveCampaign });
 });
 
+router.post('/ads/campaigns/:id/resume', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const campaign = await prisma.adCampaign.findUnique({ where: { id: req.params.id } });
+  if (!campaign || campaign.status !== 'PAUSED') {
+    return res.status(400).json({ message: 'Only paused campaigns can be resumed.' });
+  }
+
+  const resumedCampaign = await prisma.adCampaign.update({
+    where: { id: campaign.id },
+    data: { status: 'LIVE', enabled: true },
+  });
+
+  await prisma.campaignApprovalLog.create({
+    data: { campaignId: campaign.id, reviewerId: session, action: 'LIVE', notes: 'Resumed by platform admin after pause' },
+  });
+
+  res.json({ campaign: resumedCampaign });
+});
+
 router.post('/ads/campaigns/:id/reject', async (req: Request, res: Response) => {
   const session = await requirePlatformAdminSession(req, res);
   if (!session) return;
@@ -554,6 +587,7 @@ router.get('/operations/status', async (req: Request, res: Response) => {
       database,
       endpointChecks,
       uptimeSeconds: Math.floor(process.uptime()),
+      deploymentVersion: getDeploymentVersion(),
       checkedAt: new Date().toISOString(),
       responseMs: Date.now() - startedAt,
       environment: process.env.NODE_ENV || 'development',

@@ -11,7 +11,7 @@ import baileysSessionManager from '../communications/whatsapp-baileys.js';
 import { CommunicationRulesRegistry, DEFAULT_COMMUNICATION_RULES } from '../communications/rules.js';
 import { normalizeAdmissionStatus } from './admissions-utils.js';
 import { getConfiguredPaymentPlans, getPublicPaymentPlans } from '../services/platform-settings.js';
-import { isValidLandingUrl, normalizePlacementType } from './ads-utils.js';
+import { getActivePlacementAds, isValidLandingUrl, normalizePlacementType } from './ads-utils.js';
 import { sendAdvertiserApplicationNotification, sendAdvertiserStatusEmail } from '../services/email.js';
 
 type PublicAdmissionsSchool = {
@@ -42,6 +42,10 @@ type ExtendedPrismaClient = PrismaClient & {
   resultPin: any;
   resultPinBatch: any;
   admissionApplication: any;
+  adCampaign: any;
+  adAnalyticsEvent: any;
+  adPlacement: any;
+  advertiser: any;
 };
 
 const router = Router();
@@ -86,7 +90,22 @@ async function handleAdPlacementRequest(req: Request, res: Response) {
 
   const placement = await prisma.adPlacement.findUnique({
     where: { type: placementType as any },
-    include: { campaigns: { include: { campaign: { include: { creatives: { orderBy: { createdAt: 'asc' } }, advertiser: true } } } } },
+    include: {
+      campaigns: {
+        orderBy: { sortOrder: 'asc' },
+        include: {
+          campaign: {
+            include: {
+              creatives: { orderBy: { createdAt: 'asc' } },
+              advertiser: true,
+              placements: {
+                select: { sortOrder: true },
+              },
+            },
+          },
+        },
+      },
+    },
   });
 
   if (!placement) {
@@ -94,29 +113,7 @@ async function handleAdPlacementRequest(req: Request, res: Response) {
   }
 
   const now = new Date();
-  const activeAds = placement.campaigns
-    .map((entry) => entry.campaign)
-    .filter((campaign) => {
-      const withinDates = (!campaign.startDate || campaign.startDate <= now) && (!campaign.endDate || campaign.endDate >= now);
-      return campaign.status === 'LIVE' && campaign.enabled && campaign.approvedAt && withinDates && campaign.advertiser.verificationStatus === 'VERIFIED';
-    })
-    .filter((campaign) => campaign.landingUrl && isValidLandingUrl(campaign.landingUrl))
-    .slice(0, 1)
-    .map((campaign) => {
-      const primaryCreative = campaign.creatives[0] ?? null;
-      return {
-        id: campaign.id,
-        title: campaign.title,
-        headline: campaign.headline || primaryCreative?.headline || campaign.title,
-        summary: campaign.summary || primaryCreative?.description || '',
-        landingUrl: campaign.landingUrl,
-        label: placement.label,
-        imageUrl: primaryCreative?.imageUrl || null,
-        ctaText: primaryCreative?.ctaText || 'Learn more',
-        description: primaryCreative?.description || campaign.summary || '',
-        advertiser: campaign.advertiser.companyName,
-      };
-    });
+  const activeAds = getActivePlacementAds(placement, now).map((ad) => ({ ...ad, label: placement.label }));
 
   return res.json({ placementType, ads: activeAds });
 }
