@@ -9,6 +9,7 @@ import { sendSetupReminderEmail } from '../services/email.js';
 import { getPlatformSettings, serializePlatformSettingValue, normalizeEmailList, parsePlatformSettingValue, platformSettingDefaults } from '../services/platform-settings.js';
 import { sendPendingSignupReminderEmail, sendWelcomeEmail, sendInternalSignupNotification } from '../services/email.js';
 import { sendAdvertiserStatusEmail } from '../services/email.js';
+import { normalizePlacementIds } from './ads-utils.js';
 import { generateOtp, resendSignupOtp } from '../services/otp.js';
 import { getSessionSecret } from '../services/security-config.js';
 import { buildSchoolSetupStatus } from '../services/onboarding.js';
@@ -30,6 +31,38 @@ type AdsPrismaClient = PrismaClient & {
 const prisma = new PrismaClient() as AdsPrismaClient;
 const supportDb = prisma as any;
 type AdCampaignStatusValue = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'LIVE' | 'PAUSED' | 'EXPIRED';
+
+async function syncCampaignPlacements(campaignId: string, nextPlacementIds: unknown) {
+  const placementIds = normalizePlacementIds(nextPlacementIds);
+  const validPlacements = await prisma.adPlacement.findMany({
+    where: { id: { in: placementIds } },
+    select: { id: true },
+  });
+
+  const validPlacementIds = new Set(validPlacements.map((placement: { id: string }) => placement.id));
+  const missingPlacements = placementIds.filter((placementId) => !validPlacementIds.has(placementId));
+  if (missingPlacements.length > 0) {
+    throw new Error(`One or more selected placements are unavailable: ${missingPlacements.join(', ')}`);
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const transactionClient = tx as typeof prisma & {
+      adCampaignPlacement: {
+        deleteMany: (args: any) => Promise<any>;
+        createMany: (args: any) => Promise<any>;
+      };
+    };
+
+    await transactionClient.adCampaignPlacement.deleteMany({ where: { campaignId } });
+    if (placementIds.length > 0) {
+      await transactionClient.adCampaignPlacement.createMany({
+        data: placementIds.map((placementId) => ({ campaignId, placementId })),
+      });
+    }
+  });
+
+  return placementIds;
+}
 
 function getDeploymentVersion(): string {
   const configuredVersion = process.env.GIT_COMMIT_SHA || process.env.RELEASE_VERSION || process.env.VERCEL_GIT_COMMIT_SHA;
@@ -365,23 +398,61 @@ router.patch('/ads/campaigns/:id', async (req: Request, res: Response) => {
     return res.status(400).json({ message: 'Invalid campaign status.' });
   }
 
-  const campaign = await prisma.adCampaign.update({
-    where: { id },
-    data: {
-      title: updates.title ? String(updates.title).trim() : undefined,
-      headline: updates.headline !== undefined ? (updates.headline ? String(updates.headline).trim() : null) : undefined,
-      summary: updates.summary !== undefined ? (updates.summary ? String(updates.summary).trim() : null) : undefined,
-      landingUrl: updates.landingUrl ? String(updates.landingUrl).trim() : undefined,
-      startDate: updates.startDate ? new Date(updates.startDate) : undefined,
-      endDate: updates.endDate ? new Date(updates.endDate) : undefined,
-      budget: updates.budget !== undefined ? Number(updates.budget || 0) : undefined,
-      currency: updates.currency ? String(updates.currency).trim() : undefined,
-      enabled: updates.enabled !== undefined ? Boolean(updates.enabled) : undefined,
-      status: nextStatus as AdCampaignStatusValue | undefined,
-    },
-  });
+  try {
+    const campaign = await prisma.adCampaign.update({
+      where: { id },
+      data: {
+        title: updates.title ? String(updates.title).trim() : undefined,
+        headline: updates.headline !== undefined ? (updates.headline ? String(updates.headline).trim() : null) : undefined,
+        summary: updates.summary !== undefined ? (updates.summary ? String(updates.summary).trim() : null) : undefined,
+        landingUrl: updates.landingUrl ? String(updates.landingUrl).trim() : undefined,
+        startDate: updates.startDate ? new Date(updates.startDate) : undefined,
+        endDate: updates.endDate ? new Date(updates.endDate) : undefined,
+        budget: updates.budget !== undefined ? Number(updates.budget || 0) : undefined,
+        currency: updates.currency ? String(updates.currency).trim() : undefined,
+        enabled: updates.enabled !== undefined ? Boolean(updates.enabled) : undefined,
+        status: nextStatus as AdCampaignStatusValue | undefined,
+      },
+    });
 
-  res.json({ campaign });
+    let placements: string[] | undefined;
+    if (updates.placements !== undefined) {
+      placements = await syncCampaignPlacements(id, updates.placements);
+    }
+
+    const refreshedCampaign = await prisma.adCampaign.findUnique({
+      where: { id },
+      include: {
+        advertiser: true,
+        placements: { include: { placement: true } },
+        creatives: { orderBy: { createdAt: 'asc' }, take: 1 },
+        approvalLogs: { orderBy: { createdAt: 'desc' }, take: 5 },
+      },
+    });
+
+    res.json({ campaign: refreshedCampaign || campaign, placements });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to update campaign.';
+    res.status(400).json({ message });
+  }
+});
+
+router.patch('/ads/campaigns/:id/placements', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  const { id } = req.params;
+  try {
+    const placements = await syncCampaignPlacements(id, req.body?.placements ?? []);
+    const campaign = await prisma.adCampaign.findUnique({
+      where: { id },
+      include: { advertiser: true, placements: { include: { placement: true } }, creatives: { orderBy: { createdAt: 'asc' }, take: 1 } },
+    });
+    res.json({ campaign, placements });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to update campaign placements.';
+    res.status(400).json({ message });
+  }
 });
 
 router.post('/ads/campaigns/:id/submit', async (req: Request, res: Response) => {
