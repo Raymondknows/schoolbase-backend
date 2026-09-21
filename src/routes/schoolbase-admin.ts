@@ -1146,10 +1146,23 @@ router.get('/audit-logs', async (req: Request, res: Response) => {
   if (!session) return;
 
   try {
-    const limit = parseInt(req.query.limit as string) || 20;
+    const page = parseInt(req.query.page as string) || 1;
+    const requestedLimit = parseInt(req.query.limit as string) || 50;
+    const limit = Math.min(Math.max(requestedLimit, 10), 200);
+    const requestedDays = Number.parseInt(String(req.query.days || '90'), 10);
+    const days = Number.isFinite(requestedDays) ? Math.min(Math.max(requestedDays, 7), 365) : 90;
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const skip = (page - 1) * limit;
+
+    const where: any = {
+      createdAt: { gte: since },
+    };
+
     const [logs, total] = await Promise.all([
       prisma.platformAuditLog.findMany({
+        where,
         orderBy: { createdAt: 'desc' },
+        skip,
         take: limit,
         select: {
           id: true,
@@ -1169,7 +1182,7 @@ router.get('/audit-logs', async (req: Request, res: Response) => {
           },
         },
       }),
-      prisma.platformAuditLog.count(),
+      prisma.platformAuditLog.count({ where }),
     ]);
 
     res.json({
@@ -1182,7 +1195,12 @@ router.get('/audit-logs', async (req: Request, res: Response) => {
         user: log.user,
         school: log.school,
       })),
-      pagination: { limit, total, pages: Math.ceil(total / limit) },
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.max(1, Math.ceil(total / limit)),
+      },
     });
   } catch (error) {
     console.error('Error fetching audit logs:', error);
