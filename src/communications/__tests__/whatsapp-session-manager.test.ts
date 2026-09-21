@@ -11,16 +11,17 @@ test('builds a per-school session directory', () => {
 });
 
 test('normalizes a phone number to a WhatsApp recipient', () => {
-  assert.equal(normalizeWhatsappRecipient('+2348123456789'), '2348123456789@s.whatsapp.net');
-  assert.equal(normalizeWhatsappRecipient('2348123456789@s.whatsapp.net'), '2348123456789@s.whatsapp.net');
+  assert.equal(normalizeWhatsappRecipient('+2348123456789'), '2348123456789@c.us');
+  assert.equal(normalizeWhatsappRecipient('2348123456789@s.whatsapp.net'), '2348123456789@c.us');
 });
 
 test('clears a WhatsApp auth session for auth-related disconnects', () => {
   assert.equal(shouldClearWhatsAppSession(401, 'Connection Failure'), true);
   assert.equal(shouldClearWhatsAppSession(403, 'Forbidden'), true);
   assert.equal(shouldClearWhatsAppSession(419, 'Session expired'), true);
-  assert.equal(shouldClearWhatsAppSession(500, 'Connection closed'), true);
-  assert.equal(shouldClearWhatsAppSession(undefined, 'Connection Failure'), true);
+  assert.equal(shouldClearWhatsAppSession(440, 'Connection closed'), true);
+  assert.equal(shouldClearWhatsAppSession(500, 'Connection closed'), false);
+  assert.equal(shouldClearWhatsAppSession(undefined, 'Connection Failure'), false);
 });
 
 test('forces a fresh Baileys auth reset after a connection failure or when requested explicitly', () => {

@@ -63,7 +63,9 @@ export function normalizeWhatsappRecipient(value?: string): string {
   return `${digits}@c.us`;
 }
 
-export function shouldClearWhatsAppSession(_statusCode?: number, errorMessage?: string): boolean {
+export function shouldClearWhatsAppSession(statusCode?: number, errorMessage?: string): boolean {
+  if ([401, 403, 419, 440].includes(statusCode ?? 0)) return true;
+
   const normalizedMessage = `${errorMessage ?? ''}`.toLowerCase();
   const authFailureHints = [
     'logged out',

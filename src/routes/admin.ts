@@ -1001,6 +1001,10 @@ router.get('/school', async (req: Request, res: Response) => {
       include: {
         partner: true,
         enabledPhases: true,
+        paymentAccounts: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
       },
     });
 
@@ -1031,6 +1035,10 @@ router.get('/school/:schoolId', async (req: Request, res: Response) => {
       include: {
         partner: true,
         enabledPhases: true,
+        paymentAccounts: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
       },
     });
 
