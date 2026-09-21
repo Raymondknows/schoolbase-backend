@@ -305,6 +305,60 @@ router.get('/classes/:classId/students', async (req: AuthenticatedRequest, res) 
   }
 });
 
+// GET /api/teacher/students/:studentId - Get the full read-only profile for an assigned student
+router.get('/students/:studentId', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { userId, schoolId } = req.user!;
+    const { studentId } = req.params;
+
+    const pupil = await prisma.pupil.findFirst({
+      where: {
+        id: studentId,
+        schoolId,
+        class: { teacherClasses: { some: { teacherId: userId, schoolId } } },
+      },
+      include: { class: true, guardians: { include: { guardian: true } } },
+    });
+
+    if (!pupil) return res.status(404).json({ error: 'Student not found' });
+
+    const [invoices, attendanceRecords, termSummaries, promotionHistory, invoiceTotals] = await Promise.all([
+      prisma.invoice.findMany({
+        where: { pupilId: studentId, schoolId },
+        include: { feeSchedule: { include: { term: { include: { academicYear: true } } } }, payments: { orderBy: { paidAt: 'desc' }, take: 5 }, adjustments: true },
+        orderBy: { createdAt: 'desc' },
+        take: 12,
+      }),
+      prisma.attendanceRecord.findMany({ where: { pupilId: studentId, schoolId }, orderBy: { date: 'desc' }, take: 30 }),
+      prisma.studentTermSummary.findMany({ where: { pupilId: studentId, schoolId }, orderBy: { updatedAt: 'desc' }, take: 8 }),
+      prisma.promotionRecord.findMany({ where: { pupilId: studentId, schoolId }, orderBy: { decidedAt: 'desc' }, take: 8 }),
+      prisma.invoice.aggregate({ where: { pupilId: studentId, schoolId }, _sum: { amountDue: true, amountPaid: true }, _count: { _all: true } }),
+    ]);
+
+    const totalDue = invoiceTotals._sum.amountDue || 0;
+    const totalPaid = invoiceTotals._sum.amountPaid || 0;
+    const attendance = {
+      total: attendanceRecords.length,
+      present: attendanceRecords.filter((record) => record.status === 'PRESENT').length,
+      absent: attendanceRecords.filter((record) => record.status === 'ABSENT').length,
+      late: attendanceRecords.filter((record) => record.status === 'LATE').length,
+    };
+
+    res.json({
+      ...pupil,
+      feesBalance: totalDue - totalPaid,
+      invoiceCount: invoiceTotals._count._all,
+      invoices,
+      attendance: { ...attendance, percentage: attendance.total > 0 ? Math.round(((attendance.present + attendance.late * 0.5) / attendance.total) * 100) : null, records: attendanceRecords },
+      termSummaries,
+      promotionHistory,
+    });
+  } catch (error) {
+    console.error('Error fetching teacher student profile:', error);
+    res.status(500).json({ error: 'Failed to fetch student profile' });
+  }
+});
+
 // GET /api/teacher/subjects - Get assigned subjects
 router.get('/subjects', async (req: AuthenticatedRequest, res) => {
   try {
