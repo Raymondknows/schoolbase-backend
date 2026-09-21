@@ -411,7 +411,14 @@ router.get('/subjects', async (req: AuthenticatedRequest, res) => {
         },
       },
       include: {
-        subject: true,
+        subject: {
+          include: {
+            subjectClasses: {
+              where: { classId: { in: classIds } },
+              include: { class: { select: { id: true, name: true, arm: true, phase: true } } },
+            },
+          },
+        },
       },
     });
 
@@ -419,6 +426,8 @@ router.get('/subjects', async (req: AuthenticatedRequest, res) => {
       subjects: subjects.map((ts) => ({
         id: ts.subjectId,
         name: ts.subject.name,
+        code: ts.subject.code,
+        classes: ts.subject.subjectClasses.map((subjectClass) => subjectClass.class),
       })),
     });
   } catch (error: any) {
@@ -530,6 +539,9 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
         results: {
           select: {
             lockedAt: true,
+            subjectId: true,
+            subject: true,
+            subjectRef: { select: { id: true, name: true } },
           },
         },
         _count: {
@@ -545,11 +557,22 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
     res.json({
       assessments: assessments.map((assessment) => ({
         ...assessment,
+        subjects: Array.from(
+          new Map(
+            assessment.results
+              .map((result) => {
+                const subjectId = result.subjectId || result.subjectRef?.id || null;
+                const subjectName = result.subjectRef?.name || result.subject || null;
+                return subjectName ? [subjectId || subjectName, { id: subjectId, name: subjectName }] : null;
+              })
+              .filter((subject): subject is [string, { id: string | null; name: string }] => Boolean(subject)),
+          ).values(),
+        ),
         isLocked: assessment.results.some((result) => result.lockedAt !== null),
         canEdit: !assessment.results.some((result) => result.lockedAt !== null) && assessment.status !== 'PUBLISHED',
         studentCount: studentsByPhase.get(assessment.phase)?.size ?? 0,
         entryCount: assessment._count.results,
-        subjectCount: teacherSubjects.length,
+        subjectCount: new Set(assessment.results.map((result) => result.subjectId || result.subjectRef?.id || result.subjectRef?.name || result.subject).filter(Boolean)).size,
         sessionName: assessment.term?.academicYear?.name ?? null,
       })),
       sessions: academicYears.map((academicYear) => ({
