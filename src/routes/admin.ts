@@ -2542,6 +2542,7 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
     }
 
     const { termId } = req.body;
+    const approvedForBulkWhatsApp = req.body?.bulkApproval === true;
     if (!termId) {
       return res.status(400).json({ error: 'Term ID required' });
     }
@@ -2559,6 +2560,34 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       return res.status(400).json({ error: 'No fee schedules found for this term' });
     }
 
+    const eligiblePupilsBySchedule = new Map<string, any[]>();
+    let whatsappRecipientCount = 0;
+
+    for (const schedule of feeSchedules) {
+      const eligiblePupils = await prisma.pupil.findMany({
+        where: schedule.classId
+          ? { schoolId, classId: schedule.classId, isActive: true }
+          : { schoolId, isActive: true },
+        include: { guardians: { include: { guardian: true } }, class: true },
+      });
+      eligiblePupilsBySchedule.set(schedule.id, eligiblePupils);
+      whatsappRecipientCount += eligiblePupils.reduce(
+        (count, pupil) => count + pupil.guardians.filter((link: any) => Boolean(link.guardian.whatsapp || link.guardian.phone)).length,
+        0,
+      );
+    }
+
+    if (whatsappRecipientCount > 0) {
+      const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
+      const evaluation = evaluateSchoolWhatsAppSend(policy, {
+        recipientCount: whatsappRecipientCount,
+        approvedForBulk: approvedForBulkWhatsApp,
+      });
+      if (!evaluation.allowed) {
+        return res.status(429).json({ error: evaluation.reason || 'WhatsApp sending is currently unavailable' });
+      }
+    }
+
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
       select: { name: true, logoUrl: true, currency: true },
@@ -2567,31 +2596,14 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
     const communicationService = createCommunicationService();
     let createdCount = 0;
     let notificationsCount = 0;
+    let whatsappSent = 0;
+    let whatsappFailed = 0;
+    let queued = 0;
     const errors: string[] = [];
 
     // For each fee schedule, create invoices for eligible pupils
     for (const schedule of feeSchedules) {
-      let eligiblePupils: any[];
-
-      if (schedule.classId) {
-        // Schedule is for specific class
-        eligiblePupils = await prisma.pupil.findMany({
-          where: { classId: schedule.classId, isActive: true },
-          include: { 
-            guardians: { include: { guardian: true } },
-            class: true,
-          },
-        });
-      } else {
-        // Schedule is for all pupils in school
-        eligiblePupils = await prisma.pupil.findMany({
-          where: { schoolId, isActive: true },
-          include: { 
-            guardians: { include: { guardian: true } },
-            class: true,
-          },
-        });
-      }
+      const eligiblePupils = eligiblePupilsBySchedule.get(schedule.id) || [];
 
       // Create invoices for each pupil (skip if already exists)
       for (const pupil of eligiblePupils) {
@@ -2726,6 +2738,11 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
                   if (status !== 'FAILED') {
                     notificationsCount++;
                   }
+                  if (delivery.channel === 'WHATSAPP') {
+                    if (status === 'FAILED') whatsappFailed++;
+                    else if (status === 'PENDING') queued++;
+                    else whatsappSent++;
+                  }
                 }
               } catch (err) {
                 errors.push(`Failed to dispatch communication for guardian ${guardian.id}`);
@@ -2757,6 +2774,9 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
       message: `Created ${createdCount} invoices for term`,
       created: createdCount,
       notificationsSent: notificationsCount,
+      whatsappSent,
+      whatsappFailed,
+      queued,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
