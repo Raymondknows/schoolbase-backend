@@ -28,11 +28,11 @@ let subscriptionEmailTask: any = null;
 async function ensureDefaultAdPlacements() {
   const placements = [
     { name: 'Login Page Banner', type: 'LOGIN_PAGE_BANNER', path: '/login', label: 'Sponsored', sortOrder: 1 },
-    { name: 'Public Partner Strip', type: 'PUBLIC_PARTNER_STRIP', path: '/', label: 'SchoolBase Partner', sortOrder: 2 },
-    { name: 'Resource / Blog Sponsor', type: 'RESOURCE_SPONSOR', path: '/blog', label: 'SchoolBase Partner', sortOrder: 3 },
-    { name: 'Parent Login Banner', type: 'PARENT_LOGIN_BANNER', path: '/parent/login', label: 'Parent Partner', sortOrder: 4 },
-    { name: 'Results Checker Sponsor', type: 'RESULTS_CHECKER_SPONSOR', path: '/results/check', label: 'Parent Partner', sortOrder: 5 },
-    { name: 'Signup Partner Strip', type: 'SIGNUP_PARTNER_STRIP', path: '/signup', label: 'Education Partner', sortOrder: 6 },
+    { name: 'Public Partner Strip', type: 'PUBLIC_PARTNER_STRIP', path: '/', label: 'Sponsored', sortOrder: 2 },
+    { name: 'Resource / Blog Sponsor', type: 'RESOURCE_SPONSOR', path: '/blog', label: 'Sponsored', sortOrder: 3 },
+    { name: 'Parent Login Banner', type: 'PARENT_LOGIN_BANNER', path: '/parent/login', label: 'Sponsored', sortOrder: 4 },
+    { name: 'Results Checker Sponsor', type: 'RESULTS_CHECKER_SPONSOR', path: '/results/check', label: 'Sponsored', sortOrder: 5 },
+    { name: 'Signup Partner Strip', type: 'SIGNUP_PARTNER_STRIP', path: '/signup', label: 'Sponsored', sortOrder: 6 },
   ] as const;
 
   for (const placement of placements) {
