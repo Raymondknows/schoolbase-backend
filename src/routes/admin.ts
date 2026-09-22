@@ -436,6 +436,45 @@ export function hasFeeScheduleItemChanges(nextItems: any[] = [], previousItems: 
   return false;
 }
 
+export function resolveFeeScheduleAmount({
+  amount,
+  items = [],
+  previousItems = [],
+}: {
+  amount?: number | string | null;
+  items?: any[];
+  previousItems?: any[];
+}) {
+  const itemPayload = Array.isArray(items) ? items : [];
+  const validItems = itemPayload
+    .map((item, index) => normalizeFeeScheduleItemInput(item, index))
+    .filter(Boolean) as Array<{
+      name: string;
+      amount: number;
+      description: string | null;
+      isRequired: boolean;
+      sortOrder: number;
+    }>;
+
+  if (validItems.length === 0) {
+    const rawAmount = Number.parseFloat(String(amount ?? ''));
+    return Number.isFinite(rawAmount) && rawAmount >= 0 ? Math.round(rawAmount * 100) : null;
+  }
+
+  const itemsChanged = hasFeeScheduleItemChanges(itemPayload, previousItems);
+
+  if (itemsChanged) {
+    return computeFeeScheduleTotalFromItems(itemPayload);
+  }
+
+  const rawAmount = Number.parseFloat(String(amount ?? ''));
+  if (Number.isFinite(rawAmount) && rawAmount >= 0) {
+    return Math.round(rawAmount * 100);
+  }
+
+  return computeFeeScheduleTotalFromItems(itemPayload);
+}
+
 function computeFeeScheduleTotalFromItems(items: any[] = []) {
   return items.reduce((sum, item) => {
     const normalized = normalizeFeeScheduleItemInput(item, sum);
@@ -1958,10 +1997,7 @@ router.post('/fees/schedules', async (req: Request, res: Response) => {
       sortOrder: number;
     }>;
 
-    const rawAmount = Number.parseFloat(String(amount ?? ''));
-    const scheduleAmount = validItems.length > 0
-      ? computeFeeScheduleTotalFromItems(itemPayload)
-      : (Number.isFinite(rawAmount) && rawAmount >= 0 ? Math.round(rawAmount * 100) : null);
+    const scheduleAmount = resolveFeeScheduleAmount({ amount, items: itemPayload, previousItems: [] });
 
     if (!termId || !name || scheduleAmount === null) {
       return res.status(400).json({
@@ -2083,13 +2119,13 @@ router.patch('/fees/schedules/:id', async (req: Request, res: Response) => {
 
     if (name !== undefined) updateData.name = name;
 
-    const rawAmount = Number.parseFloat(String(amount ?? ''));
-    const itemsChanged = validItems.length > 0 && hasFeeScheduleItemChanges(itemPayload, feeSchedule.items ?? []);
-    const nextTotal = itemsChanged
-      ? computeFeeScheduleTotalFromItems(itemPayload)
-      : (Number.isFinite(rawAmount) && rawAmount >= 0 ? Math.round(rawAmount * 100) : undefined);
+    const nextTotal = resolveFeeScheduleAmount({
+      amount,
+      items: itemPayload,
+      previousItems: feeSchedule.items ?? [],
+    });
 
-    if (nextTotal !== undefined) {
+    if (nextTotal !== null) {
       updateData.amount = nextTotal;
     }
 
@@ -2119,10 +2155,6 @@ router.patch('/fees/schedules/:id', async (req: Request, res: Response) => {
       }
 
       updateData.classId = classId || null;
-    }
-
-    if (validItems.length > 0) {
-      updateData.amount = computeFeeScheduleTotalFromItems(itemPayload);
     }
 
     const updated = await prisma.$transaction(async (transaction) => {
