@@ -3644,6 +3644,18 @@ router.post('/fees/payments/record', verifyAuth, requireAccountingAccess, requir
       return { payment, updatedInvoice };
     });
 
+    const refreshedInvoice = await prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: {
+        items: {
+          include: {
+            allocations: { select: { amount: true } },
+          },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
       select: { name: true, currency: true, logoUrl: true },
@@ -3770,6 +3782,16 @@ router.post('/fees/payments/record', verifyAuth, requireAccountingAccess, requir
         amountDue: (updatedInvoice.amountDue / 100).toFixed(2),
         amountPaid: (updatedInvoice.amountPaid / 100).toFixed(2),
         status: updatedInvoice.status,
+        items: (refreshedInvoice?.items || []).map((item) => ({
+          id: item.id,
+          name: item.name,
+          amount: item.amount,
+          quantity: item.quantity,
+          description: item.description,
+          allocations: (item.allocations || []).map((allocation) => ({
+            amount: allocation.amount,
+          })),
+        })),
       },
     });
   } catch (error) {
