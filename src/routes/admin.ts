@@ -1148,6 +1148,7 @@ router.get('/settings', async (req: Request, res: Response) => {
       select: {
         name: true,
         initials: true,
+        tagline: true,
         country: true,
         currency: true,
         address: true,
@@ -1190,6 +1191,7 @@ router.get('/settings', async (req: Request, res: Response) => {
       config: {
         name: school.name,
         initials: school.initials,
+        tagline: school.tagline,
         country: school.country,
         currency: school.currency,
         address: school.address,
@@ -1401,6 +1403,7 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         name: true,
         initials: true,
         slug: true,
+        tagline: true,
         address: true,
         city: true,
         country: true,
@@ -1452,6 +1455,7 @@ router.get('/settings/data', async (req: Request, res: Response) => {
         name: school.name,
         initials: school.initials,
         slug: school.slug,
+        tagline: school.tagline,
         address: school.address,
         city: school.city,
         country: school.country,
@@ -4051,10 +4055,7 @@ router.post('/students/import', studentImportUpload.single('file'), async (req: 
     return res.json({ importedCount, errors: result.errors });
   } catch (error) {
     console.error('Error importing students:', error);
-    return res.status(500).json({
-      error: 'Failed to import students',
-      details: error instanceof Error ? error.message : String(error),
-    });
+    return res.status(500).json({ error: 'Failed to import students' });
   }
 });
 
