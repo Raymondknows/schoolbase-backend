@@ -400,6 +400,42 @@ function normalizeFeeScheduleItemInput(item: any, fallbackSortOrder: number = 0)
   };
 }
 
+export function hasFeeScheduleItemChanges(nextItems: any[] = [], previousItems: any[] = []) {
+  const normalize = (item: any) => {
+    const name = String(item?.name ?? '').trim();
+    const rawAmount = item?.amount;
+    const parsedAmount = Number.parseFloat(String(rawAmount ?? ''));
+
+    return {
+      name,
+      amount: Number.isFinite(parsedAmount) ? Math.round(parsedAmount * 100) : null,
+      description: item?.description ? String(item.description).trim() : '',
+      isRequired: item?.isRequired !== false,
+    };
+  };
+
+  const next = nextItems.map(normalize).filter((item) => item.name || item.amount !== null);
+  const previous = previousItems.map(normalize).filter((item) => item.name || item.amount !== null);
+
+  if (next.length !== previous.length) return true;
+
+  for (let index = 0; index < next.length; index += 1) {
+    const current = next[index];
+    const original = previous[index];
+
+    if (
+      current.name !== original.name ||
+      current.amount !== original.amount ||
+      current.description !== original.description ||
+      current.isRequired !== original.isRequired
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function computeFeeScheduleTotalFromItems(items: any[] = []) {
   return items.reduce((sum, item) => {
     const normalized = normalizeFeeScheduleItemInput(item, sum);
@@ -2023,6 +2059,11 @@ router.patch('/fees/schedules/:id', async (req: Request, res: Response) => {
     // Verify fee schedule belongs to school
     const feeSchedule = await prisma.feeSchedule.findFirst({
       where: { id, schoolId },
+      include: {
+        items: {
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
+      },
     });
 
     if (!feeSchedule) {
@@ -2043,7 +2084,8 @@ router.patch('/fees/schedules/:id', async (req: Request, res: Response) => {
     if (name !== undefined) updateData.name = name;
 
     const rawAmount = Number.parseFloat(String(amount ?? ''));
-    const nextTotal = validItems.length > 0
+    const itemsChanged = validItems.length > 0 && hasFeeScheduleItemChanges(itemPayload, feeSchedule.items ?? []);
+    const nextTotal = itemsChanged
       ? computeFeeScheduleTotalFromItems(itemPayload)
       : (Number.isFinite(rawAmount) && rawAmount >= 0 ? Math.round(rawAmount * 100) : undefined);
 
