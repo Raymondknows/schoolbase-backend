@@ -26,7 +26,30 @@ export type BulkStudentImportResult = {
 function normalizeCell(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   const normalized = String(value).trim();
+  if (/^(nil|null|n\/a|na|-)$/i.test(normalized)) return null;
   return normalized.length > 0 ? normalized : null;
+}
+
+export function parseImportDate(value?: string | null): Date | null {
+  const normalized = normalizeCell(value);
+  if (!normalized) return null;
+
+  const dayFirstMatch = normalized.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  if (dayFirstMatch) {
+    const [, day, month, year] = dayFirstMatch;
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    if (
+      date.getFullYear() === Number(year) &&
+      date.getMonth() === Number(month) - 1 &&
+      date.getDate() === Number(day)
+    ) {
+      return date;
+    }
+    return null;
+  }
+
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function splitCsvLine(line: string): string[] {

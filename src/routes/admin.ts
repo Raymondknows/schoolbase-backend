@@ -24,7 +24,7 @@ import { buildGuardianNotificationRecipients } from '../services/guardian-notifi
 import { resolveSchoolScope } from '../services/security-context.js';
 import { getSessionSecret } from '../services/security-config.js';
 import { buildSchoolSetupStatus } from '../services/onboarding.js';
-import { buildBulkStudentImportRows, parseCsvText } from '../services/student-import.js';
+import { buildBulkStudentImportRows, parseCsvText, parseImportDate } from '../services/student-import.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -3990,15 +3990,18 @@ router.post('/students/import', studentImportUpload.single('file'), async (req: 
     }
 
     const importedCount = await prisma.$transaction(async (transaction) => {
+      const firstAdmissionNo = await reserveNextAdmissionNo({
+        transaction,
+        schoolId,
+        schoolName: school?.name,
+        schoolInitials: school?.initials,
+        year: currentYear,
+      });
+      const admissionPrefix = firstAdmissionNo.replace(/-\d{4}$/, '');
+      const firstSequence = Number(firstAdmissionNo.match(/(\d+)$/)?.[1] || 1);
       let count = 0;
-      for (const row of result.validRows) {
-        const admissionNo = await reserveNextAdmissionNo({
-          transaction,
-          schoolId,
-          schoolName: school?.name,
-          schoolInitials: school?.initials,
-          year: currentYear,
-        });
+      for (const [index, row] of result.validRows.entries()) {
+        const admissionNo = `${admissionPrefix}-${String(firstSequence + index).padStart(4, '0')}`;
         const pupil = await transaction.pupil.create({
           data: {
             schoolId,
@@ -4010,7 +4013,7 @@ router.post('/students/import', studentImportUpload.single('file'), async (req: 
             status: row.status || 'ACTIVE',
             admissionDate: new Date(),
             gender: row.gender || null,
-            dateOfBirth: row.birthDate ? new Date(row.birthDate) : null,
+            dateOfBirth: parseImportDate(row.birthDate),
             address: row.address || null,
           },
         });
@@ -4032,6 +4035,10 @@ router.post('/students/import', studentImportUpload.single('file'), async (req: 
         }
         count += 1;
       }
+      await transaction.admissionCounter.update({
+        where: { schoolId_year: { schoolId, year: currentYear } },
+        data: { lastSeq: firstSequence + result.validRows.length - 1 },
+      });
       return count;
     });
 
@@ -4044,7 +4051,10 @@ router.post('/students/import', studentImportUpload.single('file'), async (req: 
     return res.json({ importedCount, errors: result.errors });
   } catch (error) {
     console.error('Error importing students:', error);
-    return res.status(500).json({ error: 'Failed to import students' });
+    return res.status(500).json({
+      error: 'Failed to import students',
+      details: error instanceof Error ? error.message : String(error),
+    });
   }
 });
 
