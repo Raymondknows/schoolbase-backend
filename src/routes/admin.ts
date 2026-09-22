@@ -24,6 +24,7 @@ import { buildGuardianNotificationRecipients } from '../services/guardian-notifi
 import { resolveSchoolScope } from '../services/security-context.js';
 import { getSessionSecret } from '../services/security-config.js';
 import { buildSchoolSetupStatus } from '../services/onboarding.js';
+import { buildBulkStudentImportRows, parseCsvText } from '../services/student-import.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -224,6 +225,10 @@ const upload = multer({
   storage,
   fileFilter,
   limits: { fileSize: 4 * 1024 * 1024 }, // 4MB
+});
+const studentImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
 });
 
 const settingsUploadDir = path.join(process.cwd(), 'uploads', 'settings');
@@ -3931,6 +3936,115 @@ router.get('/students/data', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching students data:', error);
     res.status(500).json({ error: 'Failed to fetch students data' });
+  }
+});
+
+// POST /api/admin/students/import - Preview or import students from CSV
+router.post('/students/import', studentImportUpload.single('file'), async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+    if (!req.file) return res.status(400).json({ error: 'CSV file is required' });
+
+    const rows = parseCsvText(req.file.buffer.toString('utf8'));
+    const currentYear = new Date().getFullYear();
+    const [classes, existingPupils, school, admissionCounter] = await Promise.all([
+      prisma.class.findMany({ where: { schoolId }, select: { id: true, name: true, arm: true } }),
+      prisma.pupil.findMany({ where: { schoolId }, select: { admissionNo: true } }),
+      prisma.school.findUnique({ where: { id: schoolId }, select: { name: true, initials: true } }),
+      prisma.admissionCounter.findUnique({ where: { schoolId_year: { schoolId, year: currentYear } } }),
+    ]);
+    const result = buildBulkStudentImportRows(
+      rows,
+      classes,
+      existingPupils.map((pupil) => pupil.admissionNo).filter(Boolean) as string[],
+    );
+
+    if (req.query.preview === 'true') {
+      const firstAdmissionNo = getNextAdmissionNo({
+        schoolId,
+        schoolName: school?.name,
+        schoolInitials: school?.initials,
+        year: currentYear,
+        existingRecords: existingPupils.map((pupil) => ({ schoolId, admissionNo: pupil.admissionNo })),
+      });
+      const admissionPrefix = firstAdmissionNo.replace(/-\d{4}$/, '');
+      const firstSequence = Math.max(
+        Number(firstAdmissionNo.match(/(\d+)$/)?.[1] || 1),
+        (admissionCounter?.lastSeq || 0) + 1,
+      );
+      const previewRows = result.validRows.map((row, index) => ({
+        ...row,
+        admissionNo: `${admissionPrefix}-${String(firstSequence + index).padStart(4, '0')}`,
+      }));
+
+      return res.json({
+        previewRows,
+        validRows: previewRows.length,
+        errors: result.errors,
+      });
+    }
+
+    if (result.validRows.length === 0) {
+      return res.status(400).json({ error: 'No valid students found in the CSV file', errors: result.errors });
+    }
+
+    const importedCount = await prisma.$transaction(async (transaction) => {
+      let count = 0;
+      for (const row of result.validRows) {
+        const admissionNo = await reserveNextAdmissionNo({
+          transaction,
+          schoolId,
+          schoolName: school?.name,
+          schoolInitials: school?.initials,
+          year: currentYear,
+        });
+        const pupil = await transaction.pupil.create({
+          data: {
+            schoolId,
+            firstName: row.firstName || '',
+            lastName: row.lastName || '',
+            middleName: row.middleName || null,
+            admissionNo,
+            classId: row.classId || null,
+            status: row.status || 'ACTIVE',
+            admissionDate: new Date(),
+            gender: row.gender || null,
+            dateOfBirth: row.birthDate ? new Date(row.birthDate) : null,
+            address: row.address || null,
+          },
+        });
+
+        if (row.guardianFirst && row.guardianLast && row.guardianPhone) {
+          const guardian = await transaction.guardian.create({
+            data: {
+              schoolId,
+              firstName: row.guardianFirst,
+              lastName: row.guardianLast,
+              phone: row.guardianPhone,
+              whatsapp: row.guardianPhone,
+              email: row.guardianEmail || null,
+            },
+          });
+          await transaction.guardianPupil.create({
+            data: { guardianId: guardian.id, pupilId: pupil.id, relation: 'Parent' },
+          });
+        }
+        count += 1;
+      }
+      return count;
+    });
+
+    await recordActivity({
+      event: 'STUDENTS_IMPORTED',
+      details: `Imported ${importedCount} students from CSV`,
+      schoolId,
+    }).catch((error) => console.warn('Failed to record student import activity:', error));
+
+    return res.json({ importedCount, errors: result.errors });
+  } catch (error) {
+    console.error('Error importing students:', error);
+    return res.status(500).json({ error: 'Failed to import students' });
   }
 });
 

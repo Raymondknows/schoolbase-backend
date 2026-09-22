@@ -71,7 +71,7 @@ export function buildBulkStudentImportRows(
     return { validRows: [], errors: ['The CSV file is empty.'] };
   }
 
-  const headers = rows[0].map((header) => header.trim().toLowerCase());
+  const headers = rows[0].map((header) => header.replace(/^\uFEFF/, '').trim().toLowerCase());
   const firstNameIndex = headers.indexOf('firstname');
   const lastNameIndex = headers.indexOf('lastname');
   const classNameIndex = headers.indexOf('classname');
