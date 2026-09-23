@@ -4415,7 +4415,7 @@ router.get('/students/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    const [invoices, invoiceTotals, attendanceRecords, termSummaries, promotionHistory] = await Promise.all([
+    const [invoices, invoiceTotals, attendanceRecords, termSummaries, promotionHistory, currentAcademicYear] = await Promise.all([
       prisma.invoice.findMany({
         where: { pupilId: id, schoolId },
         include: {
@@ -4424,7 +4424,7 @@ router.get('/students/:id', async (req: Request, res: Response) => {
           adjustments: true,
         },
         orderBy: { createdAt: 'desc' },
-        take: 12,
+        take: 100,
       }),
       prisma.invoice.aggregate({
         where: { pupilId: id, schoolId },
@@ -4446,11 +4446,45 @@ router.get('/students/:id', async (req: Request, res: Response) => {
         orderBy: { decidedAt: 'desc' },
         take: 8,
       }),
+      prisma.academicYear.findFirst({
+        where: { schoolId, isCurrent: true },
+        include: { terms: { orderBy: { sortOrder: 'asc' } } },
+      }),
     ]);
 
     const totalDue = invoiceTotals._sum.amountDue || 0;
     const totalPaid = invoiceTotals._sum.amountPaid || 0;
     const feesBalance = totalDue - totalPaid;
+    const now = new Date();
+    const currentTerm = currentAcademicYear?.terms
+      .filter((term) => (!term.startsOn || term.startsOn <= now) && (!term.endsOn || term.endsOn >= now))
+      .sort((a, b) => b.sortOrder - a.sortOrder)[0]
+      || currentAcademicYear?.terms
+        .filter((term) => !term.startsOn || term.startsOn <= now)
+        .sort((a, b) => b.sortOrder - a.sortOrder)[0]
+      || currentAcademicYear?.terms[0]
+      || null;
+    const termBalances = new Map<string, { academicYearId: string; academicYearName: string; termId: string; termName: string; amountDue: number; amountPaid: number; balance: number; invoiceCount: number }>();
+    for (const invoice of invoices) {
+      const term = invoice.feeSchedule?.term;
+      const academicYear = term?.academicYear;
+      const key = term?.id || `unassigned-${invoice.id}`;
+      const existing = termBalances.get(key) || {
+        academicYearId: academicYear?.id || '',
+        academicYearName: academicYear?.name || 'Unassigned term',
+        termId: term?.id || '',
+        termName: term?.name || 'Unassigned term',
+        amountDue: 0,
+        amountPaid: 0,
+        balance: 0,
+        invoiceCount: 0,
+      };
+      existing.amountDue += Number(invoice.amountDue || 0);
+      existing.amountPaid += Number(invoice.amountPaid || 0);
+      existing.balance = Math.max(0, existing.amountDue - existing.amountPaid);
+      existing.invoiceCount += 1;
+      termBalances.set(key, existing);
+    }
     const attendance = {
       total: attendanceRecords.length,
       present: attendanceRecords.filter((record) => record.status === 'PRESENT').length,
@@ -4466,6 +4500,13 @@ router.get('/students/:id', async (req: Request, res: Response) => {
       feesBalance,
       invoiceCount: invoiceTotals._count._all,
       invoices,
+      currentAcademicYear: currentAcademicYear ? { id: currentAcademicYear.id, name: currentAcademicYear.name } : null,
+      currentTerm: currentTerm ? { id: currentTerm.id, name: currentTerm.name } : null,
+      termBalances: Array.from(termBalances.values()).sort((a, b) => {
+        if (a.academicYearId === currentAcademicYear?.id && b.academicYearId !== currentAcademicYear?.id) return -1;
+        if (a.academicYearId !== currentAcademicYear?.id && b.academicYearId === currentAcademicYear?.id) return 1;
+        return b.balance - a.balance;
+      }),
       attendance: { ...attendance, percentage: attendancePercentage, records: attendanceRecords },
       termSummaries,
       promotionHistory,
