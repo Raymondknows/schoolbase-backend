@@ -590,6 +590,25 @@ async function resolveSchoolId(req: Request) {
   return null;
 }
 
+async function resolvePathSchoolId(req: Request, requestedSchoolId: string | undefined) {
+  const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
+  if (!token || !requestedSchoolId) return null;
+
+  try {
+    const { payload } = await jwtVerify(token, secret());
+    const authenticatedSchoolId = typeof payload.schoolId === 'string' ? payload.schoolId : null;
+    const authenticatedRole = typeof payload.role === 'string' ? payload.role : null;
+    const scoped = resolveSchoolScope({
+      authenticatedSchoolId,
+      authenticatedRole,
+      requestedSchoolId,
+    });
+    return scoped.rejected ? null : scoped.schoolId;
+  } catch {
+    return null;
+  }
+}
+
 async function resolveUserName(req: Request): Promise<string | null> {
   const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
   if (!token) return null;
@@ -1108,6 +1127,10 @@ router.get('/school/:schoolId', async (req: Request, res: Response) => {
 
     if (!schoolId) {
       return res.status(400).json({ error: 'School ID required' });
+    }
+
+    if ((await resolvePathSchoolId(req, schoolId)) !== schoolId) {
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const school = await prisma.school.findUnique({
@@ -5808,6 +5831,10 @@ router.get('/school/:schoolId/setup-status', async (req: Request, res: Response)
 
     if (!schoolId) {
       return res.status(400).json({ error: 'School ID required' });
+    }
+
+    if ((await resolvePathSchoolId(req, schoolId)) !== schoolId) {
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const school = await prisma.school.findUnique({
