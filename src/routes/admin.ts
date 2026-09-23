@@ -4415,7 +4415,7 @@ router.get('/students/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    const [invoices, invoiceTotals, attendanceRecords, termSummaries, promotionHistory, currentAcademicYear] = await Promise.all([
+    const [invoices, invoiceTotals, attendanceRecords, termSummaries, promotionHistory, academicYears] = await Promise.all([
       prisma.invoice.findMany({
         where: { pupilId: id, schoolId },
         include: {
@@ -4434,7 +4434,7 @@ router.get('/students/:id', async (req: Request, res: Response) => {
       prisma.attendanceRecord.findMany({
         where: { pupilId: id, schoolId },
         orderBy: { date: 'desc' },
-        take: 30,
+        take: 365,
       }),
       prisma.studentTermSummary.findMany({
         where: { pupilId: id, schoolId },
@@ -4446,11 +4446,14 @@ router.get('/students/:id', async (req: Request, res: Response) => {
         orderBy: { decidedAt: 'desc' },
         take: 8,
       }),
-      prisma.academicYear.findFirst({
-        where: { schoolId, isCurrent: true },
+      prisma.academicYear.findMany({
+        where: { schoolId },
+        orderBy: { createdAt: 'desc' },
         include: { terms: { orderBy: { sortOrder: 'asc' } } },
       }),
     ]);
+
+    const currentAcademicYear = academicYears.find((year) => year.isCurrent) || academicYears[0] || null;
 
     const totalDue = invoiceTotals._sum.amountDue || 0;
     const totalPaid = invoiceTotals._sum.amountPaid || 0;
@@ -4485,6 +4488,38 @@ router.get('/students/:id', async (req: Request, res: Response) => {
       existing.invoiceCount += 1;
       termBalances.set(key, existing);
     }
+    const attendanceSummary = (records: typeof attendanceRecords) => ({
+      total: records.length,
+      present: records.filter((record) => record.status === 'PRESENT').length,
+      absent: records.filter((record) => record.status === 'ABSENT').length,
+      late: records.filter((record) => record.status === 'LATE').length,
+      percentage: records.length > 0
+        ? Math.round(((records.filter((record) => record.status === 'PRESENT').length + records.filter((record) => record.status === 'LATE').length * 0.5) / records.length) * 100)
+        : null,
+    });
+    const attendancePeriods = academicYears.flatMap((year) => year.terms.map((term) => {
+      const records = attendanceRecords.filter((record) => {
+        const date = new Date(record.date);
+        return Boolean(term.startsOn || term.endsOn)
+          && (!term.startsOn || date >= term.startsOn)
+          && (!term.endsOn || date <= term.endsOn);
+      });
+      return {
+        academicYearId: year.id,
+        academicYearName: year.name,
+        termId: term.id,
+        termName: term.name,
+        sortOrder: term.sortOrder,
+        startsOn: term.startsOn,
+        isCurrent: year.id === currentAcademicYear?.id && term.id === currentTerm?.id,
+        ...attendanceSummary(records),
+        records: records.sort((a, b) => b.date.getTime() - a.date.getTime()),
+      };
+    }).filter((period) => period.total > 0).sort((a, b) => {
+      if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+      if (a.startsOn && b.startsOn && a.startsOn.getTime() !== b.startsOn.getTime()) return b.startsOn.getTime() - a.startsOn.getTime();
+      return b.sortOrder - a.sortOrder;
+    }));
     const attendance = {
       total: attendanceRecords.length,
       present: attendanceRecords.filter((record) => record.status === 'PRESENT').length,
@@ -4507,7 +4542,7 @@ router.get('/students/:id', async (req: Request, res: Response) => {
         if (a.academicYearId !== currentAcademicYear?.id && b.academicYearId === currentAcademicYear?.id) return 1;
         return b.balance - a.balance;
       }),
-      attendance: { ...attendance, percentage: attendancePercentage, records: attendanceRecords },
+      attendance: { ...attendance, percentage: attendancePercentage, records: attendanceRecords, periods: attendancePeriods },
       termSummaries,
       promotionHistory,
     });
@@ -7237,6 +7272,15 @@ router.delete('/terms/:id', async (req: Request, res: Response) => {
 
     if (!term) {
       return res.status(404).json({ error: 'Term not found' });
+    }
+
+    const invoiceCount = await prisma.invoice.count({
+      where: { schoolId, feeSchedule: { termId: id } },
+    });
+    if (invoiceCount > 0) {
+      return res.status(409).json({
+        error: `This term cannot be deleted because it has ${invoiceCount} invoice${invoiceCount === 1 ? '' : 's'} attached. Keep the term for financial history instead.`,
+      });
     }
 
     await prisma.term.delete({
