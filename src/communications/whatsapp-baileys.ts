@@ -974,11 +974,15 @@ export class BaileysSessionManager {
       return { success: false, error: 'Missing authenticated schoolId for WhatsApp send' };
     }
 
-    const rateLimited = await this.rateLimiter.tryAcquire(normalizedSchoolId);
+    let rateLimited = await this.rateLimiter.tryAcquire(normalizedSchoolId);
+    if (!rateLimited) {
+      const slotAvailable = await this.rateLimiter.waitForNextSlot(normalizedSchoolId);
+      rateLimited = slotAvailable && await this.rateLimiter.tryAcquire(normalizedSchoolId);
+    }
     if (!rateLimited) {
       return {
         success: false,
-        error: `School ${normalizedSchoolId} has exceeded the WhatsApp send rate limit. Please retry later.`,
+        error: `School ${normalizedSchoolId} has reached the WhatsApp send quota. Please retry later.`,
       };
     }
 

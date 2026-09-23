@@ -7572,7 +7572,7 @@ router.post('/announcements', async (req: Request, res: Response) => {
 
     Please contact the school office if you need any clarification.`;
 
-      void Promise.all(guardians.map(async (guardian) => {
+      const processGuardian = async (guardian: typeof guardians[number]) => {
         const whatsappAddress = guardian.whatsapp || guardian.phone || guardian.altPhone;
         const recipients = [
           ...(guardian.email ? [{ channel: 'EMAIL' as const, address: guardian.email, name: guardian.firstName }] : []),
@@ -7656,7 +7656,24 @@ router.post('/announcements', async (req: Request, res: Response) => {
             },
           });
         }
-      })).catch((error) => {
+      };
+
+      const runAnnouncementDelivery = async () => {
+        // WhatsApp sends are already paced by the school session rate limiter.
+        // One worker prevents concurrent attempts from being rejected as bursts.
+        const concurrency = 1;
+        let nextIndex = 0;
+        const workers = Array.from({ length: Math.min(concurrency, guardians.length) }, async () => {
+          while (nextIndex < guardians.length) {
+            const guardian = guardians[nextIndex];
+            nextIndex += 1;
+            await processGuardian(guardian);
+          }
+        });
+        await Promise.all(workers);
+      };
+
+      void runAnnouncementDelivery().catch((error) => {
         console.error('Error processing queued announcement notifications:', error);
       });
     }
