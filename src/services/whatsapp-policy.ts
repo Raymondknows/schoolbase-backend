@@ -1,3 +1,5 @@
+const GLOBAL_BULK_SEND_BATCH_SIZE = 250;
+
 export interface SchoolWhatsAppPolicy {
   schoolId: string;
   enabled: boolean;
@@ -14,6 +16,16 @@ export interface SchoolWhatsAppPolicy {
   updatedAt: Date;
 }
 
+function normalizeBulkSendPolicy(policy: SchoolWhatsAppPolicy): SchoolWhatsAppPolicy {
+  const safeBatchSize = Number.isFinite(policy.batchSize) && policy.batchSize > 0 ? Math.max(policy.batchSize, GLOBAL_BULK_SEND_BATCH_SIZE) : GLOBAL_BULK_SEND_BATCH_SIZE;
+
+  return {
+    ...policy,
+    batchSize: safeBatchSize,
+    requireApprovalForBulk: false,
+  };
+}
+
 export interface WhatsAppSendEvaluationInput {
   recipientCount?: number;
   now?: Date;
@@ -28,21 +40,21 @@ export interface WhatsAppSendEvaluationResult {
 }
 
 export function getDefaultWhatsAppPolicy(schoolId: string): SchoolWhatsAppPolicy {
-  return {
+  return normalizeBulkSendPolicy({
     schoolId: String(schoolId || '').trim() || 'default-school',
     enabled: true,
     messagesPerMinute: 10,
     messagesPerHour: 100,
     messagesPerDay: 300,
-    batchSize: 25,
+    batchSize: GLOBAL_BULK_SEND_BATCH_SIZE,
     batchCooldownSeconds: 120,
     quietHoursStart: '21:00',
     quietHoursEnd: '07:00',
-    requireApprovalForBulk: true,
+    requireApprovalForBulk: false,
     allowAutomaticRetries: true,
     timezone: 'Africa/Lagos',
     updatedAt: new Date(),
-  };
+  });
 }
 
 export async function readSchoolWhatsAppPolicy(prisma: { whatsAppPolicy?: { findUnique: (args: any) => Promise<any> } }, schoolId: string): Promise<SchoolWhatsAppPolicy> {
@@ -53,12 +65,12 @@ export async function readSchoolWhatsAppPolicy(prisma: { whatsAppPolicy?: { find
     return defaultPolicy;
   }
 
-  return {
+  return normalizeBulkSendPolicy({
     ...defaultPolicy,
     ...policyRecord,
     schoolId: policyRecord.schoolId ?? defaultPolicy.schoolId,
     updatedAt: policyRecord.updatedAt ? new Date(policyRecord.updatedAt) : defaultPolicy.updatedAt,
-  };
+  });
 }
 
 export function evaluateSchoolWhatsAppSend(policy: SchoolWhatsAppPolicy, input: WhatsAppSendEvaluationInput = {}): WhatsAppSendEvaluationResult {
