@@ -7546,7 +7546,10 @@ router.post('/announcements', async (req: Request, res: Response) => {
 
     const { title, body, publish, bulkApproval, academicYearId, termId } = req.body;
 
-    if (!title || !body) {
+    const normalizedTitle = String(title ?? '').trim();
+    const normalizedBody = String(body ?? '').trim();
+
+    if (!normalizedTitle || !normalizedBody) {
       return res.status(400).json({ error: 'Title and body are required' });
     }
 
@@ -7602,8 +7605,8 @@ router.post('/announcements', async (req: Request, res: Response) => {
     const announcement = await prisma.announcement.create({
       data: {
         schoolId,
-        title,
-        body,
+        title: normalizedTitle,
+        body: normalizedBody,
         academicYearId: announcementAcademicYearId,
         termId: announcementTermId,
         published: publishNow,
@@ -7641,9 +7644,9 @@ router.post('/announcements', async (req: Request, res: Response) => {
       const communicationService = createCommunicationService();
       const message = `Dear Parent,
 
-    ${title}
+    ${normalizedTitle}
 
-    ${body}
+    ${normalizedBody}
 
     Please contact the school office if you need any clarification.`;
 
@@ -7664,17 +7667,17 @@ router.post('/announcements', async (req: Request, res: Response) => {
             schoolId,
             recipients,
             template: 'Announcement',
-            subject: `School Announcement: ${title}`,
+            subject: `School Announcement: ${normalizedTitle}`,
             body: message,
             data: {
-              title,
-              message: body,
+              title: normalizedTitle,
+              message: normalizedBody,
               schoolName: school?.name || 'SchoolBase',
               recipientName: guardian.firstName,
             },
             metadata: {
-              title,
-              message: body,
+              title: normalizedTitle,
+              message: normalizedBody,
               schoolName: school?.name || 'SchoolBase',
               logoUrl: school?.logoUrl ?? undefined,
               announcementId: announcement.id,
@@ -7689,7 +7692,7 @@ router.post('/announcements', async (req: Request, res: Response) => {
                 schoolId,
                 guardianId: guardian.id,
                 type: 'ANNOUNCEMENT',
-                title: `School Announcement: ${title}`,
+                title: `School Announcement: ${normalizedTitle}`,
                 body: truncateNotificationBody(message),
                 channel: delivery.channel,
                 status,
@@ -7721,7 +7724,7 @@ router.post('/announcements', async (req: Request, res: Response) => {
               schoolId,
               guardianId: guardian.id,
               type: 'ANNOUNCEMENT',
-              title: `School Announcement: ${title}`,
+              title: `School Announcement: ${normalizedTitle}`,
               body: truncateNotificationBody(message),
               channel: whatsappAddress ? 'WHATSAPP' : 'EMAIL',
               status: 'FAILED',
