@@ -11,6 +11,7 @@ import { buildGuardianNotificationRecipients, resolveGuardianNotificationTargets
 import { buildBulkPinNotificationBatches, validateBulkPinNotificationRequest } from '../services/pin-notification-batch-guards.js';
 import { resolvePublicResultsUrl } from '../services/public-url.js';
 import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
+import { evaluateSchoolWhatsAppSend, readSchoolWhatsAppPolicy } from '../services/whatsapp-policy.js';
 import { getSessionSecret } from '../services/security-config.js';
 import { resolveSchoolScope } from '../services/security-context.js';
 
@@ -630,13 +631,24 @@ router.post('/pins/bulk/notify', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'ids are required' });
     }
 
+    const guardianCount = selectedGuardianIds.length > 0 ? selectedGuardianIds.length : 1;
     const validation = validateBulkPinNotificationRequest({
       pinCount: ids.length,
-      guardianCount: selectedGuardianIds.length > 0 ? selectedGuardianIds.length : 1,
+      guardianCount,
     });
 
     if (!validation.ok) {
       return res.status(400).json({ error: validation.reason });
+    }
+
+    const policy = await readSchoolWhatsAppPolicy(prisma, schoolId);
+    const policyCheck = evaluateSchoolWhatsAppSend(policy, {
+      recipientCount: guardianCount,
+      approvedForBulk: true,
+    });
+
+    if (!policyCheck.allowed) {
+      return res.status(400).json({ error: policyCheck.reason || 'WhatsApp delivery is not allowed at this time.' });
     }
 
     const pins = await prisma.resultPin.findMany({
@@ -667,7 +679,8 @@ router.post('/pins/bulk/notify', async (req: Request, res: Response) => {
     const communicationService = createCommunicationService();
     const resultsUrl = resolvePublicResultsUrl(`${process.env.FRONTEND_URL || 'https://www.schoolbase.live'}/results/check`);
     const rules = communicationRulesRegistry.getRules(schoolId);
-    const shouldSendPinNotifications = rules.ResultsPublished?.enabled !== false;
+    const pinDeliveryRule = rules.PinDelivered ?? { enabled: true, channels: ['EMAIL', 'WHATSAPP'], template: 'Results' };
+    const shouldSendPinNotifications = pinDeliveryRule.enabled !== false;
 
     if (!shouldSendPinNotifications) {
       return res.json({ ok: true, sent: 0, skipped: pins.length, message: 'PIN delivery notifications are disabled for this school' });

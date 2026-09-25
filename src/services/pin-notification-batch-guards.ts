@@ -15,12 +15,12 @@ export interface BulkPinNotificationBatch {
   pinIds: string[];
 }
 
-const MAX_PINS_PER_BATCH = 10;
-const MAX_TOTAL_NOTIFICATIONS = 20;
+const DEFAULT_SCHOOL_BULK_BATCH_SIZE = 250;
+const MAX_PINS_PER_BATCH = DEFAULT_SCHOOL_BULK_BATCH_SIZE;
+const MAX_TOTAL_NOTIFICATIONS = DEFAULT_SCHOOL_BULK_BATCH_SIZE;
 
-function getSafePinBatchSize(guardianCount: number): number {
-  const effectiveGuardianCount = Math.max(1, guardianCount);
-  return Math.min(MAX_PINS_PER_BATCH, Math.max(1, Math.floor(MAX_TOTAL_NOTIFICATIONS / effectiveGuardianCount)));
+function getSafePinBatchSize(): number {
+  return Math.max(1, MAX_PINS_PER_BATCH);
 }
 
 export function validateBulkPinNotificationRequest({
@@ -31,7 +31,7 @@ export function validateBulkPinNotificationRequest({
     return { ok: false, reason: 'Please select at least one PIN.' };
   }
 
-  const safeBatchSize = getSafePinBatchSize(guardianCount);
+  const safeBatchSize = getSafePinBatchSize();
   const totalNotifications = pinCount * Math.max(1, guardianCount);
   if (totalNotifications > MAX_TOTAL_NOTIFICATIONS) {
     return {
@@ -52,11 +52,11 @@ export function buildBulkPinNotificationBatches({
   pinIds: string[];
   guardianCount: number;
 }): BulkPinNotificationBatch[] {
-  const safeBatchSize = getSafePinBatchSize(guardianCount);
+  const batchSize = Math.max(1, Math.min(getSafePinBatchSize(), Math.max(1, pinIds.length)));
   const batches: BulkPinNotificationBatch[] = [];
 
-  for (let index = 0; index < pinIds.length; index += safeBatchSize) {
-    batches.push({ pinIds: pinIds.slice(index, index + safeBatchSize) });
+  for (let index = 0; index < pinIds.length; index += batchSize) {
+    batches.push({ pinIds: pinIds.slice(index, index + batchSize) });
   }
 
   return batches;

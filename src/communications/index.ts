@@ -98,6 +98,8 @@ export class RulesEngine {
           return { template: 'Attendance', channels: ['EMAIL', 'WHATSAPP'] };
         case 'ResultsPublished':
           return { template: 'Results', channels: ['EMAIL', 'WHATSAPP'] };
+        case 'PinDelivered':
+          return { template: 'Results', channels: ['EMAIL', 'WHATSAPP'] };
         case 'HomeworkAssigned':
           return { template: 'Homework', channels: ['EMAIL'] };
         case 'PromotionCompleted':

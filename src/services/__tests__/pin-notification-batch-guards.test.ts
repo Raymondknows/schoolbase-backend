@@ -9,16 +9,18 @@ test('allows a small batch of PIN notifications', () => {
   assert.equal(result.reason, undefined);
 });
 
-test('accepts oversized batches and reports a safe batch size for chunking', () => {
+test('accepts oversized batches and reports the school-safe batch size for chunking', () => {
   const result = validateBulkPinNotificationRequest({ pinCount: 25, guardianCount: 2 });
 
   assert.equal(result.ok, true);
-  assert.equal(result.maxPinsPerBatch, 10);
+  assert.equal(result.maxPinsPerBatch, 250);
+  assert.equal(result.maxTotalNotifications, 250);
 });
 
-test('accepts a batch that needs chunking and preserves the safe batch size', () => {
+test('keeps large school batches aligned with the policy default instead of a tiny manual cap', () => {
   const result = validateBulkPinNotificationRequest({ pinCount: 10, guardianCount: 6 });
 
   assert.equal(result.ok, true);
-  assert.equal(result.maxPinsPerBatch, 3);
+  assert.equal(result.maxPinsPerBatch, 250);
+  assert.equal(result.maxTotalNotifications, 250);
 });
