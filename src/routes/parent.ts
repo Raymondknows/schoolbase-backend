@@ -75,6 +75,55 @@ function normalizeAdmission(admissionNo: string) {
   return admissionNo.replace(/\W+/g, '').toLowerCase();
 }
 
+async function resolveParentFamily(data: any) {
+  const claimedGuardianIds = Array.from(new Set([
+    data.guardianId,
+    ...(Array.isArray(data.guardianIds) ? data.guardianIds : []),
+  ].filter((id): id is string => typeof id === 'string' && id.length > 0)));
+
+  if (claimedGuardianIds.length === 0) return { guardians: [], pupilIds: [] as string[] };
+
+  const primaryGuardian = await prisma.guardian.findUnique({
+    where: { id: data.guardianId },
+    select: { id: true, schoolId: true, phone: true, whatsapp: true },
+  });
+  if (!primaryGuardian) return { guardians: [], pupilIds: [] as string[] };
+
+  const school = await prisma.school.findUnique({
+    where: { id: primaryGuardian.schoolId },
+    select: { country: true },
+  });
+  const familyPhone = String(data.phone || primaryGuardian.whatsapp || primaryGuardian.phone || '');
+  const phoneCandidates = buildLoginPhoneCandidates(familyPhone, school?.country || undefined);
+  const phonePredicate = phoneCandidates.flatMap((value) => [
+    { phone: value },
+    { whatsapp: value },
+  ]);
+
+  const familyGuardians = await prisma.guardian.findMany({
+    where: {
+      schoolId: primaryGuardian.schoolId,
+      OR: [
+        { id: { in: claimedGuardianIds } },
+        ...(phonePredicate.length ? phonePredicate : []),
+      ],
+    },
+    select: {
+      id: true,
+      schoolId: true,
+      firstName: true,
+      lastName: true,
+      pupils: { select: { pupilId: true } },
+    },
+  });
+
+  return {
+    guardians: familyGuardians,
+    schoolId: primaryGuardian.schoolId,
+    pupilIds: Array.from(new Set(familyGuardians.flatMap((guardian) => guardian.pupils.map((link) => link.pupilId)))),
+  };
+}
+
 async function signToken(payload: Record<string, unknown>) {
   return await new SignJWT(payload)
     .setProtectedHeader({ alg: 'HS256' })
@@ -137,21 +186,24 @@ router.post('/login', async (req: Request, res: Response) => {
           }
         }
 
-        if (!guardianRecord) {
-          guardianRecord =
-            matchedPupil.guardians.map((gp) => gp.guardian).find((g) => g?.whatsapp) ||
-            matchedPupil.guardians.map((gp) => gp.guardian).find((g) => g?.phone) ||
-            matchedPupil.guardians.map((gp) => gp.guardian)[0] ||
-            null;
-        }
       }
 
       if (guardianRecord) {
+        const familyPhone = guardianRecord.whatsapp || guardianRecord.phone || phone;
+        const familyPhones = buildLoginPhoneCandidates(familyPhone, country);
+        const familyGuardians = await prisma.guardian.findMany({
+          where: {
+            schoolId: matchedPupil?.schoolId ?? guardianRecord.schoolId,
+            OR: familyPhones.flatMap((value) => [{ phone: value }, { whatsapp: value }]),
+          },
+          select: { id: true },
+        });
         const token = await signToken({
           guardianId: guardianRecord.id,
+          guardianIds: familyGuardians.map((guardian) => guardian.id),
           schoolId: matchedPupil?.schoolId ?? guardianRecord.schoolId,
           name: `${guardianRecord.firstName} ${guardianRecord.lastName}`,
-          phone: guardianRecord.whatsapp || guardianRecord.phone || '',
+          phone: familyPhone,
         });
 
         await recordActivity({ event: 'PARENT_LOGIN_SUCCESS', details: `Parent login succeeded for ${schoolSlug || 'school portal'}`, schoolId: matchedPupil?.schoolId ?? guardianRecord.schoolId }).catch(() => {});
@@ -174,18 +226,26 @@ router.post('/login', async (req: Request, res: Response) => {
       ? { school: { slug: schoolSlug }, OR: predicate }
       : { OR: predicate };
 
-    const guardian = await prisma.guardian.findFirst({
+    const guardians = await prisma.guardian.findMany({
       where: whereCondition,
       include: { school: true, pupils: { include: { pupil: true } } },
     });
 
-    if (!guardian) {
+    if (guardians.length === 0) {
       await recordActivity({ event: 'PARENT_LOGIN_FAILED', details: `Parent login failed: guardian not found for ${schoolSlug || 'school portal'}` }).catch(() => {});
       return res.status(404).json({ error: 'Phone number not found. Contact the school.' });
     }
 
+    const schoolIds = Array.from(new Set(guardians.map((guardian) => guardian.schoolId)));
+    if (!schoolSlug && schoolIds.length > 1) {
+      return res.status(400).json({ error: 'This phone is registered with more than one school. Enter the school slug to continue.' });
+    }
+
+    let guardian = guardians[0];
+    const sameSchoolGuardians = guardians.filter((item) => item.schoolId === guardian.schoolId);
+
     if (inputAdm) {
-      const admissionMatch = guardian.pupils.some((gp) => {
+      const matchingGuardian = sameSchoolGuardians.find((candidate) => candidate.pupils.some((gp) => {
         const stored = gp.pupil.admissionNo ?? '';
         const normStored = normalizeAdmission(stored);
         return (
@@ -193,16 +253,18 @@ router.post('/login', async (req: Request, res: Response) => {
           normStored.startsWith(inputAdm) ||
           inputAdm.startsWith(normStored)
         );
-      });
+      }));
 
-      if (!admissionMatch) {
+      if (!matchingGuardian) {
         await recordActivity({ event: 'PARENT_LOGIN_FAILED', details: `Parent login failed: admission mismatch for ${schoolSlug || 'school portal'}`, schoolId: guardian.schoolId }).catch(() => {});
         return res.status(400).json({ error: 'Admission number does not match this phone.' });
       }
+      guardian = matchingGuardian;
     }
 
     const token = await signToken({
       guardianId: guardian.id,
+      guardianIds: sameSchoolGuardians.map((item) => item.id),
       schoolId: guardian.schoolId,
       name: `${guardian.firstName} ${guardian.lastName}`,
       phone: guardian.whatsapp || guardian.phone || '',
@@ -256,8 +318,9 @@ router.get('/dashboard', async (req: Request, res: Response) => {
     const { payload } = await jwtVerify(token, secret());
     const data = payload as any;
 
-    const guardian = await prisma.guardian.findUnique({
-      where: { id: data.guardianId },
+    const family = await resolveParentFamily(data);
+    const guardians = await prisma.guardian.findMany({
+      where: { id: { in: family.guardians.map((item) => item.id) } },
       include: { 
         pupils: { 
           include: { 
@@ -272,17 +335,18 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       },
     });
 
+    const guardian = guardians[0];
     if (!guardian) {
       return res.status(404).json({ error: 'Guardian not found' });
     }
 
-    const children = guardian.pupils.map((gp: any) => ({
-      id: gp.pupil.id,
-      firstName: gp.pupil.firstName,
-      lastName: gp.pupil.lastName,
-      admissionNo: gp.pupil.admissionNo,
-      class: gp.pupil.class,
-      status: gp.pupil.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE',
+    const children = Array.from(new Map(guardians.flatMap((item: any) => item.pupils).map((gp: any) => [gp.pupil.id, gp.pupil])).values()).map((pupil: any) => ({
+      id: pupil.id,
+      firstName: pupil.firstName,
+      lastName: pupil.lastName,
+      admissionNo: pupil.admissionNo,
+      class: pupil.class,
+      status: pupil.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE',
       latestGrade: null,
     }));
 
@@ -340,8 +404,9 @@ router.get('/children', async (req: Request, res: Response) => {
     const { payload } = await jwtVerify(token, secret());
     const data = payload as any;
 
-    const guardian = await prisma.guardian.findUnique({
-      where: { id: data.guardianId },
+    const family = await resolveParentFamily(data);
+    const guardians = await prisma.guardian.findMany({
+      where: { id: { in: family.guardians.map((item) => item.id) } },
       include: {
         pupils: {
           include: {
@@ -357,28 +422,29 @@ router.get('/children', async (req: Request, res: Response) => {
       },
     });
 
-    if (!guardian) {
+    if (guardians.length === 0) {
       return res.status(404).json({ error: 'Guardian not found' });
     }
 
     // Get invoices for children
     const invoices = await prisma.invoice.findMany({
       where: {
-        pupilId: { in: guardian.pupils.map((gp: any) => gp.pupil.id) },
+        pupilId: { in: family.pupilIds },
       },
     });
 
-    const children = guardian.pupils.map((gp: any) => ({
-      id: gp.pupil.id,
-      firstName: gp.pupil.firstName,
-      lastName: gp.pupil.lastName,
-      admissionNo: gp.pupil.admissionNo,
-      class: gp.pupil.class,
-      photoUrl: gp.pupil.photoUrl || null,
-      status: gp.pupil.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE',
+    const linkedPupils = Array.from(new Map(guardians.flatMap((item: any) => item.pupils).map((gp: any) => [gp.pupil.id, gp.pupil])).values());
+    const children = linkedPupils.map((pupil: any) => ({
+      id: pupil.id,
+      firstName: pupil.firstName,
+      lastName: pupil.lastName,
+      admissionNo: pupil.admissionNo,
+      class: pupil.class,
+      photoUrl: pupil.photoUrl || null,
+      status: pupil.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE',
       latestGrade: null,
-      dateOfBirth: gp.pupil.dateOfBirth ?? null,
-      guardians: (gp.pupil.guardians || []).map((g: any) => g.guardian ? {
+      dateOfBirth: pupil.dateOfBirth ?? null,
+      guardians: (pupil.guardians || []).map((g: any) => g.guardian ? {
         id: g.guardian.id,
         firstName: g.guardian.firstName,
         lastName: g.guardian.lastName,
@@ -387,7 +453,7 @@ router.get('/children', async (req: Request, res: Response) => {
         email: g.guardian.email,
       } : null).filter(Boolean),
       outstandingFee: invoices
-        .filter(inv => inv.pupilId === gp.pupil.id && ['SENT', 'PART_PAID', 'OVERDUE'].includes(inv.status))
+        .filter(inv => inv.pupilId === pupil.id && ['SENT', 'PART_PAID', 'OVERDUE'].includes(inv.status))
         .reduce((sum, inv) => sum + inv.amountDue, 0),
     }));
 
@@ -415,12 +481,8 @@ router.get('/children', async (req: Request, res: Response) => {
         const childId = req.params.id;
 
         // Verify parent has access to this child
-        const guardian = await prisma.guardian.findUnique({
-          where: { id: data.guardianId },
-          include: { pupils: { include: { pupil: { select: { id: true } } } } },
-        });
-
-        if (!guardian || !guardian.pupils.some((gp: any) => gp.pupil.id === childId)) {
+        const family = await resolveParentFamily(data);
+        if (!family.pupilIds.includes(childId)) {
           return res.status(403).json({ error: 'Unauthorized access to this child' });
         }
 
@@ -485,18 +547,8 @@ router.get('/attendance/:childId', async (req: Request, res: Response) => {
     const days = req.query.days ? parseInt(req.query.days as string) : 7;
 
     // Verify parent has access to this child
-    const guardian = await prisma.guardian.findUnique({
-      where: { id: data.guardianId },
-      include: {
-        pupils: {
-          include: {
-            pupil: { select: { id: true } }
-          }
-        }
-      }
-    });
-
-    if (!guardian || !guardian.pupils.some(gp => gp.pupil.id === childId)) {
+    const family = await resolveParentFamily(data);
+    if (!family.pupilIds.includes(childId)) {
       return res.status(403).json({ error: 'Unauthorized access to this child' });
     }
 
@@ -558,31 +610,13 @@ router.get('/terms', async (req: Request, res: Response) => {
     const data = payload as any;
 
     // Get school from guardian's children
-    const guardian = await prisma.guardian.findUnique({
-      where: { id: data.guardianId },
-      include: { 
-        pupils: { 
-          include: { 
-            pupil: { 
-              select: { 
-                schoolId: true 
-              } 
-            } 
-          } 
-        } 
-      },
-    });
-
-    if (!guardian || guardian.pupils.length === 0) {
-      return res.json({ terms: [] });
-    }
-
-    const schoolId = guardian.pupils[0].pupil.schoolId;
+    const family = await resolveParentFamily(data);
+    if (!family.schoolId) return res.json({ terms: [] });
 
     const terms = await prisma.term.findMany({
       where: {
         academicYear: {
-          schoolId,
+          schoolId: family.schoolId,
           isCurrent: true,
         },
       },
@@ -697,20 +731,8 @@ router.get('/results', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'childId required' });
     }
 
-    const guardian = await prisma.guardian.findUnique({
-      where: { id: data.guardianId },
-      include: {
-        pupils: {
-          include: {
-            pupil: {
-              select: { id: true }
-            }
-          }
-        }
-      }
-    });
-
-    if (!guardian || !guardian.pupils.some((gp: any) => gp.pupil.id === childId)) {
+    const family = await resolveParentFamily(data);
+    if (!family.pupilIds.includes(childId)) {
       return res.status(403).json({ error: 'Unauthorized access to this child' });
     }
 
@@ -848,18 +870,14 @@ router.get('/invoices', async (req: Request, res: Response) => {
     const { payload } = await jwtVerify(token, secret());
     const data = payload as any;
 
-    const guardian = await prisma.guardian.findUnique({
-      where: { id: data.guardianId },
-      include: { pupils: { include: { pupil: true } } },
-    });
-
-    if (!guardian) {
+    const family = await resolveParentFamily(data);
+    if (family.guardians.length === 0) {
       return res.status(404).json({ error: 'Guardian not found' });
     }
 
     const invoices = await prisma.invoice.findMany({
       where: {
-        pupilId: { in: guardian.pupils.map((gp: any) => gp.pupil.id) },
+        pupilId: { in: family.pupilIds },
       },
       include: {
         pupil: true,
@@ -935,19 +953,15 @@ router.get('/payments', async (req: Request, res: Response) => {
     const { payload } = await jwtVerify(token, secret());
     const data = payload as any;
 
-    const guardian = await prisma.guardian.findUnique({
-      where: { id: data.guardianId },
-      include: { pupils: true },
-    });
-
-    if (!guardian) {
+    const family = await resolveParentFamily(data);
+    if (family.guardians.length === 0) {
       return res.status(404).json({ error: 'Guardian not found' });
     }
 
     const payments = await prisma.payment.findMany({
       where: {
         invoice: {
-          pupilId: { in: guardian.pupils.map((gp: any) => gp.pupilId) },
+          pupilId: { in: family.pupilIds },
         },
       },
       include: { invoice: true },
@@ -1079,16 +1093,12 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
     const data = payload as any;
     const { id } = req.params;
 
-    const guardian = await prisma.guardian.findUnique({
-      where: { id: data.guardianId },
-      include: { pupils: { include: { pupil: true } } },
-    });
-
-    if (!guardian) {
+    const family = await resolveParentFamily(data);
+    if (family.guardians.length === 0) {
       return res.status(404).json({ error: 'Guardian not found' });
     }
 
-    const allowedPupilIds = guardian.pupils.map((gp: any) => gp.pupil.id);
+    const allowedPupilIds = family.pupilIds;
 
     const invoice = await prisma.invoice.findFirst({
       where: {
