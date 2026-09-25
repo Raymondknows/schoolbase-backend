@@ -10,6 +10,8 @@ import { initializeSubscriptionEmailJob, stopSubscriptionEmailJob } from './jobs
 import { ensurePlatformPaymentPlans } from './services/platform-settings.js';
 import { activityAuditMiddleware } from './middleware/activityAudit.js';
 import baileysSessionManager from './communications/whatsapp-baileys.js';
+import { WhatsAppDeliveryWorker } from './services/whatsapp-delivery-worker.js';
+import { SchoolWhatsAppRateLimiter } from './services/whatsapp-rate-limiter.js';
 
 dotenv.config();
 
@@ -232,6 +234,31 @@ async function start() {
       console.error('Warning: Failed to initialize subscription email job:', error);
       // Don't fail startup if job initialization fails - system can still operate
     }
+
+    const whatsappDeliveryWorker = new WhatsAppDeliveryWorker(
+      prisma,
+      new SchoolWhatsAppRateLimiter({
+        minIntervalMs: Number(process.env.WHATSAPP_MIN_SEND_INTERVAL_MS || 3000),
+        perMinuteLimit: Number(process.env.WHATSAPP_PER_MINUTE_LIMIT || 10),
+        perHourLimit: Number(process.env.WHATSAPP_PER_HOUR_LIMIT || 100),
+        perDayLimit: Number(process.env.WHATSAPP_PER_DAY_LIMIT || 300),
+      }),
+    );
+
+    whatsappDeliveryWorker.startPolling(async (delivery) => {
+      const result = await baileysSessionManager.sendTextMessage(
+        delivery.schoolId,
+        delivery.recipientAddress,
+        delivery.messagePreview || 'SchoolBase WhatsApp notification',
+      );
+
+      return {
+        success: result.success,
+        providerMessageId: result.messageId,
+        error: result.error,
+      };
+    }, { intervalMs: Number(process.env.WHATSAPP_QUEUE_INTERVAL_MS || 5000) });
+    console.log('[whatsapp-worker] Background queued WhatsApp delivery worker started');
     
     // Error handling middleware (after routes)
     app.use((err: any, req: Request, res: Response, next: NextFunction) => {

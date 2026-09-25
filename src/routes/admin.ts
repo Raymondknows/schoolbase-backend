@@ -142,46 +142,22 @@ const sharedDriverManager = new DriverManager({
         recipientAddress: recipient.address,
         recipientName: recipient.name,
         messageBody: content.body,
-        status: 'SENDING',
+        status: 'QUEUED',
         provider: 'baileys',
         attemptCount: 1,
+        nextAttemptAt: new Date(Date.now() + 1_500),
       });
       deliveryId = delivery?.id;
     } catch (auditError) {
       console.warn('[admin] Could not create durable WhatsApp delivery record:', auditError);
     }
 
-    const result = await baileysSessionManager.sendTextMessage(schoolId, recipient.address, content.body) as { success: boolean; messageId?: string; error?: string };
-    if (deliveryId) {
-      try {
-        await whatsappDeliveryStore.updateById(deliveryId, {
-          status: result.success ? 'SENT' : 'FAILED',
-          providerMessageId: result.messageId ?? null,
-          lastError: result.success ? null : result.error ?? null,
-          sentAt: result.success ? new Date() : null,
-          nextAttemptAt: new Date(),
-        });
-      } catch (auditError) {
-        console.warn('[admin] Could not update durable WhatsApp delivery record:', auditError);
-      }
-    }
-
-    if (!result.success) {
-      return {
-        channel: 'WHATSAPP',
-        recipient: recipient.address,
-        status: 'FAILED',
-        provider: 'baileys',
-        error: result.error,
-      } as const;
-    }
-
     return {
       channel: 'WHATSAPP',
       recipient: recipient.address,
-      status: 'SENT',
+      status: 'QUEUED',
       provider: 'baileys',
-      messageId: result.messageId,
+      messageId: deliveryId ?? undefined,
     } as const;
   }),
 });
@@ -3918,6 +3894,105 @@ router.get('/notifications', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching notifications:', error);
     res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+router.post('/notifications/retry-failed', requireSubscription, async (req: Request, res: Response) => {
+  try {
+    const schoolId = await resolveSchoolId(req);
+    if (!schoolId) return res.status(400).json({ error: 'School ID required' });
+
+    const incomingIds = Array.isArray(req.body?.notificationIds) ? req.body.notificationIds : [];
+    const requestedType = typeof req.body?.type === 'string' ? req.body.type.trim() : '';
+    const notificationIds = incomingIds.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+    const query: any = {
+      schoolId,
+      channel: 'WHATSAPP',
+      status: 'FAILED',
+    };
+
+    if (notificationIds.length > 0) {
+      query.id = { in: notificationIds };
+    }
+    if (requestedType) {
+      query.type = requestedType;
+    }
+
+    const notifications = await prisma.notification.findMany({
+      where: query,
+      include: {
+        guardian: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            whatsapp: true,
+            phone: true,
+            altPhone: true,
+          },
+        },
+      },
+    });
+
+    if (notifications.length === 0) {
+      return res.status(400).json({ error: 'No failed WhatsApp notifications matched the selected retry filter.' });
+    }
+
+    const queued: string[] = [];
+    const skipped: string[] = [];
+
+    for (const notification of notifications) {
+      const phoneNumber = notification.guardian?.whatsapp || notification.guardian?.phone || notification.guardian?.altPhone;
+      if (!phoneNumber) {
+        skipped.push(notification.id);
+        await prisma.notification.update({
+          where: { id: notification.id },
+          data: {
+            status: 'FAILED',
+            failureReason: 'No valid WhatsApp number available for retry',
+          },
+        });
+        continue;
+      }
+
+      const messageBody = String(notification.body || notification.title || 'SchoolBase notification');
+      const queuedDelivery = await whatsappDeliveryStore.upsertSchoolDelivery({
+        schoolId,
+        event: String(notification.type || 'NotificationRetry'),
+        guardianId: notification.guardianId,
+        recipientAddress: phoneNumber,
+        recipientName: `${notification.guardian.firstName} ${notification.guardian.lastName}`.trim() || 'Guardian',
+        messageBody,
+        status: 'QUEUED',
+        provider: 'baileys',
+        attemptCount: 0,
+        nextAttemptAt: new Date(Date.now() + 2_000),
+      });
+
+      await prisma.notification.update({
+        where: { id: notification.id },
+        data: {
+          status: 'PENDING',
+          failureReason: `Queued for background retry via WhatsApp worker${queuedDelivery?.id ? ` (${queuedDelivery.id})` : ''}`,
+          sentAt: null,
+        },
+      });
+
+      queued.push(notification.id);
+    }
+
+    return res.json({
+      success: true,
+      queuedCount: queued.length,
+      skippedCount: skipped.length,
+      queued,
+      skipped,
+      message: 'Selected failed WhatsApp notifications were queued for graceful background retry and policy-safe delivery.',
+    });
+  } catch (error) {
+    console.error('Error queueing failed WhatsApp notifications:', error);
+    res.status(500).json({ error: 'Failed to queue selected WhatsApp notifications for retry' });
   }
 });
 

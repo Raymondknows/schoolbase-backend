@@ -63,36 +63,17 @@ const sharedDriverManager = new DriverManager({
         recipientAddress: recipient.address,
         recipientName: recipient.name,
         messageBody: message,
-        status: 'SENDING',
+        status: 'QUEUED',
         provider: 'baileys',
         attemptCount: 1,
+        nextAttemptAt: new Date(Date.now() + 1_500),
       });
       deliveryId = delivery?.id;
     } catch (auditError) {
       console.warn('[result-pins] Could not create durable WhatsApp delivery record:', auditError);
     }
 
-    const result = await baileysSessionManager.sendTextMessage(schoolId, recipient.address, message) as { success: boolean; messageId?: string; error?: string };
-
-    if (deliveryId) {
-      try {
-        await whatsappDeliveryStore.updateById(deliveryId, {
-          status: result.success ? 'SENT' : 'FAILED',
-          providerMessageId: result.messageId ?? null,
-          lastError: result.success ? null : result.error ?? null,
-          sentAt: result.success ? new Date() : null,
-          nextAttemptAt: new Date(),
-        });
-      } catch (auditError) {
-        console.warn('[result-pins] Could not update durable WhatsApp delivery record:', auditError);
-      }
-    }
-
-    if (!result.success) {
-      return { channel: 'WHATSAPP', recipient: recipient.address, status: 'FAILED', provider: 'baileys', error: result.error } as const;
-    }
-
-    return { channel: 'WHATSAPP', recipient: recipient.address, status: 'SENT', provider: 'baileys', messageId: result.messageId } as const;
+    return { channel: 'WHATSAPP', recipient: recipient.address, status: 'QUEUED', provider: 'baileys', messageId: deliveryId ?? undefined } as const;
   }),
 });
 

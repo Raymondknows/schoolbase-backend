@@ -21,11 +21,68 @@ export interface DeliveryWorkerResult {
   remaining: number;
 }
 
+export async function collectQueuedSchoolIds(prisma: PrismaClient): Promise<string[]> {
+  const rows = await prisma.whatsAppDelivery.findMany({
+    where: { status: 'QUEUED' },
+    select: { schoolId: true },
+    distinct: ['schoolId'],
+  });
+
+  return [...new Set(rows.map((row) => String(row.schoolId || '').trim()).filter(Boolean))];
+}
+
 export class WhatsAppDeliveryWorker {
+  private pollTimer: NodeJS.Timeout | null = null;
+  private schoolsInFlight = new Set<string>();
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly rateLimiter: SchoolWhatsAppRateLimiter = new SchoolWhatsAppRateLimiter(),
   ) {}
+
+  startPolling(
+    sender: (delivery: DurablyQueuedDelivery) => Promise<{ success: boolean; providerMessageId?: string; error?: string }>,
+    options: { intervalMs?: number } = {},
+  ): NodeJS.Timeout {
+    const intervalMs = options.intervalMs ?? 5_000;
+    if (this.pollTimer) {
+      return this.pollTimer;
+    }
+
+    void this.pollQueuedSchools(sender);
+    this.pollTimer = setInterval(() => {
+      void this.pollQueuedSchools(sender);
+    }, intervalMs);
+    this.pollTimer.unref?.();
+    return this.pollTimer;
+  }
+
+  stopPolling() {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
+  async pollQueuedSchools(
+    sender: (delivery: DurablyQueuedDelivery) => Promise<{ success: boolean; providerMessageId?: string; error?: string }>,
+  ) {
+    const queuedSchools = await collectQueuedSchoolIds(this.prisma);
+    for (const schoolId of queuedSchools) {
+      if (this.schoolsInFlight.has(schoolId)) {
+        continue;
+      }
+
+      this.schoolsInFlight.add(schoolId);
+      try {
+        await this.processSchoolQueue(schoolId, sender);
+      } catch (error) {
+        console.error(`[whatsapp-worker] Failed to process queued school ${schoolId}:`, error);
+      } finally {
+        this.schoolsInFlight.delete(schoolId);
+      }
+    }
+  }
 
   async processSchoolQueue(
     schoolId: string,
@@ -70,10 +127,11 @@ export class WhatsAppDeliveryWorker {
 
       processed += 1;
 
+      const nextStatus = outcome.success ? 'SENT' : 'FAILED';
       await this.prisma.whatsAppDelivery.update({
         where: { id: delivery.id },
         data: {
-          status: outcome.success ? 'SENT' : 'FAILED',
+          status: nextStatus,
           provider: outcome.providerMessageId ? 'baileys' : undefined,
           providerMessageId: outcome.providerMessageId ?? undefined,
           attemptCount: delivery.attemptCount + 1,
@@ -82,6 +140,30 @@ export class WhatsAppDeliveryWorker {
           nextAttemptAt: new Date(Date.now() + 30_000),
         },
       });
+
+      if (delivery.guardianId) {
+        const matchingNotifications = await this.prisma.notification.findMany({
+          where: {
+            schoolId: normalizedSchoolId,
+            guardianId: delivery.guardianId,
+            channel: 'WHATSAPP',
+            status: 'PENDING',
+            body: delivery.messagePreview || '',
+          },
+          select: { id: true },
+        });
+
+        for (const notification of matchingNotifications) {
+          await this.prisma.notification.update({
+            where: { id: notification.id },
+            data: {
+              status: outcome.success ? 'SENT' : 'FAILED',
+              sentAt: outcome.success ? new Date() : undefined,
+              failureReason: outcome.success ? null : outcome.error ?? 'Queued retry failed',
+            },
+          });
+        }
+      }
     }
 
     let remaining = 0;

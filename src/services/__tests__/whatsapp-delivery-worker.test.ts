@@ -1,7 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WhatsAppDeliveryWorker } from '../whatsapp-delivery-worker.js';
+import { collectQueuedSchoolIds, WhatsAppDeliveryWorker } from '../whatsapp-delivery-worker.js';
 import { SchoolWhatsAppRateLimiter } from '../whatsapp-rate-limiter.js';
+
+test('collectQueuedSchoolIds finds every school with queued WhatsApp jobs', async () => {
+  const records = [
+    { schoolId: 'school-a', status: 'QUEUED' },
+    { schoolId: 'school-a', status: 'QUEUED' },
+    { schoolId: 'school-b', status: 'QUEUED' },
+    { schoolId: 'school-c', status: 'SENT' },
+  ];
+
+  const prisma = {
+    whatsAppDelivery: {
+      findMany: async ({ where }: any) => {
+        return records.filter((record) => where?.status ? record.status === where.status : true);
+      },
+    },
+  } as any;
+
+  const schools = await collectQueuedSchoolIds(prisma);
+  assert.deepEqual(schools.sort(), ['school-a', 'school-b']);
+});
 
 test('delivery worker only processes pending jobs for the selected school', async () => {
   const records = [

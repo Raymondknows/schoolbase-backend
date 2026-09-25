@@ -13,6 +13,7 @@ import { normalizeAdmissionStatus } from './admissions-utils.js';
 import { getConfiguredPaymentPlans, getPublicPaymentPlans } from '../services/platform-settings.js';
 import { getActivePlacementAds, isValidLandingUrl, normalizePlacementType } from './ads-utils.js';
 import { sendAdvertiserApplicationNotification, sendAdvertiserStatusEmail } from '../services/email.js';
+import { whatsappDeliveryStore } from '../services/whatsapp-delivery-store.js';
 
 type PublicAdmissionsSchool = {
   id: string;
@@ -236,24 +237,25 @@ const publicSharedDriverManager = new DriverManager({
   }),
   WHATSAPP: new WhatsAppDriver(async ({ recipient, request, content }) => {
     const schoolId = request.schoolId ?? '';
-    const result = await baileysSessionManager.sendTextMessage(schoolId, recipient.address, content.body) as { success: boolean; messageId?: string; error?: string };
-
-    if (!result.success) {
-      return {
-        channel: 'WHATSAPP',
-        recipient: recipient.address,
-        status: 'FAILED',
-        provider: 'baileys',
-        error: result.error,
-      } as const;
-    }
+    const delivery = await whatsappDeliveryStore.upsertSchoolDelivery({
+      schoolId,
+      event: request.event,
+      guardianId: typeof request.metadata?.guardianId === 'string' ? request.metadata.guardianId : null,
+      recipientAddress: recipient.address,
+      recipientName: recipient.name,
+      messageBody: content.body,
+      status: 'QUEUED',
+      provider: 'baileys',
+      attemptCount: 1,
+      nextAttemptAt: new Date(Date.now() + 1_500),
+    });
 
     return {
       channel: 'WHATSAPP',
       recipient: recipient.address,
-      status: 'SENT',
+      status: 'QUEUED',
       provider: 'baileys',
-      messageId: result.messageId,
+      messageId: delivery?.id ?? undefined,
     } as const;
   }),
 });
