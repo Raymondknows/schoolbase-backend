@@ -5313,7 +5313,7 @@ router.post('/support', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Subject and message are required' });
     }
 
-    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { id: true, name: true, country: true } });
+    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { id: true, name: true, country: true, email: true } });
 
     const supportRequest = await prisma.$transaction(async (tx) => {
       const createdRequest = await tx.supportRequest.create({
@@ -5338,6 +5338,21 @@ router.post('/support', async (req: Request, res: Response) => {
 
       return createdRequest;
     });
+
+    try {
+      const { sendSupportRequestNotification } = await import('../services/email.js');
+      sendSupportRequestNotification(
+        supportRequest.id,
+        supportRequest.subject,
+        supportRequest.message,
+        school?.name,
+        school?.email,
+      )
+        .then(() => console.log('Support request notification queued'))
+        .catch((err) => console.warn('Support request notification failed (non-blocking):', err));
+    } catch (err) {
+      console.warn('Could not import email service for support request notification:', err);
+    }
 
     res.status(201).json({ 
       supportRequest: {
