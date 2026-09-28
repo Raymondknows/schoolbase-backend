@@ -109,7 +109,7 @@ router.get('/admin/timetable', verifyAuth, requireAdmin, async (req, res) => {
     if (req.query.termId) where.termId = String(req.query.termId);
     if (req.query.status) where.status = String(req.query.status);
 
-    const [configs, classes, subjects, teachers, academicYears] = await Promise.all([
+    const [configs, classes, subjects, teachers, academicYears, teacherClasses, teacherSubjects, subjectClasses] = await Promise.all([
       prisma.timetableConfig.findMany({
       where,
       include: timetableInclude,
@@ -119,8 +119,11 @@ router.get('/admin/timetable', verifyAuth, requireAdmin, async (req, res) => {
       prisma.subject.findMany({ where: { schoolId }, orderBy: { name: 'asc' } }),
       prisma.user.findMany({ where: { schoolId, role: 'TEACHER' }, select: { id: true, name: true, email: true }, orderBy: { name: 'asc' } }),
       prisma.academicYear.findMany({ where: { schoolId }, select: { id: true, name: true, isCurrent: true }, orderBy: { createdAt: 'desc' } }),
+      prisma.teacherClass.findMany({ where: { schoolId }, select: { teacherId: true, classId: true } }),
+      prisma.teacherSubject.findMany({ where: { schoolId }, select: { teacherId: true, subjectId: true } }),
+      prisma.subjectClass.findMany({ where: { schoolId }, select: { classId: true, subjectId: true } }),
     ]);
-    res.json({ configs, classes, subjects, teachers, academicYears });
+    res.json({ configs, classes, subjects, teachers, academicYears, teacherClasses, teacherSubjects, subjectClasses });
   } catch (error) {
     console.error('Error fetching admin timetable:', error);
     res.status(500).json({ error: 'Failed to fetch timetable.' });
@@ -221,6 +224,61 @@ router.post('/admin/timetable/configs/:configId/periods', verifyAuth, requireAdm
 router.post('/admin/timetable/configs/:configId/entries', verifyAuth, requireAdmin, async (req, res) => {
   try {
     const schoolId = schoolIdFromRequest(req);
+    if (Array.isArray(req.body?.assignments)) {
+      const config = await getConfig(schoolId, req.params.configId);
+      if (!config) return res.status(404).json({ error: 'Timetable configuration not found.' });
+      if (config.status === 'PUBLISHED') return res.status(409).json({ error: 'Return the timetable to draft before adding lessons.' });
+
+      const assignments = req.body.assignments;
+      if (!assignments.length) return res.status(400).json({ error: 'At least one lesson assignment is required.' });
+
+      const validated = await Promise.all(assignments.map((assignment: any) =>
+        validateEntry(schoolId, req.params.configId, {
+          ...assignment,
+          periodId: assignment.periodId || req.body.periodId,
+          room: assignment.room ?? req.body.room,
+        }),
+      ));
+      const validationErrors = validated.flatMap((result: any, index: number) =>
+        result.error ? [{ assignment: index + 1, message: result.message || result.error, conflicts: result.conflicts || [] }] : [],
+      );
+      const conflicts = validated.flatMap((result: any) => result.conflicts || []);
+
+      for (let index = 0; index < validated.length; index += 1) {
+        const current = validated[index]?.data;
+        if (!current) continue;
+        for (let previousIndex = 0; previousIndex < index; previousIndex += 1) {
+          const previous = validated[previousIndex]?.data;
+          if (!previous || current.periodId !== previous.periodId) continue;
+          if (current.classId === previous.classId) {
+            conflicts.push({ type: 'CLASS', message: `Assignments ${previousIndex + 1} and ${index + 1} use the same class in this period.` });
+          }
+          if (current.teacherId === previous.teacherId) {
+            conflicts.push({ type: 'TEACHER', message: `Assignments ${previousIndex + 1} and ${index + 1} assign the same teacher in this period.` });
+          }
+          if (current.room && previous.room && current.room.toLowerCase() === previous.room.toLowerCase()) {
+            conflicts.push({ type: 'ROOM', message: `Assignments ${previousIndex + 1} and ${index + 1} use the same room in this period.` });
+          }
+        }
+      }
+
+      if (validationErrors.length || conflicts.length) {
+        const details = [...validationErrors.map((item: any) => item.message), ...conflicts.map((item: any) => item.message)];
+        return res.status(conflicts.length ? 409 : 400).json({
+          error: conflicts.length ? 'TIMETABLE_CONFLICT' : 'INVALID_ASSIGNMENTS',
+          message: `No lessons were saved. ${details.join(' ')}`,
+          conflicts,
+        });
+      }
+
+      const entries = await prisma.$transaction(validated.map((result: any) =>
+        prisma.timetableEntry.create({
+          data: { ...result.data, configId: req.params.configId, schoolId },
+        }),
+      ));
+      return res.status(201).json({ entries });
+    }
+
     const result = await validateEntry(schoolId, req.params.configId, req.body || {});
     if (result.error) return res.status(result.error === 'TIMETABLE_CONFLICT' ? 409 : 400).json(result);
     const entry = await prisma.timetableEntry.create({ data: { ...result.data, configId: req.params.configId, schoolId } });
@@ -238,6 +296,54 @@ router.patch('/admin/timetable/entries/:entryId', verifyAuth, requireAdmin, asyn
     if (!current) return res.status(404).json({ error: 'Timetable entry not found.' });
     const currentConfig = await getConfig(schoolId, current.configId);
     if (currentConfig?.status === 'PUBLISHED') return res.status(409).json({ error: 'Return the timetable to draft before editing lessons.' });
+
+    if (Array.isArray(req.body?.assignments)) {
+      const assignments = req.body.assignments;
+      if (!assignments.length) return res.status(400).json({ error: 'At least one lesson assignment is required.' });
+
+      const validated = await Promise.all(assignments.map((assignment: any, index: number) =>
+        validateEntry(schoolId, current.configId, {
+          ...assignment,
+          periodId: assignment.periodId || req.body.periodId,
+          room: assignment.room ?? req.body.room,
+        }, index === 0 ? current.id : undefined),
+      ));
+      const validationErrors = validated.flatMap((result: any, index: number) =>
+        result.error ? [{ assignment: index + 1, message: result.message || result.error }] : [],
+      );
+      const conflicts = validated.flatMap((result: any) => result.conflicts || []);
+
+      for (let index = 0; index < validated.length; index += 1) {
+        const lesson = validated[index]?.data;
+        if (!lesson) continue;
+        for (let previousIndex = 0; previousIndex < index; previousIndex += 1) {
+          const previous = validated[previousIndex]?.data;
+          if (!previous || lesson.periodId !== previous.periodId) continue;
+          if (lesson.classId === previous.classId) conflicts.push({ type: 'CLASS', message: `Assignments ${previousIndex + 1} and ${index + 1} use the same class in this period.` });
+          if (lesson.teacherId === previous.teacherId) conflicts.push({ type: 'TEACHER', message: `Assignments ${previousIndex + 1} and ${index + 1} assign the same teacher in this period.` });
+          if (lesson.room && previous.room && lesson.room.toLowerCase() === previous.room.toLowerCase()) conflicts.push({ type: 'ROOM', message: `Assignments ${previousIndex + 1} and ${index + 1} use the same room in this period.` });
+        }
+      }
+
+      if (validationErrors.length || conflicts.length) {
+        const details = [...validationErrors.map((item: any) => item.message), ...conflicts.map((item: any) => item.message)];
+        return res.status(conflicts.length ? 409 : 400).json({
+          error: conflicts.length ? 'TIMETABLE_CONFLICT' : 'INVALID_ASSIGNMENTS',
+          message: `No lessons were saved. ${details.join(' ')}`,
+          conflicts,
+        });
+      }
+
+      const saved = await prisma.$transaction(async (transaction) => {
+        const entry = await transaction.timetableEntry.update({ where: { id: current.id }, data: validated[0].data });
+        const repeatedEntries = await Promise.all(validated.slice(1).map((result: any) =>
+          transaction.timetableEntry.create({ data: { ...result.data, configId: current.configId, schoolId } }),
+        ));
+        return { entry, entries: [entry, ...repeatedEntries] };
+      });
+      return res.json(saved);
+    }
+
     const result = await validateEntry(schoolId, current.configId, { ...current, ...req.body }, current.id);
     if (result.error) return res.status(result.error === 'TIMETABLE_CONFLICT' ? 409 : 400).json(result);
     const entry = await prisma.timetableEntry.update({ where: { id: current.id }, data: result.data });
