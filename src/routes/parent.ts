@@ -5,6 +5,7 @@ import { recordActivity } from '../middleware/activityAudit.js';
 import bcrypt from 'bcryptjs';
 import { resolveSupportedCurrency } from '../services/currency.js';
 import { getSessionSecret } from '../services/security-config.js';
+import { verifyAuth, type AuthenticatedRequest } from '../middleware/roleAuth.js';
 
 const router = Router();
 const prisma = new PrismaClient() as PrismaClient & {
@@ -461,6 +462,75 @@ router.get('/children', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error loading children:', error);
     res.status(500).json({ error: 'Failed to load children' });
+  }
+});
+
+router.get('/children/:id/timetable', verifyAuth, async (req: Request, res: Response) => {
+  try {
+    const session = (req as AuthenticatedRequest).user as (AuthenticatedRequest['user'] & {
+      guardianId?: string;
+      guardianIds?: string[];
+      phone?: string;
+    }) | undefined;
+    if (!session?.guardianId) return res.status(403).json({ error: 'Parent access required' });
+
+    const family = await resolveParentFamily(session);
+    const childId = req.params.id;
+    if (!family.pupilIds.includes(childId)) {
+      return res.status(403).json({ error: 'Unauthorized access to this child' });
+    }
+
+    const pupil = await prisma.pupil.findFirst({
+      where: { id: childId, schoolId: family.schoolId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        classId: true,
+        class: { select: { name: true, arm: true } },
+      },
+    });
+    if (!pupil) return res.status(404).json({ error: 'Student not found' });
+    if (!pupil.classId) {
+      return res.json({ child: pupil, timetable: null, entries: [] });
+    }
+
+    const config = await prisma.timetableConfig.findFirst({
+      where: {
+        schoolId: family.schoolId,
+        status: 'PUBLISHED',
+        academicYear: { isCurrent: true },
+      },
+      include: {
+        academicYear: { select: { name: true } },
+        term: { select: { name: true } },
+        entries: {
+          where: { schoolId: family.schoolId, classId: pupil.classId },
+          include: {
+            period: true,
+            subject: { select: { name: true } },
+            teacher: { select: { name: true } },
+          },
+          orderBy: [{ period: { dayOfWeek: 'asc' } }, { period: { sortOrder: 'asc' } }],
+        },
+      },
+      orderBy: { publishedAt: 'desc' },
+    });
+
+    if (!config) return res.json({ child: pupil, timetable: null, entries: [] });
+    return res.json({
+      child: pupil,
+      timetable: {
+        name: config.name,
+        academicYear: config.academicYear.name,
+        term: config.term?.name || null,
+        publishedAt: config.publishedAt,
+      },
+      entries: config.entries,
+    });
+  } catch (error) {
+    console.error('Error loading parent timetable:', error);
+    return res.status(500).json({ error: 'Failed to load child timetable' });
   }
 });
 
