@@ -492,7 +492,7 @@ router.get('/children/:id/timetable', verifyAuth, async (req: Request, res: Resp
     });
     if (!pupil) return res.status(404).json({ error: 'Student not found' });
     if (!pupil.classId) {
-      return res.json({ child: pupil, timetable: null, entries: [] });
+      return res.json({ child: pupil, timetable: null, periods: [], entries: [] });
     }
 
     const config = await prisma.timetableConfig.findFirst({
@@ -504,6 +504,7 @@ router.get('/children/:id/timetable', verifyAuth, async (req: Request, res: Resp
       include: {
         academicYear: { select: { name: true } },
         term: { select: { name: true } },
+        periods: { orderBy: [{ dayOfWeek: 'asc' }, { sortOrder: 'asc' }] },
         entries: {
           where: { schoolId: family.schoolId, classId: pupil.classId },
           include: {
@@ -517,7 +518,7 @@ router.get('/children/:id/timetable', verifyAuth, async (req: Request, res: Resp
       orderBy: { publishedAt: 'desc' },
     });
 
-    if (!config) return res.json({ child: pupil, timetable: null, entries: [] });
+    if (!config) return res.json({ child: pupil, timetable: null, periods: [], entries: [] });
     return res.json({
       child: pupil,
       timetable: {
@@ -526,6 +527,7 @@ router.get('/children/:id/timetable', verifyAuth, async (req: Request, res: Resp
         term: config.term?.name || null,
         publishedAt: config.publishedAt,
       },
+      periods: config.periods,
       entries: config.entries,
     });
   } catch (error) {
