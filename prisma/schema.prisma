@@ -126,6 +126,8 @@ model School {
   resultAccessAllowRegeneration Boolean           @default(false)
   timetableConfigs              TimetableConfig[]
   timetableEntries              TimetableEntry[]
+  activities                    SchoolActivity[]
+  scheduledActivities            ScheduledActivity[]
 
   @@index([partnerId], map: "School_partnerId_fkey")
 }
@@ -195,6 +197,7 @@ model TimetableConfig {
   term           Term?             @relation(fields: [termId], references: [id], onDelete: SetNull)
   periods        TimetablePeriod[]
   entries        TimetableEntry[]
+  scheduledActivities ScheduledActivity[]
 
   @@index([schoolId, academicYearId])
   @@index([termId])
@@ -212,6 +215,7 @@ model TimetablePeriod {
   updatedAt DateTime         @updatedAt
   config    TimetableConfig  @relation(fields: [configId], references: [id], onDelete: Cascade)
   entries   TimetableEntry[]
+  scheduledActivities ScheduledActivity[]
 
   @@unique([configId, dayOfWeek, sortOrder])
   @@index([configId, dayOfWeek])
@@ -240,6 +244,58 @@ model TimetableEntry {
   @@index([classId, periodId])
   @@index([teacherId, periodId])
   @@index([room, periodId])
+}
+
+model SchoolActivity {
+  id                 String               @id @default(cuid())
+  schoolId           String
+  name               String
+  category           String               @default("GENERAL")
+  description        String?              @db.Text
+  isActive           Boolean              @default(true)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  school             School               @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  scheduledActivities ScheduledActivity[]
+
+  @@index([schoolId, isActive])
+}
+
+model ScheduledActivity {
+  id           String                    @id @default(cuid())
+  schoolId     String
+  configId     String
+  periodId     String
+  activityId   String
+  audienceType ActivityAudience          @default(SCHOOL)
+  location     String?
+  notes        String?                   @db.Text
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+  school       School                    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  config       TimetableConfig           @relation(fields: [configId], references: [id], onDelete: Cascade)
+  period       TimetablePeriod           @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  activity     SchoolActivity            @relation(fields: [activityId], references: [id], onDelete: Restrict)
+  classes      ScheduledActivityClass[]
+
+  @@index([schoolId, configId])
+  @@index([periodId])
+  @@index([activityId])
+}
+
+model ScheduledActivityClass {
+  scheduledActivityId String
+  classId             String
+  scheduledActivity   ScheduledActivity @relation(fields: [scheduledActivityId], references: [id], onDelete: Cascade)
+  class               Class             @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@id([scheduledActivityId, classId])
+  @@index([classId])
+}
+
+enum ActivityAudience {
+  SCHOOL
+  CLASSES
 }
 
 enum TimetableStatus {
@@ -310,6 +366,7 @@ model Class {
   assessments            Assessment[]
   results                Result[]
   timetableEntries       TimetableEntry[]
+  scheduledActivityLinks ScheduledActivityClass[]
   historicalTermTotals   HistoricalTermTotal[]
 
   @@index([schoolId], map: "Class_schoolId_fkey")

@@ -514,6 +514,17 @@ router.get('/children/:id/timetable', verifyAuth, async (req: Request, res: Resp
           },
           orderBy: [{ period: { dayOfWeek: 'asc' } }, { period: { sortOrder: 'asc' } }],
         },
+        scheduledActivities: {
+          where: {
+            schoolId: family.schoolId,
+            OR: [
+              { audienceType: 'SCHOOL' },
+              { audienceType: 'CLASSES', classes: { some: { classId: pupil.classId } } },
+            ],
+          },
+          include: { activity: true, period: true },
+          orderBy: [{ period: { dayOfWeek: 'asc' } }, { period: { sortOrder: 'asc' } }],
+        },
       },
       orderBy: { publishedAt: 'desc' },
     });

@@ -19,6 +19,14 @@ const timetableInclude = {
     },
     orderBy: [{ period: { dayOfWeek: 'asc' } }, { period: { sortOrder: 'asc' } }],
   },
+  scheduledActivities: {
+    include: {
+      activity: true,
+      period: true,
+      classes: { include: { class: { select: { id: true, name: true, arm: true } } } },
+    },
+    orderBy: [{ period: { dayOfWeek: 'asc' } }, { period: { sortOrder: 'asc' } }],
+  },
 };
 
 function schoolIdFromRequest(req: any) {
@@ -36,6 +44,140 @@ function conflict(message: string, conflicts: any[] = []) {
 async function getConfig(schoolId: string, configId: string) {
   return prisma.timetableConfig.findFirst({ where: { id: configId, schoolId } });
 }
+
+router.get('/admin/activities', verifyAuth, requireAdmin, async (req, res) => {
+  try {
+    const schoolId = schoolIdFromRequest(req);
+    const activities = await prisma.schoolActivity.findMany({
+      where: { schoolId },
+      include: { _count: { select: { scheduledActivities: true } } },
+      orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
+    });
+    res.json({ activities });
+  } catch (error) {
+    console.error('Error fetching school activities:', error);
+    res.status(500).json({ error: 'Failed to fetch activities.' });
+  }
+});
+
+router.post('/admin/activities', verifyAuth, requireAdmin, async (req, res) => {
+  try {
+    const schoolId = schoolIdFromRequest(req);
+    const name = requiredString(req.body?.name);
+    if (!name) return res.status(400).json({ error: 'Activity name is required.' });
+    const activity = await prisma.schoolActivity.create({
+      data: {
+        schoolId,
+        name,
+        category: requiredString(req.body?.category) || 'GENERAL',
+        description: requiredString(req.body?.description),
+      },
+    });
+    res.status(201).json({ activity });
+  } catch (error) {
+    console.error('Error creating school activity:', error);
+    res.status(500).json({ error: 'Failed to create activity.' });
+  }
+});
+
+router.patch('/admin/activities/:activityId', verifyAuth, requireAdmin, async (req, res) => {
+  try {
+    const schoolId = schoolIdFromRequest(req);
+    const current = await prisma.schoolActivity.findFirst({
+      where: { id: req.params.activityId, schoolId },
+    });
+    if (!current) return res.status(404).json({ error: 'Activity not found.' });
+    const name = req.body?.name === undefined ? undefined : requiredString(req.body.name);
+    if (req.body?.name !== undefined && !name) {
+      return res.status(400).json({ error: 'Activity name cannot be empty.' });
+    }
+    const activity = await prisma.schoolActivity.update({
+      where: { id: current.id },
+      data: {
+        ...(name !== undefined ? { name } : {}),
+        ...(req.body?.category !== undefined ? { category: requiredString(req.body.category) || 'GENERAL' } : {}),
+        ...(req.body?.description !== undefined ? { description: requiredString(req.body.description) } : {}),
+        ...(req.body?.isActive !== undefined ? { isActive: Boolean(req.body.isActive) } : {}),
+      },
+    });
+    res.json({ activity });
+  } catch (error) {
+    console.error('Error updating school activity:', error);
+    res.status(500).json({ error: 'Failed to update activity.' });
+  }
+});
+
+router.post('/admin/timetable/configs/:configId/activities', verifyAuth, requireAdmin, async (req, res) => {
+  try {
+    const schoolId = schoolIdFromRequest(req);
+    const config = await getConfig(schoolId, req.params.configId);
+    if (!config) return res.status(404).json({ error: 'Timetable configuration not found.' });
+    if (config.status === 'PUBLISHED') return res.status(409).json({ error: 'Return the timetable to draft before adding activities.' });
+
+    const activityId = requiredString(req.body?.activityId);
+    const periodId = requiredString(req.body?.periodId);
+    const audienceType = req.body?.audienceType === 'CLASSES' ? 'CLASSES' : 'SCHOOL';
+    const classIds = Array.isArray(req.body?.classIds)
+      ? Array.from(new Set(req.body.classIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)))
+      : [];
+    if (!activityId || !periodId) return res.status(400).json({ error: 'Activity and timetable period are required.' });
+    if (audienceType === 'CLASSES' && classIds.length === 0) {
+      return res.status(400).json({ error: 'Select at least one class for this activity.' });
+    }
+
+    const [activity, period, classes] = await Promise.all([
+      prisma.schoolActivity.findFirst({ where: { id: activityId, schoolId, isActive: true } }),
+      prisma.timetablePeriod.findFirst({ where: { id: periodId, configId: config.id } }),
+      audienceType === 'CLASSES'
+        ? prisma.class.findMany({ where: { id: { in: classIds }, schoolId }, select: { id: true } })
+        : Promise.resolve([]),
+    ]);
+    if (!activity) return res.status(404).json({ error: 'Active school activity not found.' });
+    if (!period) return res.status(404).json({ error: 'Timetable period not found.' });
+    if (audienceType === 'CLASSES' && classes.length !== classIds.length) {
+      return res.status(400).json({ error: 'One or more selected classes are unavailable.' });
+    }
+
+    const scheduledActivity = await prisma.scheduledActivity.create({
+      data: {
+        schoolId,
+        configId: config.id,
+        periodId,
+        activityId,
+        audienceType,
+        location: requiredString(req.body?.location),
+        notes: requiredString(req.body?.notes),
+        classes: audienceType === 'CLASSES'
+          ? { create: classIds.map((classId: string) => ({ classId })) }
+          : undefined,
+      },
+      include: timetableInclude.scheduledActivities.include,
+    });
+    res.status(201).json({ scheduledActivity });
+  } catch (error) {
+    console.error('Error scheduling activity:', error);
+    res.status(500).json({ error: 'Failed to schedule activity.' });
+  }
+});
+
+router.delete('/admin/timetable/activities/:scheduledActivityId', verifyAuth, requireAdmin, async (req, res) => {
+  try {
+    const schoolId = schoolIdFromRequest(req);
+    const scheduledActivity = await prisma.scheduledActivity.findFirst({
+      where: { id: req.params.scheduledActivityId, schoolId },
+      include: { config: true },
+    });
+    if (!scheduledActivity) return res.status(404).json({ error: 'Scheduled activity not found.' });
+    if (scheduledActivity.config.status === 'PUBLISHED') {
+      return res.status(409).json({ error: 'Return the timetable to draft before removing activities.' });
+    }
+    await prisma.scheduledActivity.delete({ where: { id: scheduledActivity.id } });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error removing scheduled activity:', error);
+    res.status(500).json({ error: 'Failed to remove scheduled activity.' });
+  }
+});
 
 async function validateEntry(schoolId: string, configId: string, data: any, excludeEntryId?: string) {
   const classId = requiredString(data.classId);
@@ -109,7 +251,7 @@ router.get('/admin/timetable', verifyAuth, requireAdmin, async (req, res) => {
     if (req.query.termId) where.termId = String(req.query.termId);
     if (req.query.status) where.status = String(req.query.status);
 
-    const [configs, classes, subjects, teachers, academicYears, teacherClasses, teacherSubjects, subjectClasses] = await Promise.all([
+    const [configs, classes, subjects, teachers, academicYears, teacherClasses, teacherSubjects, subjectClasses, activities] = await Promise.all([
       prisma.timetableConfig.findMany({
       where,
       include: timetableInclude,
@@ -122,8 +264,9 @@ router.get('/admin/timetable', verifyAuth, requireAdmin, async (req, res) => {
       prisma.teacherClass.findMany({ where: { schoolId }, select: { teacherId: true, classId: true } }),
       prisma.teacherSubject.findMany({ where: { schoolId }, select: { teacherId: true, subjectId: true } }),
       prisma.subjectClass.findMany({ where: { schoolId }, select: { classId: true, subjectId: true } }),
+      prisma.schoolActivity.findMany({ where: { schoolId, isActive: true }, orderBy: { name: 'asc' } }),
     ]);
-    res.json({ configs, classes, subjects, teachers, academicYears, teacherClasses, teacherSubjects, subjectClasses });
+    res.json({ configs, classes, subjects, teachers, academicYears, teacherClasses, teacherSubjects, subjectClasses, activities });
   } catch (error) {
     console.error('Error fetching admin timetable:', error);
     res.status(500).json({ error: 'Failed to fetch timetable.' });
@@ -198,8 +341,11 @@ router.post('/admin/timetable/configs/:configId/periods', verifyAuth, requireAdm
     const incomingIds = new Set(normalized.flatMap((period) => period.id ? [period.id] : []));
     const removedIds = existingPeriods.map((period) => period.id).filter((id) => !incomingIds.has(id));
     if (removedIds.length) {
-      const entries = await prisma.timetableEntry.count({ where: { configId: config.id, periodId: { in: removedIds } } });
-      if (entries) return res.status(409).json({ error: 'Move or remove lessons assigned to a period before deleting it.' });
+      const [entries, activities] = await Promise.all([
+        prisma.timetableEntry.count({ where: { configId: config.id, periodId: { in: removedIds } } }),
+        prisma.scheduledActivity.count({ where: { configId: config.id, periodId: { in: removedIds } } }),
+      ]);
+      if (entries || activities) return res.status(409).json({ error: 'Move or remove scheduled lessons and activities before deleting a period.' });
     }
 
     await prisma.$transaction(async (transaction) => {
@@ -415,9 +561,9 @@ router.post('/admin/timetable/configs/:configId/archive', verifyAuth, requireAdm
 router.post('/admin/timetable/configs/:configId/publish', verifyAuth, requireAdmin, async (req, res) => {
   try {
     const schoolId = schoolIdFromRequest(req);
-    const config = await prisma.timetableConfig.findFirst({ where: { id: req.params.configId, schoolId }, include: { entries: true, periods: true } });
+    const config = await prisma.timetableConfig.findFirst({ where: { id: req.params.configId, schoolId }, include: { entries: true, scheduledActivities: true, periods: true } });
     if (!config) return res.status(404).json({ error: 'Timetable configuration not found.' });
-    if (!config.periods.length || !config.entries.length) return res.status(400).json({ error: 'Add periods and at least one lesson before publishing.' });
+    if (!config.periods.length || (!config.entries.length && !config.scheduledActivities.length)) return res.status(400).json({ error: 'Add periods and at least one lesson or activity before publishing.' });
 
     const entryConflicts = [];
     const seen = new Map();
@@ -446,12 +592,31 @@ router.post('/admin/timetable/configs/:configId/publish', verifyAuth, requireAdm
 router.get('/teacher/timetable', verifyAuth, requireTeacher, async (req, res) => {
   try {
     const schoolId = schoolIdFromRequest(req);
-    const where: any = { schoolId, status: 'PUBLISHED', entries: { some: { teacherId: String(req.user.userId) } } };
+    const teacherClasses = await prisma.teacherClass.findMany({
+      where: { schoolId, teacherId: String(req.user.userId) },
+      select: { classId: true },
+    });
+    const classIds = teacherClasses.map((item) => item.classId);
+    const where: any = {
+      schoolId,
+      status: 'PUBLISHED',
+      OR: [
+        { entries: { some: { teacherId: String(req.user.userId) } } },
+        { scheduledActivities: { some: { audienceType: 'SCHOOL' } } },
+        ...(classIds.length ? [{ scheduledActivities: { some: { audienceType: 'CLASSES', classes: { some: { classId: { in: classIds } } } } } }] : []),
+      ],
+    };
     if (req.query.configId) where.id = String(req.query.configId);
     if (req.query.academicYearId) where.academicYearId = String(req.query.academicYearId);
     if (req.query.termId) where.termId = String(req.query.termId);
     const configs = await prisma.timetableConfig.findMany({ where, include: timetableInclude, orderBy: { publishedAt: 'desc' } });
-    res.json({ configs: configs.map((config) => ({ ...config, entries: config.entries.filter((entry) => entry.teacherId === String(req.user.userId)) })) });
+    res.json({ configs: configs.map((config) => ({
+      ...config,
+      entries: config.entries.filter((entry) => entry.teacherId === String(req.user.userId)),
+      scheduledActivities: config.scheduledActivities.filter((item) =>
+        item.audienceType === 'SCHOOL' || item.classes.some((link) => classIds.includes(link.classId)),
+      ),
+    })) });
   } catch (error) {
     console.error('Error fetching teacher timetable:', error);
     res.status(500).json({ error: 'Failed to fetch timetable.' });
