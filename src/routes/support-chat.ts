@@ -174,6 +174,7 @@ function serializeRequest(request: any, currentRole?: string) {
 }
 
 async function persistAttachments(files: Express.Multer.File[]) {
+  if (files.length === 0) return [];
   await mkdir(privateSupportDir, { recursive: true, mode: 0o700 });
   const persisted: Array<{ storedName: string; originalName: string; mimeType: string; size: number }> = [];
   try {
@@ -210,6 +211,12 @@ async function discardAttachments(files: Array<{ storedName: string }>) {
 
 function sendChatMessage(req: ChatRequest, res: Response, next: (error?: unknown) => void) {
   upload.array('files', 4)(req, res, (error) => error ? next(error) : next());
+}
+
+function sendSupportEmailNotification(label: string, send: () => Promise<unknown>) {
+  void send().catch((error) => {
+    console.warn(`[support-chat] ${label} email notification failed (non-blocking):`, error);
+  });
 }
 
 router.get('/conversations', authenticate, async (req: ChatRequest, res) => {
@@ -250,7 +257,7 @@ router.post('/conversations', authenticate, sendChatMessage, async (req: ChatReq
 
   let persisted: Awaited<ReturnType<typeof persistAttachments>> = [];
   try {
-    const school = await prisma.school.findUnique({ where: { id: actor.schoolId }, select: { id: true, name: true, country: true, plan: true } });
+    const school = await prisma.school.findUnique({ where: { id: actor.schoolId }, select: { id: true, name: true, country: true, plan: true, email: true } });
     if (!school) return res.status(403).json({ error: 'School account not found.' });
     if (isParentActor(actor) && !(await allowedGuardianIds(actor)).length) return res.status(403).json({ error: 'Parent account is not linked to this school.' });
     persisted = await persistAttachments(files);
@@ -295,6 +302,16 @@ router.post('/conversations', authenticate, sendChatMessage, async (req: ChatReq
       }
       return tx.supportRequest.findUniqueOrThrow({ where: { id: created.id, schoolId: actor.schoolId }, select: requestSelect() });
     });
+    sendSupportEmailNotification('New conversation', async () => {
+      const { sendSupportRequestNotification } = await import('../services/email.js');
+      await sendSupportRequestNotification(
+        request.id,
+        subject,
+        body || 'A file was attached to the support conversation.',
+        school.name,
+        actor.email || school.email,
+      );
+    });
     res.status(201).json({ conversation: serializeRequest(request, actor.role) });
   } catch (error) {
     await discardAttachments(persisted);
@@ -328,6 +345,7 @@ router.post('/conversations/:id/messages', authenticate, sendChatMessage, async 
   try {
     const request = await prisma.supportRequest.findFirst({
       where: { id: req.params.id, ...(await conversationScope(actor)) },
+      include: { school: { select: { name: true, email: true } } },
     });
     if (!request) return res.status(404).json({ error: 'Support conversation not found.' });
     if (['CLOSED', 'RESOLVED'].includes(request.status)) return res.status(409).json({ error: 'Reopen this conversation before sending a message.' });
@@ -361,6 +379,15 @@ router.post('/conversations/:id/messages', authenticate, sendChatMessage, async 
         await Promise.all(createdAttachments.map((item) => tx.supportAttachment.update({ where: { id: item.id }, data: { url: `/private/${item.id}` } })));
       }
       return tx.supportRequest.findUniqueOrThrow({ where: { id: request.id }, select: requestSelect() });
+    });
+    sendSupportEmailNotification('Customer reply', async () => {
+      const { sendSupportFollowupNotification } = await import('../services/email.js');
+      await sendSupportFollowupNotification(
+        updated.id,
+        body || 'A file was attached to the support conversation.',
+        request.school?.name,
+        actor.email || request.school?.email,
+      );
     });
     res.status(201).json({ conversation: serializeRequest(updated, actor.role) });
   } catch (error) {
@@ -454,7 +481,10 @@ platform.post('/conversations/:id/messages', sendChatMessage, async (req: ChatRe
   if (!body && files.length === 0) return res.status(400).json({ error: 'Write a reply or attach a supported file.' });
   let persisted: Awaited<ReturnType<typeof persistAttachments>> = [];
   try {
-    const request = await prisma.supportRequest.findUnique({ where: { id: req.params.id } });
+    const request = await prisma.supportRequest.findUnique({
+      where: { id: req.params.id },
+      include: { school: { select: { name: true, email: true } } },
+    });
     if (!request) return res.status(404).json({ error: 'Support conversation not found.' });
     persisted = await persistAttachments(files);
     const updated = await prisma.$transaction(async (tx) => {
@@ -482,6 +512,17 @@ platform.post('/conversations/:id/messages', sendChatMessage, async (req: ChatRe
       }
       await tx.supportRequest.update({ where: { id: request.id }, data: { response: body || request.response, status: 'WAITING_FOR_CUSTOMER', updatedAt: new Date(), lastMessageAt: message.createdAt } });
       return tx.supportRequest.findUniqueOrThrow({ where: { id: request.id }, select: requestSelect() });
+    });
+    sendSupportEmailNotification('Platform reply', async () => {
+      const { sendSupportStatusUpdateNotification } = await import('../services/email.js');
+      await sendSupportStatusUpdateNotification(
+        updated.id,
+        'WAITING_FOR_CUSTOMER',
+        updated.subject,
+        body || 'SchoolBase Support attached a file to your conversation.',
+        request.school?.name,
+        request.requesterEmail || request.school?.email,
+      );
     });
     res.status(201).json({ conversation: serializeRequest(updated, 'PLATFORM_ADMIN') });
   } catch (error) {
