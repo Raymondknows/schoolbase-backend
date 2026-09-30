@@ -430,6 +430,8 @@ model Guardian {
   pupils             GuardianPupil[]
   notifications      Notification[]
   whatsappDeliveries WhatsAppDelivery[]
+  supportRequests    SupportRequest[]        @relation("SupportRequestGuardian")
+  supportMessages    SupportRequestMessage[] @relation("SupportMessageGuardian")
 
   @@index([schoolId], map: "Guardian_schoolId_fkey")
 }
@@ -458,6 +460,8 @@ model User {
   teacherSubjects   TeacherSubject[]
   platformAuditLogs PlatformAuditLog[]
   supportNotes      SupportInternalNote[] @relation("SupportNoteAuthor")
+  createdSupportRequests SupportRequest[] @relation("SupportRequestCreator")
+  supportMessages       SupportRequestMessage[] @relation("SupportMessageSender")
   createdTasks      SupportTeamTask[]     @relation("SupportTaskCreator")
   assignedTasks     SupportTeamTask[]     @relation("SupportTaskAssignee")
   timetableEntries  TimetableEntry[]
@@ -507,36 +511,55 @@ model PasswordReset {
 }
 
 model SupportRequest {
-  id            String                  @id @default(cuid())
-  schoolId      String
-  subject       String
-  message       String                  @db.LongText
-  status        SupportStatus           @default(OPEN)
-  priority      SupportPriority         @default(MEDIUM)
-  response      String?                 @db.LongText
-  createdAt     DateTime                @default(now())
-  updatedAt     DateTime                @updatedAt
-  school        School                  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  messages      SupportRequestMessage[]
-  attachments   SupportAttachment[]
-  internalNotes SupportInternalNote[]
+  id                 String                  @id @default(cuid())
+  schoolId           String
+  createdByUserId    String?
+  createdByGuardianId String?
+  requesterName      String?
+  requesterEmail     String?
+  requesterRole      String?
+  subject            String
+  message            String                  @db.LongText
+  status             SupportStatus           @default(OPEN)
+  priority           SupportPriority         @default(MEDIUM)
+  response           String?                 @db.LongText
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  lastMessageAt      DateTime                @default(now())
+  school             School                  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  createdByUser      User?                   @relation("SupportRequestCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdByGuardian  Guardian?               @relation("SupportRequestGuardian", fields: [createdByGuardianId], references: [id], onDelete: SetNull)
+  messages           SupportRequestMessage[]
+  attachments        SupportAttachment[]
+  internalNotes      SupportInternalNote[]
 
-  @@index([schoolId], map: "SupportRequest_schoolId_fkey")
+  @@index([schoolId, lastMessageAt])
+  @@index([status, lastMessageAt])
+  @@index([createdByUserId])
+  @@index([createdByGuardianId])
 }
 
 model SupportRequestMessage {
   id               String                   @id @default(cuid())
   supportRequestId String
+  senderUserId     String?
+  senderGuardianId String?
   senderRole       SupportMessageSenderRole @default(SCHOOL)
   senderName       String
   senderEmail      String?
   body             String                   @db.LongText
+  readAt           DateTime?
   createdAt        DateTime                 @default(now())
   updatedAt        DateTime                 @updatedAt
   supportRequest   SupportRequest           @relation(fields: [supportRequestId], references: [id], onDelete: Cascade)
+  senderUser       User?                    @relation("SupportMessageSender", fields: [senderUserId], references: [id], onDelete: SetNull)
+  senderGuardian   Guardian?                @relation("SupportMessageGuardian", fields: [senderGuardianId], references: [id], onDelete: SetNull)
   attachments      SupportAttachment[]
 
   @@index([supportRequestId], map: "SupportRequestMessage_supportRequestId_fkey")
+  @@index([senderUserId])
+  @@index([senderGuardianId])
+  @@index([supportRequestId, senderRole, readAt])
 }
 
 model SupportAttachment {
@@ -1847,6 +1870,7 @@ enum SchoolStatus {
 enum SupportStatus {
   OPEN
   IN_PROGRESS
+  WAITING_FOR_CUSTOMER
   RESOLVED
   CLOSED
 }

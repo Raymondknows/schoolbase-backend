@@ -158,6 +158,8 @@ async function loadRoutes() {
     console.log('✓ Loaded teacher routes');
     const { default: timetableRoutes } = await import('./routes/timetable.js');
     console.log('✓ Loaded timetable routes');
+    const { default: supportChatRoutes, platformSupportChatRouter } = await import('./routes/support-chat.js');
+    console.log('✓ Loaded support chat routes');
     const { default: authRoutes } = await import('./routes/auth.js');
     console.log('✓ Loaded auth routes');
     const { default: adminComponentsRoutes } = await import('./routes/admin-components.js');
@@ -195,6 +197,8 @@ async function loadRoutes() {
     app.use('/api/teacher', teacherRoutes);
     app.use('/api/bursar', bursarRoutes);
     app.use('/api', timetableRoutes);
+    app.use('/api/support-chat', supportChatRoutes);
+    app.use('/schoolbase-admin/api/support-chat', platformSupportChatRouter);
     app.use('/api/auth', authRoutes);
     app.use('/schoolbase-admin/api/whatsapp', platformWhatsAppRoutes);
     app.use('/schoolbase-admin/api', schoolbaseAdminRoutes);
