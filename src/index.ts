@@ -147,6 +147,10 @@ async function loadRoutes() {
     console.log('✓ Loaded whatsapp routes');
     const { default: schoolbaseAdminRoutes } = await import('./routes/schoolbase-admin.js');
     console.log('✓ Loaded schoolbase-admin routes');
+    const { default: idCardStudioRoutes } = await import('./routes/id-card-studio.js');
+    console.log('✓ Loaded ID-card studio routes');
+    const { default: schoolbaseAdminIdCardRoutes } = await import('./routes/schoolbase-admin-id-cards.js');
+    console.log('✓ Loaded SchoolBase Admin ID-card routes');
     const { default: platformWhatsAppRoutes } = await import('./routes/platform-whatsapp.js');
     console.log('✓ Loaded platform WhatsApp routes');
     // @ts-ignore: Runtime loader resolves the .js path for TS sources in this environment
@@ -196,12 +200,14 @@ async function loadRoutes() {
     app.use('/api/admin', dashboardRoutes);
     app.use('/api/teacher', teacherRoutes);
     app.use('/api/bursar', bursarRoutes);
+    app.use('/api/id-cards', idCardStudioRoutes);
     app.use('/api', timetableRoutes);
     app.use('/api/support-chat', supportChatRoutes);
     app.use('/schoolbase-admin/api/support-chat', platformSupportChatRouter);
     app.use('/api/auth', authRoutes);
     app.use('/schoolbase-admin/api/whatsapp', platformWhatsAppRoutes);
     app.use('/schoolbase-admin/api', schoolbaseAdminRoutes);
+    app.use('/schoolbase-admin/api', schoolbaseAdminIdCardRoutes);
     
     console.log('✓ All routes mounted successfully');
   } catch (error) {

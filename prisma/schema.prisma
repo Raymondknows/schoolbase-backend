@@ -110,6 +110,9 @@ model School {
   accountCategories             AccountCategory[]
   financialTransactions         FinancialTransaction[]
   financialAuditLogs            FinancialAuditLog[]
+  idCardQuotes                  IdCardQuote[]
+  idCardOrders                  IdCardOrder[]
+  idCardUsageAwards              IdCardUsageAward[]
 
   status                        SchoolStatus      @default(TRIAL)
   plan                          SchoolPlan        @default(FREE)
@@ -627,6 +630,127 @@ model PlatformAuditLog {
 model PlatformSetting {
   key   String @id
   value String @db.LongText
+}
+
+model IdCardPricingRule {
+  id          String   @id @default(cuid())
+  version     Int      @unique
+  currency    String   @default("NGN")
+  ruleJson    String   @db.LongText
+  isActive    Boolean  @default(false)
+  effectiveAt DateTime @default(now())
+  reason      String   @db.Text
+  createdBy   String
+  approvedBy  String?
+  createdAt   DateTime @default(now())
+
+  @@index([isActive, effectiveAt])
+}
+
+model IdCardQuote {
+  id                String   @id @default(cuid())
+  schoolId          String
+  pricingRuleId     String
+  pricingRuleVersion Int
+  status            String   @default("QUOTED")
+  currency          String
+  quantity          Int
+  templateId        String
+  templateTier      String
+  subtotalMinor     Int
+  discountMinor     Int      @default(0)
+  taxMinor          Int      @default(0)
+  totalMinor        Int
+  studentIdsJson    String   @db.LongText
+  optionsJson       String   @db.LongText
+  renderSnapshotEncrypted String @db.LongText
+  expiresAt         DateTime
+  createdBy         String
+  createdAt         DateTime @default(now())
+  school            School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  order             IdCardOrder?
+
+  @@index([schoolId, createdAt])
+  @@index([status, expiresAt])
+}
+
+model IdCardOrder {
+  id                       String   @id @default(cuid())
+  schoolId                 String
+  quoteId                  String   @unique
+  status                   String   @default("PAYMENT_PENDING")
+  paymentStatus            String   @default("PENDING")
+  currency                 String
+  amountMinor              Int
+  providerReference        String?  @unique
+  providerTransactionId    String?  @unique
+  renderSnapshotEncrypted  String?  @db.LongText
+  artifactKey              String?  @db.VarChar(512)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  school                   School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  quote                    IdCardQuote @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+  events                   IdCardOrderEvent[]
+  awardLedgerEntries       IdCardAwardLedger[]
+
+  @@index([schoolId, createdAt])
+  @@index([status, paymentStatus])
+}
+
+model IdCardOrderEvent {
+  id        String   @id @default(cuid())
+  orderId   String
+  eventType String
+  actorId   String?
+  details   String?  @db.LongText
+  createdAt DateTime @default(now())
+  order     IdCardOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+model IdCardUsageAward {
+  id                    String   @id @default(cuid())
+  schoolId              String
+  awardType             String
+  unitsGranted          Int      @default(0)
+  unitsReserved         Int      @default(0)
+  unitsRedeemed         Int      @default(0)
+  valueMinor            Int      @default(0)
+  currency              String   @default("NGN")
+  eligibleTiersJson     String   @db.LongText
+  reasonCategory        String
+  campaign              String?
+  internalNote          String?  @db.Text
+  terms                 String?  @db.Text
+  status                String   @default("PENDING_APPROVAL")
+  expiresAt             DateTime?
+  createdBy             String
+  approvedBy            String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  school                School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  ledgerEntries         IdCardAwardLedger[]
+
+  @@index([schoolId, status, expiresAt])
+}
+
+model IdCardAwardLedger {
+  id          String   @id @default(cuid())
+  awardId     String
+  orderId     String?
+  entryType   String
+  units       Int      @default(0)
+  amountMinor Int      @default(0)
+  actorId     String?
+  reason      String?  @db.Text
+  createdAt   DateTime @default(now())
+  award       IdCardUsageAward @relation(fields: [awardId], references: [id], onDelete: Cascade)
+  order       IdCardOrder? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([awardId, createdAt])
+  @@index([orderId])
 }
 
 model PlatformSupportRequest {
