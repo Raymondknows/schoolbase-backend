@@ -1150,13 +1150,27 @@ router.get('/audit-logs', async (req: Request, res: Response) => {
     const requestedLimit = parseInt(req.query.limit as string) || 50;
     const limit = Math.min(Math.max(requestedLimit, 10), 200);
     const requestedDays = Number.parseInt(String(req.query.days || '90'), 10);
-    const days = Number.isFinite(requestedDays) ? Math.min(Math.max(requestedDays, 7), 365) : 90;
+    const days = Number.isFinite(requestedDays) ? Math.min(Math.max(requestedDays, 1), 365) : 90;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     const skip = (page - 1) * limit;
+    const search = String(req.query.search || '').trim();
+    const schoolName = String(req.query.school || '').trim();
+    const action = String(req.query.action || '').trim();
 
     const where: any = {
       createdAt: { gte: since },
     };
+    if (schoolName) where.school = { is: { name: schoolName } };
+    if (action) where.event = action;
+    if (search) {
+      where.OR = [
+        { event: { contains: search } },
+        { details: { contains: search } },
+        { user: { is: { name: { contains: search } } } },
+        { user: { is: { email: { contains: search } } } },
+        { school: { is: { name: { contains: search } } } },
+      ];
+    }
 
     const [logs, total] = await Promise.all([
       prisma.platformAuditLog.findMany({
@@ -1218,7 +1232,7 @@ router.get('/activity-summary', async (req: Request, res: Response) => {
     const days = Number.isFinite(requestedDays) ? Math.min(Math.max(requestedDays, 7), 90) : 30;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-    const [logs, schools] = await Promise.all([
+    const [logs, schools, eventTotal, recentEvents, protectedEvents] = await Promise.all([
       prisma.platformAuditLog.findMany({
         where: { createdAt: { gte: since } },
         orderBy: { createdAt: 'desc' },
@@ -1229,15 +1243,25 @@ router.get('/activity-summary', async (req: Request, res: Response) => {
         orderBy: { createdAt: 'desc' },
         select: { id: true, name: true, status: true, createdAt: true },
       }),
+      prisma.platformAuditLog.count({ where: { createdAt: { gte: since } } }),
+      prisma.platformAuditLog.count({ where: { createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } } }),
+      prisma.platformAuditLog.count({
+        where: {
+          createdAt: { gte: since },
+          OR: [{ event: { contains: 'VERIFY' } }, { details: { contains: 'verify' } }],
+        },
+      }),
     ]);
 
-    const actionCounts = new Map<string, number>();
+    const actionCounts = new Map<string, { action: string; count: number }>();
     const schoolCounts = new Map<string, { count: number; lastActivity: Date | null; actions: Set<string> }>();
     const dailyCounts = new Map<string, number>();
 
     for (const log of logs) {
       const action = log.event.replace(/^API_(GET|POST|PUT|PATCH|DELETE)_/, '').replace(/^API_/, '');
-      actionCounts.set(action, (actionCounts.get(action) || 0) + 1);
+      const currentAction = actionCounts.get(log.event) || { action, count: 0 };
+      currentAction.count += 1;
+      actionCounts.set(log.event, currentAction);
 
       const day = log.createdAt.toISOString().slice(0, 10);
       dailyCounts.set(day, (dailyCounts.get(day) || 0) + 1);
@@ -1278,8 +1302,8 @@ router.get('/activity-summary', async (req: Request, res: Response) => {
     res.json({
       days,
       since,
-      totals: { events: logs.length, schools: schools.length, activeSchools, silentSchools },
-      actionBreakdown: Array.from(actionCounts.entries()).map(([action, count]) => ({ action, count })).sort((a, b) => b.count - a.count).slice(0, 12),
+      totals: { events: eventTotal, recentEvents, protectedEvents, schools: schools.length, activeSchools, silentSchools },
+      actionBreakdown: Array.from(actionCounts.entries()).map(([event, item]) => ({ event, action: item.action, count: item.count })).sort((a, b) => b.count - a.count).slice(0, 50),
       trend,
       schoolActivity,
     });
