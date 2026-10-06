@@ -23,12 +23,18 @@ export function getParentPortalQrStatus(environment: NodeJS.ProcessEnv = process
   }
 }
 
+export function getPublicAppOrigin(environment: NodeJS.ProcessEnv = process.env): string | null {
+  if (!getParentPortalQrStatus(environment).available) return null;
+  return new URL(configuredPublicAppUrl(environment)).origin;
+}
+
 export function buildParentPortalQrUrl(
   publicSchoolSlug: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  if (!getParentPortalQrStatus(environment).available) return null;
-  const url = new URL('/parent/login', configuredPublicAppUrl(environment));
+  const publicAppOrigin = getPublicAppOrigin(environment);
+  if (!publicAppOrigin) return null;
+  const url = new URL('/parent/login', publicAppOrigin);
   url.searchParams.set('schoolSlug', publicSchoolSlug);
   return url.toString();
 }

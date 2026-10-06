@@ -8,7 +8,7 @@ import { verifyAuth, type AuthenticatedRequest } from '../middleware/roleAuth.js
 import { requireSubscription } from '../middleware/subscriptionGuard.js';
 import { calculateIdCardQuote, ID_CARD_TEMPLATES, validateIdCardPricingRule, type IdCardOrientation, type IdCardPricingRule } from '../services/id-card-pricing.js';
 import { decryptIdCardSnapshot, encryptIdCardSnapshot } from '../services/id-card-snapshot.js';
-import { buildParentPortalQrUrl, getParentPortalQrStatus } from '../services/id-card-qr.js';
+import { buildParentPortalQrUrl, getParentPortalQrStatus, getPublicAppOrigin } from '../services/id-card-qr.js';
 import { generateIdCardA4SheetPdf, generateIdCardPdf, savePrivateIdCardArtifact, type IdCardRenderSnapshot } from '../services/id-card-pdf.js';
 
 const router = Router();
@@ -347,19 +347,24 @@ router.post('/orders/:orderId/pay', requireSubscription, async (req: Request, re
   if (reserved.count !== 1) return res.status(409).json({ error: 'Payment is already being initialized.' });
 
   try {
+    const publicAppOrigin = getPublicAppOrigin();
+    if (!publicAppOrigin) throw new Error('The public app URL is not configured for payment callbacks.');
     const response = await axios.post(`${PAYSTACK_BASE_URL}/transaction/initialize`, {
       email: user.email,
       amount: order.amountMinor,
       reference,
       currency: order.currency,
-      callback_url: `${String(req.headers.origin || process.env.FRONTEND_URL || '').replace(/\/$/, '')}/admin/id-cards/orders/${order.id}`,
+      callback_url: new URL(`/admin/id-cards/orders/${encodeURIComponent(order.id)}`, `${publicAppOrigin}/`).toString(),
       metadata: { orderType: 'ID_CARD', orderId: order.id, schoolId: order.schoolId },
     }, { headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' } });
     await prisma.idCardOrderEvent.create({ data: { orderId: order.id, eventType: 'CHECKOUT_INITIALIZED', actorId: user.userId, details: JSON.stringify({ provider: 'PAYSTACK' }) } });
     return res.json({ authorizationUrl: response.data?.data?.authorization_url, accessCode: response.data?.data?.access_code, reference });
   } catch (error) {
     await prisma.idCardOrder.updateMany({ where: { id: order.id, providerReference: reference }, data: { providerReference: null } });
-    console.error('[id-card-studio] Payment initialization failed', error);
+    const providerFailure = axios.isAxiosError(error)
+      ? { status: error.response?.status, message: error.response?.data?.message }
+      : { message: error instanceof Error ? error.message : 'Unknown payment initialization error.' };
+    console.error('[id-card-studio] Payment initialization failed', providerFailure);
     return res.status(502).json({ error: 'Unable to initialize payment. Please retry.' });
   }
 });

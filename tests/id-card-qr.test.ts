@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildParentPortalQrUrl, getParentPortalQrStatus } from '../src/services/id-card-qr.ts';
+import { buildParentPortalQrUrl, getParentPortalQrStatus, getPublicAppOrigin } from '../src/services/id-card-qr.ts';
 
 describe('Parent Portal ID card QR', () => {
   it('uses the canonical HTTPS app URL in production when no override is configured', () => {
@@ -14,6 +14,11 @@ describe('Parent Portal ID card QR', () => {
     const status = getParentPortalQrStatus({ NODE_ENV: 'production', FRONTEND_URL: 'https://www.schoolbase.live,https://admin.schoolbase.live' });
     assert.equal(status.available, true);
     assert.equal(buildParentPortalQrUrl('greenfield', { NODE_ENV: 'production', FRONTEND_URL: 'https://www.schoolbase.live,https://admin.schoolbase.live' }), 'https://www.schoolbase.live/parent/login?schoolSlug=greenfield');
+  });
+
+  it('provides a valid production origin for payment callbacks when no public URL is configured', () => {
+    assert.equal(getPublicAppOrigin({ NODE_ENV: 'production' }), 'https://www.schoolbase.live');
+    assert.equal(getPublicAppOrigin({ NODE_ENV: 'production', FRONTEND_URL: 'https://schoolbase.live,https://admin.schoolbase.live' }), 'https://schoolbase.live');
   });
 
   it('encodes only the generic parent login path and the school public slug', () => {
