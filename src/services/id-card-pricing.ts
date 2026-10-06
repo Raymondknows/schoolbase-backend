@@ -20,6 +20,7 @@ export const ID_CARD_TEMPLATES = {
   houseTeam: { tier: "PREMIUM", label: "House & Team", description: "Bold team-color treatment while preserving readable labels.", defaultOrientation: "LANDSCAPE", orientations: ["PORTRAIT", "LANDSCAPE"] },
   earlyLearners: { tier: "PREMIUM", label: "Early Learners", description: "Large portrait and name for clear recognition.", defaultOrientation: "PORTRAIT", orientations: ["PORTRAIT", "LANDSCAPE"] },
   seniorCollege: { tier: "PREMIUM", label: "Senior / College", description: "Minimal, mature layout with a refined identity panel.", defaultOrientation: "LANDSCAPE", orientations: ["PORTRAIT", "LANDSCAPE"] },
+  signatureCollection: { tier: "PREMIUM", label: "Signature Collection", description: "Refined editorial identity with a distinctive double-rule frame.", defaultOrientation: "LANDSCAPE", orientations: ["PORTRAIT", "LANDSCAPE"] },
 } as const;
 
 export const DEFAULT_ID_CARD_PRICING_RULE: IdCardPricingRule = {
@@ -34,6 +35,7 @@ export const DEFAULT_ID_CARD_PRICING_RULE: IdCardPricingRule = {
     houseTeam: 4000,
     earlyLearners: 4000,
     seniorCollege: 4000,
+    signatureCollection: 4000,
   },
 };
 
@@ -105,7 +107,9 @@ export function calculateIdCardQuote(input: {
   }
 
   const template = ID_CARD_TEMPLATES[templateId as keyof typeof ID_CARD_TEMPLATES];
-  const upliftPerCardMinor = template.tier === "PREMIUM" ? rule.premiumTemplateUpliftMinor[templateId] ?? 0 : 0;
+  const upliftPerCardMinor = template.tier === "PREMIUM"
+    ? rule.premiumTemplateUpliftMinor[templateId] ?? DEFAULT_ID_CARD_PRICING_RULE.premiumTemplateUpliftMinor[templateId] ?? 0
+    : 0;
   const premiumAmountMinor = quantity * upliftPerCardMinor;
   const subtotalMinor = baseAmountMinor + premiumAmountMinor;
   const taxMinor = Math.round((subtotalMinor * rule.taxRateBps) / 10000);

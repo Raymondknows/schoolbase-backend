@@ -161,11 +161,16 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
     const isEarlyLearners = snapshot.templateId === 'earlyLearners';
     const isHouseTeam = snapshot.templateId === 'houseTeam';
     const isSeniorCollege = snapshot.templateId === 'seniorCollege';
+    const isSignatureCollection = snapshot.templateId === 'signatureCollection';
     const bandColor = isInkSaver ? rgb(0.15, 0.15, 0.15) : accent;
     const background = isEarlyLearners ? rgb(1, 0.97, 0.89) : rgb(0.98, 0.99, 0.99);
 
     page.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: background });
-    if (snapshot.templateId === 'crestClassic') {
+    if (isSignatureCollection) {
+      page.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, borderWidth: 4, borderColor: bandColor });
+      page.drawRectangle({ x: 8, y: 8, width: pageWidth - 16, height: pageHeight - 16, borderWidth: 0.7, borderColor: rgb(0.78, 0.68, 0.45) });
+      page.drawRectangle({ x: 0, y: pageHeight - 30, width: pageWidth, height: 30, color: bandColor });
+    } else if (snapshot.templateId === 'crestClassic') {
       page.drawRectangle({ x: 0, y: pageHeight - 38, width: pageWidth, height: 38, color: bandColor });
       page.drawRectangle({ x: 0, y: pageHeight - 41, width: pageWidth, height: 3, color: isInkSaver ? rgb(0.45, 0.45, 0.45) : rgb(0.82, 0.7, 0.38) });
     } else if (isHouseTeam) {
@@ -208,10 +213,10 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
       const lightHeader = isInkSaver || isSeniorCollege;
       await drawLogo(document, page, snapshot.school.logoUrl, 12, pageHeight - 27, 21);
       drawContainedText(page, schoolName, { x: 40, y: pageHeight - 21, size: 9, font: bold, color: lightHeader ? rgb(0.1, 0.12, 0.12) : rgb(1, 1, 1), maxWidth: pageWidth - 52 });
-      const photoWidth = isSeniorCollege ? 62 : 68;
-      const photoHeight = isSeniorCollege ? 84 : 92;
-      const photoX = isHouseTeam ? 21 : 14;
-      const photoY = isSeniorCollege ? 22 : 14;
+      const photoWidth = isSeniorCollege ? 62 : isSignatureCollection ? 64 : 68;
+      const photoHeight = isSeniorCollege ? 84 : isSignatureCollection ? 86 : 92;
+      const photoX = isHouseTeam ? 21 : isSignatureCollection ? 18 : 14;
+      const photoY = isSeniorCollege || isSignatureCollection ? 22 : 14;
       const hasPhoto = await drawPhoto(document, page, student.photoUrl, photoX, photoY, photoWidth, photoHeight);
       if (!hasPhoto) {
         page.drawRectangle({ x: photoX, y: photoY, width: photoWidth, height: photoHeight, color: rgb(0.9, 0.93, 0.93) });
@@ -219,10 +224,11 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
       }
       const textX = isHouseTeam ? 98 : 94;
       const textWidth = pageWidth - textX - 12;
-      drawContainedText(page, isSeniorCollege ? 'STUDENT IDENTIFICATION' : 'STUDENT ID', { x: textX, y: pageHeight - 53, size: 7, font: bold, color: bandColor, maxWidth: textWidth });
-      drawContainedText(page, fullName, { x: textX, y: pageHeight - 76, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
-      drawContainedText(page, 'ADMISSION NUMBER', { x: textX, y: pageHeight - 98, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
-      drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - 111, size: 9, font: regular, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
+      const titleOffset = isSignatureCollection ? 56 : 53;
+      drawContainedText(page, isSeniorCollege ? 'STUDENT IDENTIFICATION' : 'STUDENT ID', { x: textX, y: pageHeight - titleOffset, size: 7, font: bold, color: bandColor, maxWidth: textWidth });
+      drawContainedText(page, fullName, { x: textX, y: pageHeight - (isSignatureCollection ? 79 : 76), size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
+      drawContainedText(page, 'ADMISSION NUMBER', { x: textX, y: pageHeight - (isSignatureCollection ? 101 : 98), size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+      drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - (isSignatureCollection ? 114 : 111), size: 9, font: regular, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
       drawContainedText(page, 'CLASS', { x: textX, y: 37, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
       drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: 24, size: 9, font: bold, color: bandColor, maxWidth: textWidth });
     }

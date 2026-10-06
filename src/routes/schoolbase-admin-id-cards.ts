@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { jwtVerify } from 'jose';
 import { getSessionSecret } from '../services/security-config.js';
 import { calculateIdCardQuote, DEFAULT_ID_CARD_PRICING_RULE, validateIdCardPricingRule } from '../services/id-card-pricing.js';
+import { verifyAndGenerate } from './id-card-studio.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -88,6 +89,98 @@ router.get('/id-cards/overview', async (req, res) => {
       createdAt: order.createdAt,
     })),
   });
+});
+
+router.get('/id-cards/orders/:orderId', async (req, res) => {
+  const adminId = await requirePlatformAdmin(req, res);
+  if (!adminId) return;
+  const order = await prisma.idCardOrder.findUnique({
+    where: { id: req.params.orderId },
+    include: {
+      school: { select: { id: true, name: true } },
+      quote: { select: { quantity: true, templateId: true, templateTier: true, pricingRuleVersion: true, subtotalMinor: true, discountMinor: true, taxMinor: true, expiresAt: true } },
+      events: { orderBy: { createdAt: 'asc' }, select: { eventType: true, actorId: true, createdAt: true } },
+    },
+  });
+  if (!order) return res.status(404).json({ error: 'ID-card order not found.' });
+  res.json({
+    order: {
+      id: order.id,
+      schoolId: order.school.id,
+      schoolName: order.school.name,
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      currency: order.currency,
+      amountMinor: order.amountMinor,
+      providerReference: order.providerReference,
+      providerTransactionId: order.providerTransactionId,
+      artifactAvailable: Boolean(order.artifactKey),
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+      quantity: order.quote.quantity,
+      templateId: order.quote.templateId,
+      templateTier: order.quote.templateTier,
+      pricingRuleVersion: order.quote.pricingRuleVersion,
+      subtotalMinor: order.quote.subtotalMinor,
+      discountMinor: order.quote.discountMinor,
+      taxMinor: order.quote.taxMinor,
+      quoteExpiresAt: order.quote.expiresAt,
+      events: order.events,
+    },
+  });
+});
+
+router.post('/id-cards/orders/:orderId/retry-generation', async (req, res) => {
+  const adminId = await requirePlatformAdmin(req, res);
+  if (!adminId) return;
+  const order = await prisma.idCardOrder.findUnique({ where: { id: req.params.orderId }, select: { id: true, schoolId: true, paymentStatus: true } });
+  if (!order) return res.status(404).json({ error: 'ID-card order not found.' });
+  if (order.paymentStatus !== 'PAID') return res.status(409).json({ error: 'Only a provider-confirmed paid order can be generated.' });
+  try {
+    const result = await verifyAndGenerate(order.id, order.schoolId, adminId);
+    return res.json({ order: { id: result.id, status: result.status, paymentStatus: result.paymentStatus } });
+  } catch (error) {
+    return res.status(Number((error as { statusCode?: number })?.statusCode) || 500).json({ error: error instanceof Error ? error.message : 'Unable to retry generation.' });
+  }
+});
+
+router.post('/id-cards/orders/:orderId/support-flag', async (req, res) => {
+  const adminId = await requirePlatformAdmin(req, res);
+  if (!adminId) return;
+  const reason = String(req.body?.reason || '').trim();
+  if (reason.length < 8) return res.status(400).json({ error: 'Provide a support flag reason of at least 8 characters.' });
+  const order = await prisma.idCardOrder.findUnique({ where: { id: req.params.orderId }, select: { id: true } });
+  if (!order) return res.status(404).json({ error: 'ID-card order not found.' });
+  await prisma.idCardOrderEvent.create({ data: { orderId: order.id, eventType: 'SUPPORT_FLAGGED', actorId: adminId, details: JSON.stringify({ reason }) } });
+  res.status(201).json({ success: true });
+});
+
+router.post('/id-cards/orders/:orderId/refund-outcome', async (req, res) => {
+  const adminId = await requirePlatformAdmin(req, res);
+  if (!adminId) return;
+  const reason = String(req.body?.reason || '').trim();
+  const providerRefundReference = String(req.body?.providerRefundReference || '').trim();
+  if (reason.length < 8 || !providerRefundReference) return res.status(400).json({ error: 'Provide the provider refund reference and a reason of at least 8 characters.' });
+  try {
+    await prisma.$transaction(async (tx) => {
+      const order = await tx.idCardOrder.findUnique({ where: { id: req.params.orderId } });
+      if (!order) throw Object.assign(new Error('ID-card order not found.'), { statusCode: 404 });
+      if (order.paymentStatus !== 'PAID') throw Object.assign(new Error('Only a paid order can have a refund recorded.'), { statusCode: 409 });
+      const updated = await tx.idCardOrder.updateMany({ where: { id: order.id, paymentStatus: 'PAID' }, data: { paymentStatus: 'REFUNDED', status: 'REFUNDED' } });
+      if (updated.count !== 1) throw Object.assign(new Error('Order payment state changed; refresh and try again.'), { statusCode: 409 });
+      await tx.idCardOrderEvent.create({
+        data: {
+          orderId: order.id,
+          eventType: 'REFUND_RECORDED',
+          actorId: adminId,
+          details: JSON.stringify({ reason, providerRefundReference, amountMinor: order.amountMinor, currency: order.currency, recordedOnly: true }),
+        },
+      });
+    });
+    return res.json({ success: true, orderId: req.params.orderId, paymentStatus: 'REFUNDED' });
+  } catch (error) {
+    return res.status(Number((error as { statusCode?: number })?.statusCode) || 400).json({ error: error instanceof Error ? error.message : 'Unable to record refund outcome.' });
+  }
 });
 
 router.get('/id-cards/pricing', async (req, res) => {
@@ -229,6 +322,36 @@ router.post('/id-cards/awards/:awardId/approve', async (req, res) => {
     await tx.idCardAwardLedger.create({ data: { awardId: award.id, entryType: 'AWARD_APPROVED', actorId: adminId, reason: 'Second-admin approval' } });
   });
   res.json({ success: true, awardId: award.id });
+});
+
+router.post('/id-cards/awards/:awardId/revoke', async (req, res) => {
+  const adminId = await requirePlatformAdmin(req, res);
+  if (!adminId) return;
+  const reason = String(req.body?.reason || '').trim();
+  if (reason.length < 8) return res.status(400).json({ error: 'Provide a revocation reason of at least 8 characters.' });
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const award = await tx.idCardUsageAward.findUnique({ where: { id: req.params.awardId } });
+      if (!award) throw Object.assign(new Error('Award not found.'), { statusCode: 404 });
+      if (award.createdBy === adminId) throw Object.assign(new Error('A different platform administrator must revoke this award.'), { statusCode: 403 });
+      if (award.status !== 'APPROVED') throw Object.assign(new Error('Only an approved award can be revoked.'), { statusCode: 409 });
+      if (award.unitsReserved > 0) throw Object.assign(new Error('This award has units reserved by an order and cannot be revoked yet.'), { statusCode: 409 });
+
+      const revoked = await tx.idCardUsageAward.updateMany({
+        where: { id: award.id, status: 'APPROVED', unitsReserved: 0 },
+        data: { status: 'REVOKED' },
+      });
+      if (revoked.count !== 1) throw Object.assign(new Error('Award changed while revocation was being processed.'), { statusCode: 409 });
+      await tx.idCardAwardLedger.create({
+        data: { awardId: award.id, entryType: 'AWARD_REVOKED', actorId: adminId, reason },
+      });
+    });
+    res.json({ success: true, awardId: req.params.awardId });
+  } catch (error) {
+    const status = Number((error as { statusCode?: number })?.statusCode) || 400;
+    res.status(status).json({ error: error instanceof Error ? error.message : 'Unable to revoke award.' });
+  }
 });
 
 export default router;

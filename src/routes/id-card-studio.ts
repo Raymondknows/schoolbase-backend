@@ -9,12 +9,16 @@ import { requireSubscription } from '../middleware/subscriptionGuard.js';
 import { calculateIdCardQuote, ID_CARD_TEMPLATES, validateIdCardPricingRule, type IdCardOrientation, type IdCardPricingRule } from '../services/id-card-pricing.js';
 import { decryptIdCardSnapshot, encryptIdCardSnapshot } from '../services/id-card-snapshot.js';
 import { buildParentPortalQrUrl, getParentPortalQrStatus, getPublicAppOrigin } from '../services/id-card-qr.js';
+import { buildIdCardPreflightWarnings, resolveIdCardPayerEmail, verifyPaystackSignature } from '../services/id-card-payment.js';
 import { generateIdCardA4SheetPdf, generateIdCardPdf, savePrivateIdCardArtifact, type IdCardRenderSnapshot } from '../services/id-card-pdf.js';
 
 const router = Router();
 const prisma = new PrismaClient();
 const PAYSTACK_BASE_URL = 'https://api.paystack.co';
 const MAX_ORDER_CARDS = 200;
+const ID_CARD_DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+type RawBodyRequest = Request & { rawBody?: Buffer };
 
 function authenticatedUser(req: Request) {
   return (req as AuthenticatedRequest).user;
@@ -47,6 +51,81 @@ function addOrderEvent(tx: any, orderId: string, eventType: string, actorId: str
   });
 }
 
+router.post('/webhooks/paystack', async (req: Request, res: Response) => {
+  const secret = process.env.PAYSTACK_SECRET_KEY;
+  const rawBody = (req as RawBodyRequest).rawBody;
+  if (!secret || !rawBody || !verifyPaystackSignature(rawBody, req.get('x-paystack-signature'), secret)) {
+    return res.status(401).json({ error: 'Invalid payment webhook signature.' });
+  }
+
+  const event = req.body as {
+    event?: string;
+    data?: {
+      id?: number | string;
+      reference?: string;
+      status?: string;
+      amount?: number;
+      currency?: string;
+      metadata?: { orderType?: string; orderId?: string; schoolId?: string };
+    };
+  };
+  if (event.event !== 'charge.success' || !event.data?.reference || !event.data.id) return res.status(200).json({ received: true });
+
+  try {
+    const transaction = event.data;
+    const order = await prisma.idCardOrder.findFirst({
+      where: { providerReference: transaction.reference },
+      include: { quote: true },
+    });
+    if (!order) return res.status(200).json({ received: true });
+
+    if (
+      transaction.status !== 'success' ||
+      Number(transaction.amount) !== order.amountMinor ||
+      String(transaction.currency || '').toUpperCase() !== order.currency.toUpperCase() ||
+      transaction.metadata?.orderType !== 'ID_CARD' ||
+      transaction.metadata?.orderId !== order.id ||
+      transaction.metadata?.schoolId !== order.schoolId
+    ) {
+      await addOrderEvent(prisma, order.id, 'PAYMENT_WEBHOOK_REJECTED', null, {
+        providerTransactionId: transaction.id ? String(transaction.id) : null,
+        reason: 'Payment event did not match the pending card order.',
+      });
+      return res.status(200).json({ received: true });
+    }
+
+    const confirmed = await prisma.idCardOrder.updateMany({
+      where: { id: order.id, paymentStatus: 'PENDING', providerReference: transaction.reference },
+      data: { paymentStatus: 'PAID', status: 'PAID', providerTransactionId: String(transaction.id) },
+    });
+    if (confirmed.count === 1) {
+      await addOrderEvent(prisma, order.id, 'PAYMENT_CONFIRMED', null, {
+        source: 'PAYSTACK_WEBHOOK',
+        providerTransactionId: transaction.id ? String(transaction.id) : null,
+        amountMinor: order.amountMinor,
+        currency: order.currency,
+      });
+    }
+
+    if (confirmed.count === 1 || (order.paymentStatus === 'PAID' && order.status !== 'READY')) {
+      try {
+        await verifyAndGenerate(order.id, order.schoolId, null);
+      } catch (generationError) {
+        console.error('[id-card-studio] Webhook-confirmed order generation deferred to retry', {
+          orderId: order.id,
+          message: generationError instanceof Error ? generationError.message : 'Unknown generation error.',
+        });
+      }
+    }
+    return res.status(200).json({ received: true });
+  } catch (error) {
+    console.error('[id-card-studio] Paystack webhook processing failed', {
+      message: error instanceof Error ? error.message : 'Unknown webhook error.',
+    });
+    return res.status(500).json({ error: 'Unable to process payment webhook.' });
+  }
+});
+
 router.use(verifyAuth, requireSchoolAdmin);
 
 router.get('/templates', (_req, res) => {
@@ -54,6 +133,50 @@ router.get('/templates', (_req, res) => {
     templates: Object.entries(ID_CARD_TEMPLATES).map(([id, template]) => ({ id, ...template })),
     parentPortalQr: getParentPortalQrStatus(),
   });
+});
+
+router.get('/draft', async (req: Request, res: Response) => {
+  const user = authenticatedUser(req)!;
+  await prisma.idCardDraft.deleteMany({ where: { schoolId: user.schoolId, expiresAt: { lte: new Date() } } });
+  const draft = await prisma.idCardDraft.findUnique({ where: { schoolId_createdBy: { schoolId: user.schoolId, createdBy: user.userId } } });
+  if (!draft) return res.json({ draft: null });
+  res.json({ draft: { ...JSON.parse(draft.draftJson), updatedAt: draft.updatedAt, expiresAt: draft.expiresAt } });
+});
+
+router.put('/draft', async (req: Request, res: Response) => {
+  const user = authenticatedUser(req)!;
+  const studentIds = req.body?.studentIds;
+  const templateId = String(req.body?.templateId || '');
+  const orientation = String(req.body?.orientation || '');
+  const includeCardBack = req.body?.includeCardBack === true;
+  const includeParentPortalQr = req.body?.includeParentPortalQr === true;
+  const awardId = typeof req.body?.awardId === 'string' ? req.body.awardId : null;
+  const template = ID_CARD_TEMPLATES[templateId as keyof typeof ID_CARD_TEMPLATES];
+  if (!Array.isArray(studentIds) || studentIds.length > MAX_ORDER_CARDS || studentIds.some((id: unknown) => typeof id !== 'string')) {
+    return res.status(400).json({ error: `A draft can contain at most ${MAX_ORDER_CARDS} student IDs.` });
+  }
+  if (new Set(studentIds).size !== studentIds.length) return res.status(400).json({ error: 'Draft contains duplicate student IDs.' });
+  if (template && !template.orientations.includes(orientation as IdCardOrientation)) return res.status(400).json({ error: 'Draft orientation is not supported by this template.' });
+  if (!templateId || !template) return res.status(400).json({ error: 'Choose a valid card design before saving the draft.' });
+  if (includeParentPortalQr && (!includeCardBack || !getParentPortalQrStatus().available)) return res.status(400).json({ error: 'The QR draft setting is unavailable without a valid card back and public URL.' });
+
+  const draftValue = { studentIds, templateId, orientation, includeCardBack, includeParentPortalQr, awardId };
+  const draftJson = JSON.stringify(draftValue);
+  if (Buffer.byteLength(draftJson, 'utf8') > 100_000) return res.status(413).json({ error: 'Draft is too large to save.' });
+  const expiresAt = new Date(Date.now() + ID_CARD_DRAFT_TTL_MS);
+  const draft = await prisma.idCardDraft.upsert({
+    where: { schoolId_createdBy: { schoolId: user.schoolId, createdBy: user.userId } },
+    create: { schoolId: user.schoolId, createdBy: user.userId, draftJson, expiresAt },
+    update: { draftJson, expiresAt },
+    select: { updatedAt: true, expiresAt: true },
+  });
+  res.json({ saved: true, updatedAt: draft.updatedAt, expiresAt: draft.expiresAt });
+});
+
+router.delete('/draft', async (req: Request, res: Response) => {
+  const user = authenticatedUser(req)!;
+  await prisma.idCardDraft.deleteMany({ where: { schoolId: user.schoolId, createdBy: user.userId } });
+  res.json({ deleted: true });
 });
 
 router.get('/students', requireSubscription, async (req: Request, res: Response) => {
@@ -95,6 +218,39 @@ router.get('/students', requireSubscription, async (req: Request, res: Response)
   } catch (error) {
     console.error('[id-card-studio] Failed to load students', error);
     res.status(500).json({ error: 'Unable to load student records.' });
+  }
+});
+
+router.get('/students/:studentId/photo', requireSubscription, async (req: Request, res: Response) => {
+  const user = authenticatedUser(req)!;
+  try {
+    const pupil = await prisma.pupil.findFirst({
+      where: { id: req.params.studentId, schoolId: user.schoolId, isActive: true },
+      select: { photoUrl: true },
+    });
+    if (!pupil?.photoUrl || !pupil.photoUrl.startsWith('/uploads/')) {
+      return res.status(404).json({ error: 'Student photo not found.' });
+    }
+
+    const uploadsRoot = path.resolve(process.cwd(), 'uploads');
+    const imagePath = path.resolve(uploadsRoot, pupil.photoUrl.slice('/uploads/'.length));
+    if (!imagePath.startsWith(`${uploadsRoot}${path.sep}`)) {
+      return res.status(404).json({ error: 'Student photo not found.' });
+    }
+
+    const extension = path.extname(imagePath).toLowerCase();
+    const contentType = extension === '.png' ? 'image/png' : ['.jpg', '.jpeg'].includes(extension) ? 'image/jpeg' : null;
+    if (!contentType) return res.status(415).json({ error: 'Student photo format is not supported for ID cards.' });
+
+    const bytes = await readFile(imagePath);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.send(bytes);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return res.status(404).json({ error: 'Student photo not found.' });
+    console.error('[id-card-studio] Failed to serve student photo', error);
+    return res.status(500).json({ error: 'Unable to load student photo.' });
   }
 });
 
@@ -174,6 +330,8 @@ router.post('/quotes', requireSubscription, async (req: Request, res: Response) 
       }),
     ]);
     if (!school || students.length !== studentIds.length) return res.status(400).json({ error: 'One or more selected students are unavailable.' });
+
+    const preflightWarnings = buildIdCardPreflightWarnings(students);
 
     const price = calculateIdCardQuote({ quantity: students.length, templateId, rule: pricing.rule });
     let awardDiscountMinor = 0;
@@ -265,6 +423,11 @@ router.post('/quotes', requireSubscription, async (req: Request, res: Response) 
         expiresAt: saved.expiresAt,
       },
       preview: snapshot,
+      preflight: {
+        selectedCount: students.length,
+        warningCount: preflightWarnings.length,
+        warnings: preflightWarnings,
+      },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to create quote.';
@@ -336,8 +499,10 @@ router.post('/orders/:orderId/pay', requireSubscription, async (req: Request, re
   const order = await prisma.idCardOrder.findFirst({ where: { id: req.params.orderId, schoolId: user.schoolId }, include: { quote: true } });
   if (!order) return res.status(404).json({ error: 'Order not found.' });
   if (order.paymentStatus === 'PAID') return res.status(409).json({ error: 'This order has already been paid.' });
-  if (order.providerReference) return res.status(409).json({ error: 'Payment has already been initialized for this order.' });
-  if (!user.email) return res.status(400).json({ error: 'A school administrator email is required for payment.' });
+  if (order.providerReference) return res.status(409).json({ error: 'Checkout was already initialized for this order. Refresh order status or use the existing checkout session.' });
+  const school = await prisma.school.findUnique({ where: { id: user.schoolId }, select: { email: true } });
+  const payerEmail = resolveIdCardPayerEmail(user.email, school?.email);
+  if (!payerEmail) return res.status(400).json({ error: 'Add a valid email address to the school administrator account or school contact settings before starting payment.' });
 
   const reference = `IDCARD-${randomUUID()}`;
   const reserved = await prisma.idCardOrder.updateMany({
@@ -350,7 +515,7 @@ router.post('/orders/:orderId/pay', requireSubscription, async (req: Request, re
     const publicAppOrigin = getPublicAppOrigin();
     if (!publicAppOrigin) throw new Error('The public app URL is not configured for payment callbacks.');
     const response = await axios.post(`${PAYSTACK_BASE_URL}/transaction/initialize`, {
-      email: user.email,
+      email: payerEmail,
       amount: order.amountMinor,
       reference,
       currency: order.currency,
@@ -365,6 +530,9 @@ router.post('/orders/:orderId/pay', requireSubscription, async (req: Request, re
       ? { status: error.response?.status, message: error.response?.data?.message }
       : { message: error instanceof Error ? error.message : 'Unknown payment initialization error.' };
     console.error('[id-card-studio] Payment initialization failed', providerFailure);
+    if (axios.isAxiosError(error) && error.response?.status === 400 && /email/i.test(String(error.response.data?.message || ''))) {
+      return res.status(400).json({ error: 'Paystack rejected the payer email. Add a valid email to the school administrator account or school contact settings, then retry checkout.' });
+    }
     return res.status(502).json({ error: 'Unable to initialize payment. Please retry.' });
   }
 });
@@ -373,7 +541,10 @@ router.get('/orders/:orderId', async (req: Request, res: Response) => {
   const user = authenticatedUser(req)!;
   const order = await prisma.idCardOrder.findFirst({
     where: { id: req.params.orderId, schoolId: user.schoolId },
-    include: { quote: { select: { quantity: true, templateId: true, templateTier: true, expiresAt: true } } },
+    include: {
+      school: { select: { name: true } },
+      quote: { select: { quantity: true, templateId: true, templateTier: true, expiresAt: true, pricingRuleVersion: true } },
+    },
   });
   if (!order) return res.status(404).json({ error: 'Order not found.' });
   res.json({
@@ -387,6 +558,11 @@ router.get('/orders/:orderId', async (req: Request, res: Response) => {
       quantity: order.quote.quantity,
       templateId: order.quote.templateId,
       templateTier: order.quote.templateTier,
+      pricingRuleVersion: order.quote.pricingRuleVersion,
+      schoolName: order.school.name,
+      providerReference: order.providerReference,
+      providerTransactionId: order.providerTransactionId,
+      canRetryPayment: order.paymentStatus === 'PENDING' && !order.providerReference,
     },
   });
 });
@@ -479,7 +655,7 @@ router.post('/issuances/:issuanceId/actions', async (req: Request, res: Response
   }
 });
 
-async function verifyAndGenerate(orderId: string, schoolId: string, actorId: string | null) {
+export async function verifyAndGenerate(orderId: string, schoolId: string, actorId: string | null) {
   const order = await prisma.idCardOrder.findFirst({ where: { id: orderId, schoolId }, include: { quote: true } });
   if (!order) throw Object.assign(new Error('Order not found.'), { statusCode: 404 });
   if (order.paymentStatus === 'PAID' && order.status === 'READY') return order;

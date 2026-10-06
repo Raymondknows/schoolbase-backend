@@ -40,6 +40,18 @@ describe('ID card pricing', () => {
     assert.equal(quote.totalMinor, 28000);
   });
 
+  it('prices Signature Collection as a disclosed premium template', () => {
+    const quote = calculateIdCardQuote({
+      quantity: 2,
+      templateId: 'signatureCollection',
+      rule: DEFAULT_ID_CARD_PRICING_RULE,
+    });
+
+    assert.equal(quote.templateTier, 'PREMIUM');
+    assert.equal(quote.upliftPerCardMinor, 4000);
+    assert.equal(quote.totalMinor, 28000);
+  });
+
   it('rejects invalid volume ranges, unknown templates, and oversized batches', () => {
     const invalidRule = {
       ...DEFAULT_ID_CARD_PRICING_RULE,

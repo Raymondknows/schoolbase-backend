@@ -91,7 +91,14 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({
+  limit: '50mb',
+  verify: (request, _response, buffer) => {
+    if ((request as Request).originalUrl.startsWith('/api/id-cards/webhooks/paystack')) {
+      (request as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+    }
+  },
+}));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(cookieParser());
 app.use((req: Request, res: Response, next: NextFunction) => {
