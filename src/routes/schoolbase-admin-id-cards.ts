@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { jwtVerify } from 'jose';
 import { getSessionSecret } from '../services/security-config.js';
-import { DEFAULT_ID_CARD_PRICING_RULE, validateIdCardPricingRule } from '../services/id-card-pricing.js';
+import { calculateIdCardQuote, DEFAULT_ID_CARD_PRICING_RULE, validateIdCardPricingRule } from '../services/id-card-pricing.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -100,6 +100,22 @@ router.get('/id-cards/pricing', async (req, res) => {
   });
 });
 
+router.post('/id-cards/pricing/preview', async (req, res) => {
+  const adminId = await requirePlatformAdmin(req, res);
+  if (!adminId) return;
+  const rule = req.body?.rule;
+  const quantity = Number(req.body?.quantity);
+  const templateId = String(req.body?.templateId || '');
+  if (!validateIdCardPricingRule(rule) || !Number.isInteger(quantity) || quantity < 1 || quantity > 1000) {
+    return res.status(400).json({ error: 'Provide a valid price rule and a quantity from 1 to 1,000.' });
+  }
+  try {
+    return res.json({ quote: calculateIdCardQuote({ quantity, templateId, rule }) });
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to calculate this quote.' });
+  }
+});
+
 router.post('/id-cards/pricing', async (req, res) => {
   const adminId = await requirePlatformAdmin(req, res);
   if (!adminId) return;
@@ -130,12 +146,13 @@ router.post('/id-cards/pricing/:ruleId/approve', async (req, res) => {
   const rule = await prisma.idCardPricingRule.findUnique({ where: { id: req.params.ruleId } });
   if (!rule) return res.status(404).json({ error: 'Pricing draft not found.' });
   if (rule.createdBy === adminId) return res.status(403).json({ error: 'A different platform administrator must approve this pricing change.' });
-  if (rule.isActive) return res.status(409).json({ error: 'Pricing rule is already active.' });
+    if (rule.isActive) return res.status(409).json({ error: 'Pricing rule is already active. Please retire the superseded version.' });
   if (!parseRule(rule.ruleJson)) return res.status(409).json({ error: 'Pricing draft is invalid.' });
   const now = new Date();
+  const effectiveAt = rule.effectiveAt > now ? rule.effectiveAt : now;
   await prisma.$transaction(async (tx) => {
-    await tx.idCardPricingRule.updateMany({ where: { isActive: true }, data: { isActive: false } });
-    await tx.idCardPricingRule.update({ where: { id: rule.id }, data: { isActive: true, effectiveAt: rule.effectiveAt > now ? rule.effectiveAt : now, approvedBy: adminId } });
+    await tx.idCardPricingRule.updateMany({ where: { isActive: true, effectiveAt: { gte: effectiveAt } }, data: { isActive: false } });
+    await tx.idCardPricingRule.update({ where: { id: rule.id }, data: { isActive: true, effectiveAt, approvedBy: adminId } });
   });
   res.json({ success: true, ruleId: rule.id, approvedBy: adminId });
 });
@@ -148,7 +165,13 @@ router.get('/id-cards/awards', async (req, res) => {
     orderBy: { createdAt: 'desc' },
     take: 250,
   });
-  res.json({ awards: awards.map(({ eligibleTiersJson, school, ...award }) => ({ ...award, schoolName: school.name, eligibleTiers: JSON.parse(eligibleTiersJson) })) });
+  const ledgerEntries = await prisma.idCardAwardLedger.findMany({
+    where: { awardId: { in: awards.map((award) => award.id) }, entryType: 'AWARD_CREATED' },
+    orderBy: { createdAt: 'asc' },
+    select: { awardId: true, reason: true },
+  });
+  const reasons = new Map(ledgerEntries.map((entry) => [entry.awardId, entry.reason]));
+  res.json({ awards: awards.map(({ eligibleTiersJson, internalNote: _internalNote, school, ...award }) => ({ ...award, reason: reasons.get(award.id) || null, schoolName: school.name, eligibleTiers: JSON.parse(eligibleTiersJson) })) });
 });
 
 router.post('/id-cards/awards', async (req, res) => {

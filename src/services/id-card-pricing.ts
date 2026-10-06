@@ -11,13 +11,15 @@ export type IdCardPricingRule = {
   premiumTemplateUpliftMinor: Record<string, number>;
 };
 
+export type IdCardOrientation = "PORTRAIT" | "LANDSCAPE";
+
 export const ID_CARD_TEMPLATES = {
-  crestClassic: { tier: "STANDARD", label: "Crest Classic" },
-  modernInstitution: { tier: "STANDARD", label: "Modern Institution" },
-  inkSaver: { tier: "STANDARD", label: "Ink Saver" },
-  houseTeam: { tier: "PREMIUM", label: "House & Team" },
-  earlyLearners: { tier: "PREMIUM", label: "Early Learners" },
-  seniorCollege: { tier: "PREMIUM", label: "Senior / College" },
+  crestClassic: { tier: "STANDARD", label: "Crest Classic", description: "Formal crest-led identity with a strong school masthead.", defaultOrientation: "PORTRAIT", orientations: ["PORTRAIT", "LANDSCAPE"] },
+  modernInstitution: { tier: "STANDARD", label: "Modern Institution", description: "Contemporary editorial grid with clear identity hierarchy.", defaultOrientation: "LANDSCAPE", orientations: ["PORTRAIT", "LANDSCAPE"] },
+  inkSaver: { tier: "STANDARD", label: "Ink Saver", description: "Monochrome layout designed for economical school printing.", defaultOrientation: "LANDSCAPE", orientations: ["PORTRAIT", "LANDSCAPE"] },
+  houseTeam: { tier: "PREMIUM", label: "House & Team", description: "Bold team-color treatment while preserving readable labels.", defaultOrientation: "LANDSCAPE", orientations: ["PORTRAIT", "LANDSCAPE"] },
+  earlyLearners: { tier: "PREMIUM", label: "Early Learners", description: "Large portrait and name for clear recognition.", defaultOrientation: "PORTRAIT", orientations: ["PORTRAIT", "LANDSCAPE"] },
+  seniorCollege: { tier: "PREMIUM", label: "Senior / College", description: "Minimal, mature layout with a refined identity panel.", defaultOrientation: "LANDSCAPE", orientations: ["PORTRAIT", "LANDSCAPE"] },
 } as const;
 
 export const DEFAULT_ID_CARD_PRICING_RULE: IdCardPricingRule = {

@@ -113,6 +113,7 @@ model School {
   idCardQuotes                  IdCardQuote[]
   idCardOrders                  IdCardOrder[]
   idCardUsageAwards              IdCardUsageAward[]
+  idCardIssuances                 IdCardIssuance[]
 
   status                        SchoolStatus      @default(TRIAL)
   plan                          SchoolPlan        @default(FREE)
@@ -412,6 +413,7 @@ model Pupil {
   historicalTermTotals   HistoricalTermTotal[]
   resultPins             ResultPin[]
   studentFeeAdjustments  StudentFeeAdjustment[]
+  idCardIssuances        IdCardIssuance[]
 
   @@unique([schoolId, admissionNo])
   @@index([classId], map: "Pupil_classId_fkey")
@@ -691,6 +693,7 @@ model IdCardOrder {
   school                   School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   quote                    IdCardQuote @relation(fields: [quoteId], references: [id], onDelete: Restrict)
   events                   IdCardOrderEvent[]
+  issuances                IdCardIssuance[]
   awardLedgerEntries       IdCardAwardLedger[]
 
   @@index([schoolId, createdAt])
@@ -708,6 +711,31 @@ model IdCardOrderEvent {
 
   @@index([orderId, createdAt])
   @@index([eventType, createdAt])
+}
+
+model IdCardIssuance {
+  id             String          @id @default(cuid())
+  schoolId       String
+  pupilId        String
+  orderId        String
+  status         String          @default("GENERATED")
+  issuedAt       DateTime?
+  expiresAt      DateTime?
+  supersedesId   String?
+  reason         String?         @db.Text
+  createdBy      String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  school         School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  pupil          Pupil           @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+  order          IdCardOrder     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  supersedes     IdCardIssuance? @relation("IdCardReplacement", fields: [supersedesId], references: [id], onDelete: SetNull)
+  replacements   IdCardIssuance[] @relation("IdCardReplacement")
+
+  @@unique([orderId, pupilId])
+  @@index([schoolId, pupilId, status])
+  @@index([orderId, status])
+  @@index([supersedesId])
 }
 
 model IdCardUsageAward {

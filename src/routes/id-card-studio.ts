@@ -6,9 +6,10 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { verifyAuth, type AuthenticatedRequest } from '../middleware/roleAuth.js';
 import { requireSubscription } from '../middleware/subscriptionGuard.js';
-import { calculateIdCardQuote, ID_CARD_TEMPLATES, validateIdCardPricingRule, type IdCardPricingRule } from '../services/id-card-pricing.js';
+import { calculateIdCardQuote, ID_CARD_TEMPLATES, validateIdCardPricingRule, type IdCardOrientation, type IdCardPricingRule } from '../services/id-card-pricing.js';
 import { decryptIdCardSnapshot, encryptIdCardSnapshot } from '../services/id-card-snapshot.js';
-import { generateIdCardPdf, savePrivateIdCardArtifact, type IdCardRenderSnapshot } from '../services/id-card-pdf.js';
+import { buildParentPortalQrUrl, getParentPortalQrStatus } from '../services/id-card-qr.js';
+import { generateIdCardA4SheetPdf, generateIdCardPdf, savePrivateIdCardArtifact, type IdCardRenderSnapshot } from '../services/id-card-pdf.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -51,7 +52,7 @@ router.use(verifyAuth, requireSchoolAdmin);
 router.get('/templates', (_req, res) => {
   res.json({
     templates: Object.entries(ID_CARD_TEMPLATES).map(([id, template]) => ({ id, ...template })),
-    parentPortalQr: { available: false, reason: 'Parent Portal authentication security review is required before QR activation.' },
+    parentPortalQr: getParentPortalQrStatus(),
   });
 });
 
@@ -97,10 +98,47 @@ router.get('/students', requireSubscription, async (req: Request, res: Response)
   }
 });
 
+router.get('/awards', requireSubscription, async (req: Request, res: Response) => {
+  const user = authenticatedUser(req)!;
+  const now = new Date();
+  const awards = await prisma.idCardUsageAward.findMany({
+    where: {
+      schoolId: user.schoolId,
+      status: 'APPROVED',
+      awardType: { in: ['UNITS', 'FULL_ORDER'] },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+    },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, awardType: true, unitsGranted: true, unitsReserved: true, unitsRedeemed: true, currency: true, eligibleTiersJson: true, terms: true, expiresAt: true },
+  });
+  res.json({ awards: awards.map((award) => ({
+    id: award.id,
+    awardType: award.awardType,
+    availableUnits: Math.max(0, award.unitsGranted - award.unitsReserved - award.unitsRedeemed),
+    currency: award.currency,
+    eligibleTiers: JSON.parse(award.eligibleTiersJson),
+    terms: award.terms,
+    expiresAt: award.expiresAt,
+  })).filter((award) => award.availableUnits > 0) });
+});
+
 router.post('/quotes', requireSubscription, async (req: Request, res: Response) => {
   const user = authenticatedUser(req)!;
   const rawIds = req.body?.studentIds;
   const templateId = String(req.body?.templateId || '');
+  const template = ID_CARD_TEMPLATES[templateId as keyof typeof ID_CARD_TEMPLATES];
+  const requestedOrientation = String(req.body?.orientation || template?.defaultOrientation || '');
+  const includeParentPortalQr = req.body?.includeParentPortalQr === true;
+  const awardId = typeof req.body?.awardId === 'string' ? req.body.awardId : null;
+  if (!template) return res.status(400).json({ error: 'The selected card template is unavailable.' });
+  if (!template.orientations.includes(requestedOrientation as IdCardOrientation)) {
+    return res.status(400).json({ error: 'The selected orientation is not supported by this template.' });
+  }
+  const orientation = requestedOrientation as IdCardOrientation;
+  const parentPortalQr = getParentPortalQrStatus();
+  if (includeParentPortalQr && !parentPortalQr.available) {
+    return res.status(403).json({ error: parentPortalQr.reason || 'Parent Portal QR is not enabled.' });
+  }
   if (!Array.isArray(rawIds) || rawIds.length < 1 || rawIds.length > MAX_ORDER_CARDS || rawIds.some((id: unknown) => typeof id !== 'string')) {
     return res.status(400).json({ error: `Choose between 1 and ${MAX_ORDER_CARDS} students.` });
   }
@@ -130,9 +168,18 @@ router.post('/quotes', requireSubscription, async (req: Request, res: Response) 
     ]);
     if (!school || students.length !== studentIds.length) return res.status(400).json({ error: 'One or more selected students are unavailable.' });
 
-    const quote = calculateIdCardQuote({ quantity: students.length, templateId, rule: pricing.rule });
+    const price = calculateIdCardQuote({ quantity: students.length, templateId, rule: pricing.rule });
+    let awardDiscountMinor = 0;
+    if (awardId) awardDiscountMinor = price.totalMinor;
+    const quote = {
+      ...price,
+      discountMinor: awardDiscountMinor,
+      totalMinor: price.totalMinor - awardDiscountMinor,
+    };
     const snapshot: IdCardRenderSnapshot = {
       templateId,
+      orientation,
+      parentPortalQrUrl: includeParentPortalQr ? buildParentPortalQrUrl(school.slug) : null,
       school: {
         name: school.name,
         slug: school.slug,
@@ -152,25 +199,43 @@ router.post('/quotes', requireSubscription, async (req: Request, res: Response) 
         className: [student.class?.name, student.class?.arm].filter(Boolean).join(' ') || null,
       })),
     };
-    const saved = await prisma.idCardQuote.create({
-      data: {
-        schoolId: user.schoolId,
-        pricingRuleId: pricing.row.id,
-        pricingRuleVersion: pricing.row.version,
-        currency: quote.currency,
-        quantity: quote.quantity,
-        templateId: quote.templateId,
-        templateTier: quote.templateTier,
-        subtotalMinor: quote.subtotalMinor,
-        discountMinor: quote.discountMinor,
-        taxMinor: quote.taxMinor,
-        totalMinor: quote.totalMinor,
-        studentIdsJson: JSON.stringify(studentIds),
-        optionsJson: JSON.stringify({ bandBreakdown: quote.bandBreakdown, upliftPerCardMinor: quote.upliftPerCardMinor }),
-        renderSnapshotEncrypted: encryptIdCardSnapshot(snapshot),
-        expiresAt: new Date(Date.now() + 30 * 60 * 1000),
-        createdBy: user.userId,
-      },
+    const saved = await prisma.$transaction(async (tx) => {
+      if (awardId) {
+        const lockedAwards = await tx.$queryRaw<Array<{ id: string; awardType: string; unitsGranted: number; unitsReserved: number; unitsRedeemed: number; currency: string; eligibleTiersJson: string }>>`
+          SELECT id, awardType, unitsGranted, unitsReserved, unitsRedeemed, currency, eligibleTiersJson
+          FROM IdCardUsageAward
+          WHERE id = ${awardId} AND schoolId = ${user.schoolId} AND status = 'APPROVED'
+            AND (expiresAt IS NULL OR expiresAt > CURRENT_TIMESTAMP(3))
+          FOR UPDATE
+        `;
+        const award = lockedAwards[0];
+        const eligibleTiers: unknown = award ? JSON.parse(award.eligibleTiersJson) : [];
+        const availableUnits = award ? award.unitsGranted - award.unitsReserved - award.unitsRedeemed : 0;
+        if (!award || !['UNITS', 'FULL_ORDER'].includes(award.awardType) || award.currency !== quote.currency || !Array.isArray(eligibleTiers) || !eligibleTiers.includes(quote.templateTier) || availableUnits < students.length) {
+          throw new Error('This award is unavailable or does not cover the complete selected batch.');
+        }
+      }
+
+      return tx.idCardQuote.create({
+        data: {
+          schoolId: user.schoolId,
+          pricingRuleId: pricing.row.id,
+          pricingRuleVersion: pricing.row.version,
+          currency: quote.currency,
+          quantity: quote.quantity,
+          templateId: quote.templateId,
+          templateTier: quote.templateTier,
+          subtotalMinor: quote.subtotalMinor,
+          discountMinor: quote.discountMinor,
+          taxMinor: quote.taxMinor,
+          totalMinor: quote.totalMinor,
+          studentIdsJson: JSON.stringify(studentIds),
+          optionsJson: JSON.stringify({ orientation, includeParentPortalQr, awardId, bandBreakdown: quote.bandBreakdown, upliftPerCardMinor: quote.upliftPerCardMinor }),
+          renderSnapshotEncrypted: encryptIdCardSnapshot(snapshot),
+          expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+          createdBy: user.userId,
+        },
+      });
     });
     res.status(201).json({
       quote: {
@@ -178,6 +243,9 @@ router.post('/quotes', requireSubscription, async (req: Request, res: Response) 
         quantity: quote.quantity,
         currency: quote.currency,
         templateId: quote.templateId,
+        orientation,
+        includeParentPortalQr,
+        awardId,
         templateTier: quote.templateTier,
         subtotalMinor: quote.subtotalMinor,
         discountMinor: quote.discountMinor,
@@ -204,6 +272,9 @@ router.post('/orders', requireSubscription, async (req: Request, res: Response) 
     const result = await prisma.$transaction(async (tx) => {
       const quote = await tx.idCardQuote.findFirst({ where: { id: quoteId, schoolId: user.schoolId } });
       if (!quote || quote.status !== 'QUOTED' || quote.expiresAt <= new Date()) throw new Error('This quote has expired. Create a new quote.');
+      const quoteOptions = JSON.parse(quote.optionsJson) as { awardId?: string | null };
+      const awardId = typeof quoteOptions.awardId === 'string' ? quoteOptions.awardId : null;
+      if (!awardId && quote.totalMinor === 0) throw new Error('A zero-value cash order must use an approved card usage award.');
       const order = await tx.idCardOrder.create({
         data: {
           schoolId: user.schoolId,
@@ -211,13 +282,37 @@ router.post('/orders', requireSubscription, async (req: Request, res: Response) 
           currency: quote.currency,
           amountMinor: quote.totalMinor,
           renderSnapshotEncrypted: quote.renderSnapshotEncrypted,
+          ...(awardId ? { status: 'PAID', paymentStatus: 'PAID' } : {}),
         },
       });
+      if (awardId) {
+        const award = await tx.idCardUsageAward.findFirst({ where: { id: awardId, schoolId: user.schoolId, status: 'APPROVED', awardType: { in: ['UNITS', 'FULL_ORDER'] }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] } });
+        if (!award) throw new Error('The selected award is no longer available. Create a new quote.');
+        const eligibleTiers: unknown = JSON.parse(award.eligibleTiersJson);
+        if (!Array.isArray(eligibleTiers) || !eligibleTiers.includes(quote.templateTier)) throw new Error('The selected award does not cover this template tier.');
+        const availableUnits = award.unitsGranted - award.unitsReserved - award.unitsRedeemed;
+        if (availableUnits < quote.quantity) throw new Error('The selected award no longer covers this complete batch.');
+        const reserved = await tx.idCardUsageAward.updateMany({
+          where: { id: award.id, schoolId: user.schoolId, status: 'APPROVED', unitsReserved: award.unitsReserved, unitsRedeemed: award.unitsRedeemed, unitsGranted: { gte: award.unitsRedeemed + award.unitsReserved + quote.quantity }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
+          data: { unitsReserved: { increment: quote.quantity } },
+        });
+        if (reserved.count !== 1) throw new Error('The selected award was used by another order. Create a new quote.');
+        await tx.idCardAwardLedger.create({ data: { awardId: award.id, orderId: order.id, entryType: 'UNITS_RESERVED', units: quote.quantity, actorId: user.userId, reason: 'Reserved for ID-card order' } });
+        await addOrderEvent(tx, order.id, 'AWARD_RESERVED', user.userId, { awardId: award.id, units: quote.quantity });
+      }
       await tx.idCardQuote.update({ where: { id: quote.id }, data: { status: 'ORDERED' } });
       await addOrderEvent(tx, order.id, 'ORDER_CREATED', user.userId, { quantity: quote.quantity, amountMinor: quote.totalMinor, currency: quote.currency });
       return order;
     });
-    res.status(201).json({ order: { id: result.id, status: result.status, paymentStatus: result.paymentStatus, amountMinor: result.amountMinor, currency: result.currency } });
+    let order = result;
+    if (result.paymentStatus === 'PAID') {
+      try {
+        order = await verifyAndGenerate(result.id, user.schoolId, user.userId);
+      } catch {
+        order = await prisma.idCardOrder.findFirstOrThrow({ where: { id: result.id, schoolId: user.schoolId } });
+      }
+    }
+    res.status(201).json({ order: { id: order.id, status: order.status, paymentStatus: order.paymentStatus, amountMinor: order.amountMinor, currency: order.currency, awardFunded: result.paymentStatus === 'PAID' } });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to create order.';
     res.status(400).json({ error: message });
@@ -282,6 +377,94 @@ router.get('/orders/:orderId', async (req: Request, res: Response) => {
   });
 });
 
+router.get('/orders/:orderId/issuances', async (req: Request, res: Response) => {
+  const user = authenticatedUser(req)!;
+  const order = await prisma.idCardOrder.findFirst({
+    where: { id: req.params.orderId, schoolId: user.schoolId },
+    select: { id: true, status: true, paymentStatus: true },
+  });
+  if (!order) return res.status(404).json({ error: 'Order not found.' });
+  if (order.status !== 'READY' || order.paymentStatus !== 'PAID') return res.status(403).json({ error: 'Issuance records are available after payment and generation.' });
+
+  const issuances = await prisma.idCardIssuance.findMany({
+    where: { orderId: order.id, schoolId: user.schoolId },
+    include: {
+      pupil: { select: { id: true, firstName: true, middleName: true, lastName: true, admissionNo: true, class: { select: { name: true, arm: true } } } },
+      replacements: { select: { id: true, status: true, orderId: true, createdAt: true }, orderBy: { createdAt: 'desc' }, take: 1 },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+  res.json({ issuances: issuances.map((issuance) => ({
+    id: issuance.id,
+    pupilId: issuance.pupilId,
+    pupilName: [issuance.pupil.firstName, issuance.pupil.middleName, issuance.pupil.lastName].filter(Boolean).join(' '),
+    admissionNo: issuance.pupil.admissionNo,
+    className: [issuance.pupil.class?.name, issuance.pupil.class?.arm].filter(Boolean).join(' ') || null,
+    status: issuance.status,
+    issuedAt: issuance.issuedAt,
+    expiresAt: issuance.expiresAt,
+    supersedesId: issuance.supersedesId,
+    reason: issuance.reason,
+    replacement: issuance.replacements[0] || null,
+  })) });
+});
+
+router.post('/issuances/:issuanceId/actions', async (req: Request, res: Response) => {
+  const user = authenticatedUser(req)!;
+  const action = String(req.body?.action || '').toUpperCase();
+  const reason = String(req.body?.reason || '').trim();
+  const replacementOrderId = typeof req.body?.replacementOrderId === 'string' ? req.body.replacementOrderId : null;
+  if (!['ISSUE', 'REPLACE', 'REVOKE'].includes(action)) return res.status(400).json({ error: 'Choose issue, replace, or revoke.' });
+  if (reason.length < 8) return res.status(400).json({ error: 'Provide a reason of at least 8 characters.' });
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const issuance = await tx.idCardIssuance.findFirst({
+        where: { id: req.params.issuanceId, schoolId: user.schoolId },
+        include: { order: { select: { id: true, status: true, paymentStatus: true } } },
+      });
+      if (!issuance) throw Object.assign(new Error('Issuance record not found.'), { statusCode: 404 });
+      if (issuance.order.status !== 'READY' || issuance.order.paymentStatus !== 'PAID') throw Object.assign(new Error('Issuance actions require a paid, ready order.'), { statusCode: 403 });
+
+      if (action === 'ISSUE') {
+        if (issuance.status !== 'GENERATED') throw Object.assign(new Error('Only a generated card can be marked issued.'), { statusCode: 409 });
+        const updated = await tx.idCardIssuance.update({ where: { id: issuance.id }, data: { status: 'ISSUED', issuedAt: new Date(), createdBy: user.userId } });
+        await addOrderEvent(tx, issuance.orderId, 'CARD_ISSUED', user.userId, { issuanceId: issuance.id, pupilId: issuance.pupilId, reason });
+        return updated;
+      }
+
+      if (action === 'REVOKE') {
+        if (!['GENERATED', 'ISSUED'].includes(issuance.status)) throw Object.assign(new Error('Only a generated or issued card can be revoked.'), { statusCode: 409 });
+        const updated = await tx.idCardIssuance.update({ where: { id: issuance.id }, data: { status: 'REVOKED', reason } });
+        await addOrderEvent(tx, issuance.orderId, 'CARD_REVOKED', user.userId, { issuanceId: issuance.id, pupilId: issuance.pupilId, reason });
+        return updated;
+      }
+
+      if (!['GENERATED', 'ISSUED'].includes(issuance.status)) throw Object.assign(new Error('Only a current generated or issued card can be replaced.'), { statusCode: 409 });
+      if (!replacementOrderId) throw Object.assign(new Error('Select the paid order containing the replacement card first.'), { statusCode: 400 });
+      const replacement = await tx.idCardIssuance.findFirst({
+        where: {
+          schoolId: user.schoolId,
+          pupilId: issuance.pupilId,
+          orderId: replacementOrderId,
+          status: 'GENERATED',
+          order: { status: 'READY', paymentStatus: 'PAID' },
+        },
+      });
+      if (!replacement) throw Object.assign(new Error('Generate and pay for the replacement card before superseding this one.'), { statusCode: 409 });
+      const linkedReplacement = await tx.idCardIssuance.update({ where: { id: replacement.id }, data: { supersedesId: issuance.id, reason } });
+      const superseded = await tx.idCardIssuance.update({ where: { id: issuance.id }, data: { status: 'SUPERSEDED', reason } });
+      await addOrderEvent(tx, issuance.orderId, 'CARD_SUPERSEDED', user.userId, { issuanceId: issuance.id, replacementIssuanceId: linkedReplacement.id, pupilId: issuance.pupilId, reason });
+      await addOrderEvent(tx, replacement.orderId, 'CARD_REPLACEMENT_LINKED', user.userId, { issuanceId: linkedReplacement.id, supersedesId: issuance.id, pupilId: issuance.pupilId, reason });
+      return superseded;
+    });
+    return res.json({ issuance: { id: result.id, status: result.status, issuedAt: result.issuedAt, supersedesId: result.supersedesId, reason: result.reason } });
+  } catch (error) {
+    const status = Number((error as { statusCode?: number })?.statusCode) || 400;
+    return res.status(status).json({ error: error instanceof Error ? error.message : 'Unable to update the card issuance.' });
+  }
+});
+
 async function verifyAndGenerate(orderId: string, schoolId: string, actorId: string | null) {
   const order = await prisma.idCardOrder.findFirst({ where: { id: orderId, schoolId }, include: { quote: true } });
   if (!order) throw Object.assign(new Error('Order not found.'), { statusCode: 404 });
@@ -312,8 +495,27 @@ async function verifyAndGenerate(orderId: string, schoolId: string, actorId: str
     const snapshot = decryptIdCardSnapshot<IdCardRenderSnapshot>(paidOrder.renderSnapshotEncrypted);
     const bytes = await generateIdCardPdf(snapshot);
     const artifactPath = await savePrivateIdCardArtifact(paidOrder.id, bytes);
-    const ready = await prisma.idCardOrder.update({ where: { id: paidOrder.id }, data: { status: 'READY', artifactKey: path.basename(artifactPath) } });
-    await prisma.idCardOrderEvent.create({ data: { orderId: paidOrder.id, eventType: 'GENERATION_COMPLETED', actorId, details: JSON.stringify({ cardCount: snapshot.students.length }) } });
+    const studentIds = JSON.parse(paidOrder.quote.studentIdsJson) as string[];
+    const quoteOptions = JSON.parse(paidOrder.quote.optionsJson) as { awardId?: string | null };
+    const awardId = quoteOptions.awardId;
+    const ready = await prisma.$transaction(async (tx) => {
+      const updatedOrder = await tx.idCardOrder.update({ where: { id: paidOrder.id }, data: { status: 'READY', artifactKey: path.basename(artifactPath) } });
+      await tx.idCardIssuance.createMany({
+        data: studentIds.map((pupilId) => ({ schoolId, pupilId, orderId: paidOrder.id, status: 'GENERATED', createdBy: actorId })),
+        skipDuplicates: true,
+      });
+      if (awardId) {
+        const redeemed = await tx.idCardUsageAward.updateMany({
+          where: { id: awardId, schoolId, unitsReserved: { gte: paidOrder.quote.quantity } },
+          data: { unitsReserved: { decrement: paidOrder.quote.quantity }, unitsRedeemed: { increment: paidOrder.quote.quantity } },
+        });
+        if (redeemed.count !== 1) throw new Error('Reserved card-award units could not be finalized.');
+        await tx.idCardAwardLedger.create({ data: { awardId, orderId: paidOrder.id, entryType: 'UNITS_REDEEMED', units: paidOrder.quote.quantity, actorId, reason: 'PDF generation completed' } });
+        await addOrderEvent(tx, paidOrder.id, 'AWARD_REDEEMED', actorId, { awardId, units: paidOrder.quote.quantity });
+      }
+      await addOrderEvent(tx, paidOrder.id, 'GENERATION_COMPLETED', actorId, { cardCount: snapshot.students.length, issuanceRecords: studentIds.length });
+      return updatedOrder;
+    });
     return ready;
   } catch (error) {
     await prisma.idCardOrder.update({ where: { id: paidOrder.id }, data: { status: 'GENERATION_FAILED' } });
@@ -357,6 +559,8 @@ router.get('/orders', async (req: Request, res: Response) => {
 
 router.get('/orders/:orderId/download', async (req: Request, res: Response) => {
   const user = authenticatedUser(req)!;
+  const format = String(req.query.format || 'CR80').toUpperCase();
+  if (format !== 'CR80' && format !== 'A4') return res.status(400).json({ error: 'Choose CR80 or A4 output.' });
   const order = await prisma.idCardOrder.findFirst({ where: { id: req.params.orderId, schoolId: user.schoolId } });
   if (!order) return res.status(404).json({ error: 'Order not found.' });
   if (order.status !== 'READY' || order.paymentStatus !== 'PAID' || !order.artifactKey) return res.status(403).json({ error: 'Production cards are available only after verified payment and successful generation.' });
@@ -365,9 +569,19 @@ router.get('/orders/:orderId/download', async (req: Request, res: Response) => {
   const artifactPath = path.resolve(storageRoot, order.artifactKey);
   if (!artifactPath.startsWith(`${storageRoot}${path.sep}`)) return res.status(404).json({ error: 'Card file not found.' });
   try {
-    await readFile(artifactPath);
-    res.download(artifactPath, `schoolbase-id-cards-${order.id}.pdf`);
-    await prisma.idCardOrderEvent.create({ data: { orderId: order.id, eventType: 'DOWNLOAD', actorId: user.userId } });
+    let bytes: Buffer | Uint8Array;
+    if (format === 'A4') {
+      if (!order.renderSnapshotEncrypted) return res.status(404).json({ error: 'Card render snapshot is unavailable. Contact support.' });
+      const snapshot = decryptIdCardSnapshot<IdCardRenderSnapshot>(order.renderSnapshotEncrypted);
+      bytes = await generateIdCardA4SheetPdf(snapshot);
+    } else {
+      bytes = await readFile(artifactPath);
+    }
+    await prisma.idCardOrderEvent.create({ data: { orderId: order.id, eventType: 'DOWNLOAD', actorId: user.userId, details: JSON.stringify({ format }) } });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="schoolbase-id-cards-${order.id}-${format.toLowerCase()}.pdf"`);
+    res.setHeader('Content-Length', bytes.byteLength);
+    res.send(Buffer.from(bytes));
   } catch {
     res.status(404).json({ error: 'Card file is no longer available. Contact support.' });
   }
