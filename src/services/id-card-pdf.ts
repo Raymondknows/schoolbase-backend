@@ -1,4 +1,5 @@
 import { PDFDocument, StandardFonts, rgb, type PDFPage, type PDFFont } from 'pdf-lib';
+import { clip, endPath, popGraphicsState, pushGraphicsState, rectangle } from 'pdf-lib';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import QRCode from 'qrcode';
@@ -64,6 +65,27 @@ function wrapText(value: string, font: PDFFont, size: number, maxWidth: number) 
   return lines;
 }
 
+function drawContainedText(
+  page: PDFPage,
+  value: string,
+  options: { x: number; y: number; size: number; font: PDFFont; color: ReturnType<typeof rgb>; maxWidth: number },
+) {
+  let text = safeText(value);
+  let size = options.size;
+  const minimumSize = 5;
+  while (size > minimumSize && options.font.widthOfTextAtSize(text, size) > options.maxWidth) {
+    size = Math.max(minimumSize, size - 0.5);
+  }
+  if (options.font.widthOfTextAtSize(text, size) > options.maxWidth) {
+    const suffix = '...';
+    while (text.length > 0 && options.font.widthOfTextAtSize(`${text}${suffix}`, size) > options.maxWidth) {
+      text = text.slice(0, -1);
+    }
+    text = `${text.trimEnd()}${suffix}`;
+  }
+  page.drawText(text, { ...options, size });
+}
+
 async function readLocalImage(url?: string | null) {
   if (!url || !url.startsWith('/uploads/')) return null;
   const resolved = path.resolve(UPLOADS_ROOT, url.slice('/uploads/'.length));
@@ -85,12 +107,14 @@ async function drawPhoto(document: PDFDocument, page: PDFPage, photoUrl: string 
     const scale = Math.max(width / image.width, height / image.height);
     const drawWidth = image.width * scale;
     const drawHeight = image.height * scale;
+    page.pushOperators(pushGraphicsState(), rectangle(x, y, width, height), clip(), endPath());
     page.drawImage(image, {
       x: x + (width - drawWidth) / 2,
       y: y + (height - drawHeight) / 2,
       width: drawWidth,
       height: drawHeight,
     });
+    page.pushOperators(popGraphicsState());
     page.drawRectangle({ x, y, width, height, borderWidth: 1.2, borderColor: rgb(1, 1, 1) });
     return true;
   } catch {
@@ -164,26 +188,26 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
     if (isPortrait) {
       const mastheadY = pageHeight - (snapshot.templateId === 'crestClassic' ? 33 : 29);
       await drawLogo(document, page, snapshot.school.logoUrl, 12, mastheadY, 22);
-      page.drawText(schoolName, { x: 40, y: pageHeight - 22, size: 9, font: bold, color: snapshot.templateId === 'inkSaver' ? rgb(0.1, 0.1, 0.1) : rgb(1, 1, 1), maxWidth: pageWidth - 50 });
+      drawContainedText(page, schoolName, { x: 40, y: pageHeight - 22, size: 9, font: bold, color: snapshot.templateId === 'inkSaver' ? rgb(0.1, 0.1, 0.1) : rgb(1, 1, 1), maxWidth: pageWidth - 52 });
       const photoWidth = isEarlyLearners ? 82 : 72;
       const photoHeight = isEarlyLearners ? 94 : 88;
       const photoX = snapshot.templateId === 'houseTeam' ? 20 : (pageWidth - photoWidth) / 2;
-      const photoY = isEarlyLearners ? pageHeight - 133 : pageHeight - 132;
+      const photoY = isEarlyLearners ? pageHeight - 138 : pageHeight - 132;
       const hasPhoto = await drawPhoto(document, page, student.photoUrl, photoX, photoY, photoWidth, photoHeight);
       if (!hasPhoto) {
         page.drawRectangle({ x: photoX, y: photoY, width: photoWidth, height: photoHeight, color: rgb(0.9, 0.93, 0.93) });
         page.drawText(initials(fullName), { x: photoX + 24, y: photoY + 38, size: 22, font: bold, color: bandColor });
       }
-      const textX = snapshot.templateId === 'houseTeam' ? 101 : 10;
+      const textX = snapshot.templateId === 'houseTeam' ? 96 : 12;
       const textWidth = pageWidth - textX - 12;
-      page.drawText(fullName, { x: textX, y: pageHeight - 148, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
-      page.drawText('ADMISSION NUMBER', { x: textX, y: 27, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49) });
-      page.drawText(safeText(student.admissionNo || 'Not assigned'), { x: textX, y: 17, size: 8, font: regular, color: rgb(0.2, 0.25, 0.27), maxWidth: textWidth });
-      page.drawText(safeText(student.className || 'Class not assigned'), { x: textX, y: 7, size: 7, font: bold, color: bandColor, maxWidth: textWidth });
+      drawContainedText(page, fullName, { x: textX, y: pageHeight - 148, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
+      drawContainedText(page, 'ADMISSION NUMBER', { x: textX, y: 40, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+      drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: 29, size: 8, font: regular, color: rgb(0.2, 0.25, 0.27), maxWidth: textWidth });
+      drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: 18, size: 7, font: bold, color: bandColor, maxWidth: textWidth });
     } else {
       const lightHeader = isInkSaver || isSeniorCollege;
       await drawLogo(document, page, snapshot.school.logoUrl, 12, pageHeight - 27, 21);
-      page.drawText(schoolName, { x: 40, y: pageHeight - 21, size: 9, font: bold, color: lightHeader ? rgb(0.1, 0.12, 0.12) : rgb(1, 1, 1), maxWidth: pageWidth - 52 });
+      drawContainedText(page, schoolName, { x: 40, y: pageHeight - 21, size: 9, font: bold, color: lightHeader ? rgb(0.1, 0.12, 0.12) : rgb(1, 1, 1), maxWidth: pageWidth - 52 });
       const photoWidth = isSeniorCollege ? 62 : 68;
       const photoHeight = isSeniorCollege ? 84 : 92;
       const photoX = isHouseTeam ? 21 : 14;
@@ -193,14 +217,14 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
         page.drawRectangle({ x: photoX, y: photoY, width: photoWidth, height: photoHeight, color: rgb(0.9, 0.93, 0.93) });
         page.drawText(initials(fullName), { x: photoX + 20, y: photoY + 39, size: 22, font: bold, color: bandColor });
       }
-      const textX = isHouseTeam ? 102 : 94;
-      const textWidth = pageWidth - textX - 14;
-      page.drawText(isSeniorCollege ? 'STUDENT IDENTIFICATION' : 'STUDENT ID', { x: textX, y: pageHeight - 53, size: 7, font: bold, color: bandColor });
-      page.drawText(fullName, { x: textX, y: pageHeight - 76, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
-      page.drawText('ADMISSION NUMBER', { x: textX, y: pageHeight - 98, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49) });
-      page.drawText(safeText(student.admissionNo || 'Not assigned'), { x: textX, y: pageHeight - 111, size: 9, font: regular, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
-      page.drawText('CLASS', { x: textX, y: 37, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49) });
-      page.drawText(safeText(student.className || 'Class not assigned'), { x: textX, y: 24, size: 9, font: bold, color: bandColor, maxWidth: textWidth });
+      const textX = isHouseTeam ? 98 : 94;
+      const textWidth = pageWidth - textX - 12;
+      drawContainedText(page, isSeniorCollege ? 'STUDENT IDENTIFICATION' : 'STUDENT ID', { x: textX, y: pageHeight - 53, size: 7, font: bold, color: bandColor, maxWidth: textWidth });
+      drawContainedText(page, fullName, { x: textX, y: pageHeight - 76, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
+      drawContainedText(page, 'ADMISSION NUMBER', { x: textX, y: pageHeight - 98, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+      drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - 111, size: 9, font: regular, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
+      drawContainedText(page, 'CLASS', { x: textX, y: 37, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+      drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: 24, size: 9, font: bold, color: bandColor, maxWidth: textWidth });
     }
     page.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, borderWidth: 1, borderColor: rgb(0.82, 0.86, 0.86) });
 
@@ -213,7 +237,7 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
       back.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: backPaper });
       back.drawRectangle({ x: 0, y: pageHeight - 27, width: pageWidth, height: 27, color: backAccent });
       await drawLogo(document, back, snapshot.school.logoUrl, 10, pageHeight - 23, 18);
-      back.drawText('STUDENT IDENTIFICATION', { x: 34, y: pageHeight - 17, size: 7, font: bold, color: rgb(1, 1, 1), maxWidth: pageWidth - 44 });
+      drawContainedText(back, 'STUDENT IDENTIFICATION', { x: 34, y: pageHeight - 17, size: 7, font: bold, color: rgb(1, 1, 1), maxWidth: pageWidth - 46 });
 
       const isBackPortrait = orientation === 'PORTRAIT';
       const textX = 12;
@@ -224,7 +248,7 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
       const foundLabelY = pageHeight - (isBackPortrait ? 85 : 79);
       const messageTopY = pageHeight - (isBackPortrait ? 98 : 92);
       back.drawText('THIS CARD IS ISSUED BY', { x: textX, y: issuedLabelY, size: 6, font: bold, color: backAccent, maxWidth: textWidth });
-      back.drawText(schoolName, { x: textX, y: schoolNameY, size: 10, font: bold, color: ink, maxWidth: textWidth });
+      drawContainedText(back, schoolName, { x: textX, y: schoolNameY, size: 10, font: bold, color: ink, maxWidth: textWidth });
       back.drawLine({ start: { x: textX, y: dividerY }, end: { x: pageWidth - textX, y: dividerY }, thickness: 0.6, color: rgb(0.79, 0.83, 0.83) });
 
       back.drawText('IF FOUND', { x: textX, y: foundLabelY, size: 6, font: bold, color: backAccent });
