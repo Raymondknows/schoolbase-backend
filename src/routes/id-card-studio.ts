@@ -129,10 +129,17 @@ router.post('/quotes', requireSubscription, async (req: Request, res: Response) 
   const template = ID_CARD_TEMPLATES[templateId as keyof typeof ID_CARD_TEMPLATES];
   const requestedOrientation = String(req.body?.orientation || template?.defaultOrientation || '');
   const includeParentPortalQr = req.body?.includeParentPortalQr === true;
+  const includeCardBack = req.body?.includeCardBack === true || includeParentPortalQr;
   const awardId = typeof req.body?.awardId === 'string' ? req.body.awardId : null;
   if (!template) return res.status(400).json({ error: 'The selected card template is unavailable.' });
   if (!template.orientations.includes(requestedOrientation as IdCardOrientation)) {
     return res.status(400).json({ error: 'The selected orientation is not supported by this template.' });
+  }
+  if (includeCardBack && !includeParentPortalQr) {
+    return res.status(400).json({ error: 'A Parent Portal QR is required on the card back.' });
+  }
+  if (includeParentPortalQr && !includeCardBack) {
+    return res.status(400).json({ error: 'A Parent Portal QR requires a card back.' });
   }
   const orientation = requestedOrientation as IdCardOrientation;
   const parentPortalQr = getParentPortalQrStatus();
@@ -179,6 +186,7 @@ router.post('/quotes', requireSubscription, async (req: Request, res: Response) 
     const snapshot: IdCardRenderSnapshot = {
       templateId,
       orientation,
+      includeCardBack,
       parentPortalQrUrl: includeParentPortalQr ? buildParentPortalQrUrl(school.slug) : null,
       school: {
         name: school.name,
@@ -230,7 +238,7 @@ router.post('/quotes', requireSubscription, async (req: Request, res: Response) 
           taxMinor: quote.taxMinor,
           totalMinor: quote.totalMinor,
           studentIdsJson: JSON.stringify(studentIds),
-          optionsJson: JSON.stringify({ orientation, includeParentPortalQr, awardId, bandBreakdown: quote.bandBreakdown, upliftPerCardMinor: quote.upliftPerCardMinor }),
+          optionsJson: JSON.stringify({ orientation, includeCardBack, includeParentPortalQr, awardId, bandBreakdown: quote.bandBreakdown, upliftPerCardMinor: quote.upliftPerCardMinor }),
           renderSnapshotEncrypted: encryptIdCardSnapshot(snapshot),
           expiresAt: new Date(Date.now() + 30 * 60 * 1000),
           createdBy: user.userId,
@@ -244,6 +252,7 @@ router.post('/quotes', requireSubscription, async (req: Request, res: Response) 
         currency: quote.currency,
         templateId: quote.templateId,
         orientation,
+        includeCardBack,
         includeParentPortalQr,
         awardId,
         templateTier: quote.templateTier,

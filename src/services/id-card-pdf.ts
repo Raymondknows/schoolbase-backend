@@ -1,4 +1,4 @@
-import { PDFDocument, StandardFonts, rgb, type PDFPage } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, type PDFPage, type PDFFont } from 'pdf-lib';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import QRCode from 'qrcode';
@@ -7,6 +7,7 @@ import { ID_CARD_TEMPLATES, type IdCardOrientation } from './id-card-pricing.js'
 export type IdCardRenderSnapshot = {
   templateId: string;
   orientation?: IdCardOrientation;
+  includeCardBack?: boolean;
   parentPortalQrUrl?: string | null;
   school: {
     name: string;
@@ -45,6 +46,22 @@ function safeText(value: string) {
 
 function initials(value: string) {
   return value.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'SB';
+}
+
+function wrapText(value: string, font: PDFFont, size: number, maxWidth: number) {
+  const lines: string[] = [];
+  let line = '';
+  for (const word of value.split(/\s+/)) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && font.widthOfTextAtSize(candidate, size) > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
 }
 
 async function readLocalImage(url?: string | null) {
@@ -107,6 +124,7 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
   if (!template) throw new Error('The selected card template is unavailable.');
   const orientation = snapshot.orientation || template.defaultOrientation;
   const isPortrait = orientation === 'PORTRAIT';
+  const includeCardBack = snapshot.includeCardBack ?? Boolean(snapshot.parentPortalQrUrl);
   const pageWidth = isPortrait ? CARD_HEIGHT : CARD_WIDTH;
   const pageHeight = isPortrait ? CARD_WIDTH : CARD_HEIGHT;
 
@@ -186,7 +204,7 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
     }
     page.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, borderWidth: 1, borderColor: rgb(0.82, 0.86, 0.86) });
 
-    if (snapshot.parentPortalQrUrl) {
+    if (includeCardBack) {
       const back = document.addPage([pageWidth, pageHeight]);
       const backPaper = rgb(0.985, 0.99, 0.99);
       const ink = rgb(0.12, 0.18, 0.2);
@@ -195,36 +213,47 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
       back.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: backPaper });
       back.drawRectangle({ x: 0, y: pageHeight - 27, width: pageWidth, height: 27, color: backAccent });
       await drawLogo(document, back, snapshot.school.logoUrl, 10, pageHeight - 23, 18);
-      back.drawText(schoolName, { x: 34, y: pageHeight - 17, size: 8, font: bold, color: rgb(1, 1, 1), maxWidth: pageWidth - 44 });
+      back.drawText('STUDENT IDENTIFICATION', { x: 34, y: pageHeight - 17, size: 7, font: bold, color: rgb(1, 1, 1), maxWidth: pageWidth - 44 });
 
-      const propertyLabel = 'PROPERTY OF';
-      const propertyLabelSize = 6;
-      back.drawText(propertyLabel, { x: 12, y: pageHeight - 45, size: propertyLabelSize, font: bold, color: backAccent });
-      back.drawText(schoolName, { x: 12, y: pageHeight - 58, size: 10, font: bold, color: ink, maxWidth: pageWidth - 24 });
-      back.drawLine({ start: { x: 12, y: pageHeight - 65 }, end: { x: pageWidth - 12, y: pageHeight - 65 }, thickness: 0.6, color: rgb(0.79, 0.83, 0.83) });
+      const isBackPortrait = orientation === 'PORTRAIT';
+      const textX = 12;
+      const textWidth = pageWidth - 24;
+      const issuedLabelY = pageHeight - (isBackPortrait ? 48 : 45);
+      const schoolNameY = pageHeight - (isBackPortrait ? 62 : 58);
+      const dividerY = pageHeight - (isBackPortrait ? 69 : 65);
+      const foundLabelY = pageHeight - (isBackPortrait ? 85 : 79);
+      const messageTopY = pageHeight - (isBackPortrait ? 98 : 92);
+      back.drawText('THIS CARD IS ISSUED BY', { x: textX, y: issuedLabelY, size: 6, font: bold, color: backAccent, maxWidth: textWidth });
+      back.drawText(schoolName, { x: textX, y: schoolNameY, size: 10, font: bold, color: ink, maxWidth: textWidth });
+      back.drawLine({ start: { x: textX, y: dividerY }, end: { x: pageWidth - textX, y: dividerY }, thickness: 0.6, color: rgb(0.79, 0.83, 0.83) });
 
-      back.drawText('IF FOUND', { x: 12, y: pageHeight - 80, size: 6, font: bold, color: backAccent });
-      const returnLines = ['Please return this card to the school office', 'or hand it to the nearest police station.'];
+      back.drawText('IF FOUND', { x: textX, y: foundLabelY, size: 6, font: bold, color: backAccent });
+      const returnMessage = 'Please return it to the school office or hand it to the nearest police station.';
+      const returnLines = wrapText(returnMessage, regular, 7, textWidth);
       returnLines.forEach((line, index) => back.drawText(line, {
-        x: 12,
-        y: pageHeight - 94 - index * 11,
+        x: textX,
+        y: messageTopY - index * 9,
         size: 7,
         font: regular,
         color: softInk,
-        maxWidth: pageWidth - 24,
+        maxWidth: textWidth,
       }));
 
-      const qrDataUrl = await QRCode.toDataURL(snapshot.parentPortalQrUrl, { errorCorrectionLevel: 'M', margin: 1, width: 512 });
-      const qrBytes = Buffer.from(qrDataUrl.split(',')[1], 'base64');
-      const qrImage = await document.embedPng(qrBytes);
-      const qrSize = 42;
-      const qrX = pageWidth - qrSize - 12;
-      const qrY = 12;
-      back.drawRectangle({ x: qrX - 4, y: qrY - 4, width: qrSize + 8, height: qrSize + 8, color: rgb(1, 1, 1), borderWidth: 0.6, borderColor: rgb(0.79, 0.83, 0.83) });
-      back.drawImage(qrImage, { x: qrX, y: qrY, width: qrSize, height: qrSize });
-      back.drawText('PARENT PORTAL', { x: 12, y: 32, size: 6, font: bold, color: backAccent });
-      back.drawText('Sign-in shortcut', { x: 12, y: 22, size: 6, font: regular, color: softInk });
-      back.drawText('Parent sign-in is required to view linked children.', { x: 12, y: 12, size: 5.5, font: regular, color: softInk, maxWidth: qrX - 22 });
+      if (snapshot.parentPortalQrUrl) {
+        const qrDataUrl = await QRCode.toDataURL(snapshot.parentPortalQrUrl, { errorCorrectionLevel: 'M', margin: 1, width: 512 });
+        const qrBytes = Buffer.from(qrDataUrl.split(',')[1], 'base64');
+        const qrImage = await document.embedPng(qrBytes);
+        const qrSize = 42;
+        const qrX = isBackPortrait ? (pageWidth - qrSize) / 2 : pageWidth - qrSize - 12;
+        const qrY = 12;
+        back.drawRectangle({ x: qrX - 4, y: qrY - 4, width: qrSize + 8, height: qrSize + 8, color: rgb(1, 1, 1), borderWidth: 0.6, borderColor: rgb(0.79, 0.83, 0.83) });
+        back.drawImage(qrImage, { x: qrX, y: qrY, width: qrSize, height: qrSize });
+        if (isBackPortrait) {
+          back.drawText('PARENT PORTAL', { x: textX, y: 68, size: 6, font: bold, color: backAccent, maxWidth: textWidth });
+        } else {
+          back.drawText('PARENT PORTAL', { x: textX, y: 32, size: 6, font: bold, color: backAccent });
+        }
+      }
       back.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, borderWidth: 1, borderColor: rgb(0.82, 0.86, 0.86) });
     }
   }
@@ -247,7 +276,8 @@ export async function generateIdCardA4SheetPdf(snapshot: IdCardRenderSnapshot) {
   const rows = Math.max(1, Math.floor((pageHeight - 2 * margin + gap) / (cardHeight + gap)));
   const perSheet = columns * rows;
   const embeddedPages = await sheetDocument.embedPdf(cardBytes, cardDocument.getPageIndices());
-  const sheetGroups = snapshot.parentPortalQrUrl
+  const includeCardBack = snapshot.includeCardBack ?? Boolean(snapshot.parentPortalQrUrl);
+  const sheetGroups = includeCardBack
     ? [embeddedPages.filter((_, index) => index % 2 === 0), embeddedPages.filter((_, index) => index % 2 === 1)]
     : [embeddedPages];
 

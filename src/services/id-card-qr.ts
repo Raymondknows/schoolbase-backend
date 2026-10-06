@@ -1,7 +1,9 @@
 export type ParentPortalQrStatus = { available: boolean; reason: string | null };
 
 function configuredPublicAppUrl(environment: NodeJS.ProcessEnv) {
-  return environment.PUBLIC_APP_URL?.trim() || environment.FRONTEND_URL?.trim() || '';
+  const configuredUrl = environment.PUBLIC_APP_URL?.trim() || environment.FRONTEND_URL?.split(',')[0]?.trim();
+  if (configuredUrl) return configuredUrl;
+  return environment.NODE_ENV === 'production' ? 'https://www.schoolbase.live' : '';
 }
 
 export function getParentPortalQrStatus(environment: NodeJS.ProcessEnv = process.env): ParentPortalQrStatus {

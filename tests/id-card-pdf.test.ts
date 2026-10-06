@@ -34,11 +34,28 @@ describe('ID card PDF layout', () => {
   });
 
   it('renders generic Parent Portal QR backs without adding student data to the QR URL', async () => {
+    for (const orientation of ['PORTRAIT', 'LANDSCAPE'] as const) {
+      const bytes = await generateIdCardPdf({
+        ...sample,
+        templateId: 'modernInstitution',
+        orientation,
+        parentPortalQrUrl: 'https://schoolbase.live/parent/login?schoolSlug=greenfield-academy',
+      });
+      const document = await PDFDocument.load(bytes);
+      const width = orientation === 'PORTRAIT' ? 153.5 : 243.4;
+      const height = orientation === 'PORTRAIT' ? 243.4 : 153.5;
+      assert.equal(document.getPageCount(), 2);
+      assert.deepEqual(document.getPages().map((page) => [page.getWidth(), page.getHeight()]), [[width, height], [width, height]]);
+    }
+  });
+
+  it('renders a text-only back when Parent Portal QR is not configured', async () => {
     const bytes = await generateIdCardPdf({
       ...sample,
       templateId: 'modernInstitution',
       orientation: 'LANDSCAPE',
-      parentPortalQrUrl: 'https://schoolbase.live/parent/login?schoolSlug=greenfield-academy',
+      includeCardBack: true,
+      parentPortalQrUrl: null,
     });
     const document = await PDFDocument.load(bytes);
     assert.equal(document.getPageCount(), 2);
@@ -54,6 +71,7 @@ describe('ID card PDF layout', () => {
 
     const duplexSheets = await PDFDocument.load(await generateIdCardA4SheetPdf({
       ...base,
+      includeCardBack: true,
       parentPortalQrUrl: 'https://schoolbase.live/parent/login?schoolSlug=greenfield-academy',
       students: [sample.students[0], { ...sample.students[0], id: 'sample-student-2', admissionNo: 'GA-002' }],
     }));

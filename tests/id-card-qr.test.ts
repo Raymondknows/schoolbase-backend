@@ -3,10 +3,17 @@ import assert from 'node:assert/strict';
 import { buildParentPortalQrUrl, getParentPortalQrStatus } from '../src/services/id-card-qr.ts';
 
 describe('Parent Portal ID card QR', () => {
-  it('requires a public URL and HTTPS in production', () => {
-    assert.equal(getParentPortalQrStatus({ NODE_ENV: 'production' }).available, false);
+  it('uses the canonical HTTPS app URL in production when no override is configured', () => {
+    assert.equal(getParentPortalQrStatus({ NODE_ENV: 'production' }).available, true);
+    assert.equal(buildParentPortalQrUrl('greenfield', { NODE_ENV: 'production' }), 'https://www.schoolbase.live/parent/login?schoolSlug=greenfield');
     assert.equal(getParentPortalQrStatus({ NODE_ENV: 'production', PUBLIC_APP_URL: 'http://schoolbase.live' }).available, false);
     assert.equal(getParentPortalQrStatus({ NODE_ENV: 'production', FRONTEND_URL: 'https://schoolbase.live' }).available, true);
+  });
+
+  it('uses the first frontend origin when multiple origins are configured', () => {
+    const status = getParentPortalQrStatus({ NODE_ENV: 'production', FRONTEND_URL: 'https://www.schoolbase.live,https://admin.schoolbase.live' });
+    assert.equal(status.available, true);
+    assert.equal(buildParentPortalQrUrl('greenfield', { NODE_ENV: 'production', FRONTEND_URL: 'https://www.schoolbase.live,https://admin.schoolbase.live' }), 'https://www.schoolbase.live/parent/login?schoolSlug=greenfield');
   });
 
   it('encodes only the generic parent login path and the school public slug', () => {
