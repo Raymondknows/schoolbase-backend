@@ -237,7 +237,7 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
       back.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: backPaper });
       back.drawRectangle({ x: 0, y: pageHeight - 27, width: pageWidth, height: 27, color: backAccent });
       await drawLogo(document, back, snapshot.school.logoUrl, 10, pageHeight - 23, 18);
-      drawContainedText(back, 'STUDENT IDENTIFICATION', { x: 34, y: pageHeight - 17, size: 7, font: bold, color: rgb(1, 1, 1), maxWidth: pageWidth - 46 });
+      drawContainedText(back, 'STUDENT ID', { x: 34, y: pageHeight - 17, size: 7, font: bold, color: rgb(1, 1, 1), maxWidth: pageWidth - 46 });
 
       const isBackPortrait = orientation === 'PORTRAIT';
       const textX = 12;
