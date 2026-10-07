@@ -34,6 +34,16 @@ const CARD_WIDTH = 243.4;
 const CARD_HEIGHT = 153.5;
 const UPLOADS_ROOT = path.resolve(process.cwd(), 'uploads');
 
+export const ID_CARD_TEMPLATE_ACCENTS = {
+  crestClassic: '#173f35',
+  modernInstitution: '#146b72',
+  inkSaver: '#111111',
+  houseTeam: '#194c91',
+  earlyLearners: '#e6a84a',
+  seniorCollege: '#263b3d',
+  signatureCollection: '#53314b',
+} as const;
+
 function parseColor(value?: string | null) {
   const match = value?.match(/^#?([0-9a-f]{6})$/i);
   if (!match) return rgb(0.04, 0.35, 0.42);
@@ -157,6 +167,7 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
   const regular = await document.embedFont(StandardFonts.Helvetica);
   const bold = await document.embedFont(StandardFonts.HelveticaBold);
   const accent = parseColor(snapshot.school.primaryColor);
+  const templateAccent = parseColor(ID_CARD_TEMPLATE_ACCENTS[snapshot.templateId as keyof typeof ID_CARD_TEMPLATE_ACCENTS] || snapshot.school.primaryColor);
   const template = ID_CARD_TEMPLATES[snapshot.templateId as keyof typeof ID_CARD_TEMPLATES];
   if (!template) throw new Error('The selected card template is unavailable.');
   const orientation = snapshot.orientation || template.defaultOrientation;
@@ -176,7 +187,7 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
     const isSeniorCollege = snapshot.templateId === 'seniorCollege';
     const isSignatureCollection = snapshot.templateId === 'signatureCollection';
     const isModernInstitution = snapshot.templateId === 'modernInstitution';
-    const bandColor = isInkSaver ? rgb(0.15, 0.15, 0.15) : accent;
+    const bandColor = isInkSaver ? rgb(0.15, 0.15, 0.15) : templateAccent;
     const background = isEarlyLearners ? rgb(1, 0.97, 0.89) : rgb(0.98, 0.99, 0.99);
 
     page.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: background });
@@ -276,11 +287,11 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
         drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: 24, size: 8, font: bold, color: bandColor, maxWidth: textWidth });
       } else {
         drawContainedText(page, isSeniorCollege ? 'STUDENT IDENTIFICATION' : 'STUDENT ID', { x: textX, y: pageHeight - titleOffset, size: 7, font: bold, color: bandColor, maxWidth: textWidth });
-        drawContainedText(page, fullName, { x: textX, y: pageHeight - (isSignatureCollection ? 79 : 76), size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
-        drawContainedText(page, 'ADMISSION NUMBER', { x: textX, y: pageHeight - (isSignatureCollection ? 101 : 98), size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
-        drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - (isSignatureCollection ? 114 : 111), size: 9, font: regular, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
-        drawContainedText(page, 'CLASS', { x: textX, y: 37, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
-        drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: 24, size: 9, font: bold, color: bandColor, maxWidth: textWidth });
+        drawContainedText(page, fullName, { x: textX, y: pageHeight - 68, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
+        drawContainedText(page, 'ADMISSION NUMBER', { x: textX, y: pageHeight - 87, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+        drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - 100, size: 9, font: regular, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
+        drawContainedText(page, 'CLASS', { x: textX, y: 34, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+        drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: 21, size: 9, font: bold, color: bandColor, maxWidth: textWidth });
       }
     }
     page.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, borderWidth: 1, borderColor: rgb(0.82, 0.86, 0.86) });

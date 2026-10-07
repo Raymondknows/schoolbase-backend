@@ -2,6 +2,7 @@ node_modules
 dist
 .env
 uploads
+private-storage/
 *.log
 .baileys-session/
 
