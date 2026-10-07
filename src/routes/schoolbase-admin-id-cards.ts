@@ -238,15 +238,24 @@ router.post('/id-cards/pricing/:ruleId/approve', async (req, res) => {
   if (!adminId) return;
   const rule = await prisma.idCardPricingRule.findUnique({ where: { id: req.params.ruleId } });
   if (!rule) return res.status(404).json({ error: 'Pricing draft not found.' });
-  if (rule.createdBy === adminId) return res.status(403).json({ error: 'A different platform administrator must approve this pricing change.' });
-    if (rule.isActive) return res.status(409).json({ error: 'Pricing rule is already active. Please retire the superseded version.' });
+  if (rule.approvedBy) return res.status(409).json({ error: 'Pricing draft has already been approved.' });
+  if (rule.isActive) return res.status(409).json({ error: 'Pricing rule is already active.' });
   if (!parseRule(rule.ruleJson)) return res.status(409).json({ error: 'Pricing draft is invalid.' });
   const now = new Date();
   const effectiveAt = rule.effectiveAt > now ? rule.effectiveAt : now;
-  await prisma.$transaction(async (tx) => {
-    await tx.idCardPricingRule.updateMany({ where: { isActive: true, effectiveAt: { gte: effectiveAt } }, data: { isActive: false } });
-    await tx.idCardPricingRule.update({ where: { id: rule.id }, data: { isActive: true, effectiveAt, approvedBy: adminId } });
+  const approved = await prisma.$transaction(async (tx) => {
+    const result = await tx.idCardPricingRule.updateMany({
+      where: { id: rule.id, isActive: false, approvedBy: null },
+      data: { isActive: true, effectiveAt, approvedBy: adminId },
+    });
+    if (result.count !== 1) return false;
+    await tx.idCardPricingRule.updateMany({
+      where: { id: { not: rule.id }, isActive: true, effectiveAt: { gte: effectiveAt } },
+      data: { isActive: false },
+    });
+    return true;
   });
+  if (!approved) return res.status(409).json({ error: 'Pricing draft was approved by another request. Refresh the page.' });
   res.json({ success: true, ruleId: rule.id, approvedBy: adminId });
 });
 
@@ -315,12 +324,17 @@ router.post('/id-cards/awards/:awardId/approve', async (req, res) => {
   if (!adminId) return;
   const award = await prisma.idCardUsageAward.findUnique({ where: { id: req.params.awardId } });
   if (!award) return res.status(404).json({ error: 'Award not found.' });
-  if (award.createdBy === adminId) return res.status(403).json({ error: 'A different platform administrator must approve this award.' });
   if (award.status !== 'PENDING_APPROVAL') return res.status(409).json({ error: 'Award is not awaiting approval.' });
-  await prisma.$transaction(async (tx) => {
-    await tx.idCardUsageAward.update({ where: { id: award.id }, data: { status: 'APPROVED', approvedBy: adminId } });
-    await tx.idCardAwardLedger.create({ data: { awardId: award.id, entryType: 'AWARD_APPROVED', actorId: adminId, reason: 'Second-admin approval' } });
+  const approved = await prisma.$transaction(async (tx) => {
+    const result = await tx.idCardUsageAward.updateMany({
+      where: { id: award.id, status: 'PENDING_APPROVAL' },
+      data: { status: 'APPROVED', approvedBy: adminId },
+    });
+    if (result.count !== 1) return false;
+    await tx.idCardAwardLedger.create({ data: { awardId: award.id, entryType: 'AWARD_APPROVED', actorId: adminId, reason: 'Platform-admin approval' } });
+    return true;
   });
+  if (!approved) return res.status(409).json({ error: 'Award status changed while approval was being processed. Refresh the award ledger.' });
   res.json({ success: true, awardId: award.id });
 });
 
@@ -334,7 +348,6 @@ router.post('/id-cards/awards/:awardId/revoke', async (req, res) => {
     await prisma.$transaction(async (tx) => {
       const award = await tx.idCardUsageAward.findUnique({ where: { id: req.params.awardId } });
       if (!award) throw Object.assign(new Error('Award not found.'), { statusCode: 404 });
-      if (award.createdBy === adminId) throw Object.assign(new Error('A different platform administrator must revoke this award.'), { statusCode: 403 });
       if (award.status !== 'APPROVED') throw Object.assign(new Error('Only an approved award can be revoked.'), { statusCode: 409 });
       if (award.unitsReserved > 0) throw Object.assign(new Error('This award has units reserved by an order and cannot be revoked yet.'), { statusCode: 409 });
 
