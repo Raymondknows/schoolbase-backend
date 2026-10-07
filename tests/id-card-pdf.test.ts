@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { ID_CARD_TEMPLATES, type IdCardOrientation } from '../src/services/id-card-pricing.ts';
-import { generateIdCardA4SheetPdf, generateIdCardPdf, ID_CARD_TEMPLATE_ACCENTS, type IdCardRenderSnapshot } from '../src/services/id-card-pdf.ts';
+import { fitStudentName, generateIdCardA4SheetPdf, generateIdCardPdf, ID_CARD_TEMPLATE_ACCENTS, type IdCardRenderSnapshot } from '../src/services/id-card-pdf.ts';
 
 const sample: Omit<IdCardRenderSnapshot, 'templateId' | 'orientation'> = {
   school: { name: 'Greenfield Academy', initials: 'GA', primaryColor: '#0A6670' },
@@ -10,6 +10,39 @@ const sample: Omit<IdCardRenderSnapshot, 'templateId' | 'orientation'> = {
 };
 
 describe('ID card PDF layout', () => {
+  it('wraps complete long student names into two lines with a 10% smaller base size', async () => {
+    const document = await PDFDocument.create();
+    const font = await document.embedFont(StandardFonts.HelveticaBold);
+    const fullName = 'Chukwuemeka Nwachukwu-Nwankwo Uchechukwu Okafor';
+    const normalName = fitStudentName('Ada Okafor', font, 16, 132);
+    const fitted = fitStudentName(fullName, font, 16, 132);
+    assert.equal(normalName.size, 14.4);
+    assert.equal(fitted.lines.length, 2);
+    assert.equal(fitted.lines.join(' '), fullName);
+    assert.ok(fitted.size <= 14.4);
+    assert.ok(fitted.lines.every((line) => font.widthOfTextAtSize(line, fitted.size) <= 132));
+  });
+
+  it('generates cards with long student names for every design and orientation', async () => {
+    const longName = {
+      firstName: 'Chukwuemeka',
+      middleName: 'Nwachukwu-Nwankwo',
+      lastName: 'Uchechukwu Okafor',
+    };
+    for (const templateId of Object.keys(ID_CARD_TEMPLATES)) {
+      for (const orientation of ['PORTRAIT', 'LANDSCAPE'] as const satisfies readonly IdCardOrientation[]) {
+        const bytes = await generateIdCardPdf({
+          ...sample,
+          templateId,
+          orientation,
+          students: [{ ...sample.students[0], ...longName }],
+        });
+        const document = await PDFDocument.load(bytes);
+        assert.equal(document.getPageCount(), 1, `${templateId} ${orientation} should generate one complete card`);
+      }
+    }
+  });
+
   it('keeps a distinct accent for every selectable card design', () => {
     const templateIds = Object.keys(ID_CARD_TEMPLATES);
     const accents = templateIds.map((templateId) => ID_CARD_TEMPLATE_ACCENTS[templateId as keyof typeof ID_CARD_TEMPLATE_ACCENTS]);

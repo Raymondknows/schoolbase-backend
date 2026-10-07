@@ -63,6 +63,23 @@ function wrapText(value: string, font: PDFFont, size: number, maxWidth: number) 
   const lines: string[] = [];
   let line = '';
   for (const word of value.split(/\s+/)) {
+    if (font.widthOfTextAtSize(word, size) > maxWidth) {
+      if (line) {
+        lines.push(line);
+        line = '';
+      }
+      let fragment = '';
+      for (const character of word) {
+        if (fragment && font.widthOfTextAtSize(`${fragment}${character}`, size) > maxWidth) {
+          lines.push(fragment);
+          fragment = character;
+        } else {
+          fragment += character;
+        }
+      }
+      line = fragment;
+      continue;
+    }
     const candidate = line ? `${line} ${word}` : word;
     if (line && font.widthOfTextAtSize(candidate, size) > maxWidth) {
       lines.push(line);
@@ -73,6 +90,35 @@ function wrapText(value: string, font: PDFFont, size: number, maxWidth: number) 
   }
   if (line) lines.push(line);
   return lines;
+}
+
+export function fitStudentName(value: string, font: PDFFont, baseSize: number, maxWidth: number) {
+  let size = baseSize * 0.9;
+  let lines = wrapText(safeText(value), font, size, maxWidth);
+  while (lines.length > 2 && size > 5) {
+    size = Math.max(5, size - 0.5);
+    lines = wrapText(safeText(value), font, size, maxWidth);
+  }
+  return { size, lines };
+}
+
+function drawStudentName(
+  page: PDFPage,
+  value: string,
+  options: { x: number; y: number; size: number; font: PDFFont; color: ReturnType<typeof rgb>; maxWidth: number; centered?: boolean },
+) {
+  const { size, lines } = fitStudentName(value, options.font, options.size, options.maxWidth);
+  const lineHeight = size + 2;
+  lines.forEach((line, index) => {
+    const textWidth = options.font.widthOfTextAtSize(line, size);
+    page.drawText(line, {
+      ...options,
+      x: options.centered ? options.x + (options.maxWidth - textWidth) / 2 : options.x,
+      y: options.y - index * lineHeight,
+      size,
+    });
+  });
+  return lines.length;
 }
 
 function drawContainedText(
@@ -235,20 +281,21 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
       const textX = snapshot.templateId === 'houseTeam' ? 96 : 12;
       const textWidth = pageWidth - textX - 12;
       if (snapshot.templateId === 'crestClassic') {
-        drawContainedText(page, fullName, { x: 12, y: pageHeight - 148, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: pageWidth - 24 });
+        drawStudentName(page, fullName, { x: 12, y: pageHeight - 148, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: pageWidth - 24, centered: true });
         drawContainedText(page, 'ADMISSION NO.', { x: 12, y: 40, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: pageWidth - 24 });
         drawContainedText(page, student.admissionNo || 'Not assigned', { x: 12, y: 29, size: 8, font: regular, color: rgb(0.2, 0.25, 0.27), maxWidth: pageWidth - 24 });
         drawContainedText(page, 'CLASS', { x: 12, y: 18, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: pageWidth - 24 });
         drawContainedText(page, student.className || 'Class not assigned', { x: 38, y: 18, size: 7, font: bold, color: bandColor, maxWidth: pageWidth - 50 });
       } else if (isModernInstitution) {
         drawContainedText(page, 'STUDENT IDENTITY', { x: 12, y: pageHeight - 139, size: 6, font: bold, color: bandColor, maxWidth: pageWidth - 24 });
-        drawContainedText(page, fullName, { x: 12, y: pageHeight - 155, size: fullName.length > 25 ? 11 : 13, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: pageWidth - 24 });
-        drawContainedText(page, 'ADMISSION NO.', { x: 12, y: pageHeight - 175, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: pageWidth - 24 });
-        drawContainedText(page, student.admissionNo || 'Not assigned', { x: 12, y: pageHeight - 188, size: 8, font: bold, color: rgb(0.2, 0.25, 0.27), maxWidth: pageWidth - 24 });
-        drawContainedText(page, 'CLASS', { x: 12, y: pageHeight - 207, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: pageWidth - 24 });
-        drawContainedText(page, student.className || 'Class not assigned', { x: 12, y: pageHeight - 220, size: 8, font: bold, color: bandColor, maxWidth: pageWidth - 24 });
+        const nameLines = drawStudentName(page, fullName, { x: 12, y: pageHeight - 155, size: fullName.length > 25 ? 11 : 13, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: pageWidth - 24, centered: true });
+        const detailsShift = nameLines > 1 ? 12 : 0;
+        drawContainedText(page, 'ADMISSION NO.', { x: 12, y: pageHeight - 175 - detailsShift, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: pageWidth - 24 });
+        drawContainedText(page, student.admissionNo || 'Not assigned', { x: 12, y: pageHeight - 188 - detailsShift, size: 8, font: bold, color: rgb(0.2, 0.25, 0.27), maxWidth: pageWidth - 24 });
+        drawContainedText(page, 'CLASS', { x: 12, y: pageHeight - 207 - detailsShift, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: pageWidth - 24 });
+        drawContainedText(page, student.className || 'Class not assigned', { x: 12, y: pageHeight - 220 - detailsShift, size: 8, font: bold, color: bandColor, maxWidth: pageWidth - 24 });
       } else {
-        drawContainedText(page, fullName, { x: textX, y: pageHeight - 148, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
+        drawStudentName(page, fullName, { x: textX, y: pageHeight - 148, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth, centered: true });
         drawContainedText(page, 'ADMISSION NUMBER', { x: textX, y: 40, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
         drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: 29, size: 8, font: regular, color: rgb(0.2, 0.25, 0.27), maxWidth: textWidth });
         drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: 18, size: 7, font: bold, color: bandColor, maxWidth: textWidth });
@@ -272,26 +319,29 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
       const titleOffset = isSignatureCollection ? 56 : 53;
       if (snapshot.templateId === 'houseTeam') {
         drawContainedText(page, 'STUDENT IDENTITY', { x: textX, y: pageHeight - 53, size: 6, font: bold, color: bandColor, maxWidth: textWidth });
-        drawContainedText(page, fullName, { x: textX, y: pageHeight - 70, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
-        drawContainedText(page, 'ADMISSION NO.', { x: textX, y: pageHeight - 91, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
-        drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - 103, size: 8, font: regular, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
+        const nameLines = drawStudentName(page, fullName, { x: textX, y: pageHeight - 70, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
+        const detailsOffset = nameLines > 1 ? 97 : 91;
+        drawContainedText(page, 'ADMISSION NO.', { x: textX, y: pageHeight - detailsOffset, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+        drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - detailsOffset - 12, size: 8, font: regular, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
         drawContainedText(page, 'CLASS', { x: textX, y: 37, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
         drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: 24, size: 8, font: bold, color: bandColor, maxWidth: textWidth });
       } else if (isModernInstitution) {
         drawContainedText(page, 'STUDENT IDENTITY', { x: textX, y: pageHeight - 49, size: 6, font: bold, color: bandColor, maxWidth: textWidth });
-        drawContainedText(page, fullName, { x: textX, y: pageHeight - 68, size: fullName.length > 23 ? 11 : 14, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
-        page.drawLine({ start: { x: textX, y: pageHeight - 74 }, end: { x: pageWidth - 12, y: pageHeight - 74 }, thickness: 0.6, color: rgb(0.84, 0.88, 0.88) });
-        drawContainedText(page, 'ADMISSION NO.', { x: textX, y: pageHeight - 88, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
-        drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - 100, size: 9, font: bold, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
-        drawContainedText(page, 'CLASS', { x: textX, y: 37, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
-        drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: 24, size: 8, font: bold, color: bandColor, maxWidth: textWidth });
+        const nameLines = drawStudentName(page, fullName, { x: textX, y: pageHeight - 68, size: fullName.length > 23 ? 11 : 14, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
+        const detailsOffset = nameLines > 1 ? 96 : 88;
+        page.drawLine({ start: { x: textX, y: pageHeight - detailsOffset + 7 }, end: { x: pageWidth - 12, y: pageHeight - detailsOffset + 7 }, thickness: 0.6, color: rgb(0.84, 0.88, 0.88) });
+        drawContainedText(page, 'ADMISSION NO.', { x: textX, y: pageHeight - detailsOffset, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+        drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - detailsOffset - 12, size: 9, font: bold, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
+        drawContainedText(page, 'CLASS', { x: textX, y: nameLines > 1 ? 31 : 37, size: 5.5, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+        drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: nameLines > 1 ? 18 : 24, size: 8, font: bold, color: bandColor, maxWidth: textWidth });
       } else {
         drawContainedText(page, isSeniorCollege ? 'STUDENT IDENTIFICATION' : 'STUDENT ID', { x: textX, y: pageHeight - titleOffset, size: 7, font: bold, color: bandColor, maxWidth: textWidth });
-        drawContainedText(page, fullName, { x: textX, y: pageHeight - 68, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
-        drawContainedText(page, 'ADMISSION NUMBER', { x: textX, y: pageHeight - 87, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
-        drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - 100, size: 9, font: regular, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
-        drawContainedText(page, 'CLASS', { x: textX, y: 34, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
-        drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: 21, size: 9, font: bold, color: bandColor, maxWidth: textWidth });
+        const nameLines = drawStudentName(page, fullName, { x: textX, y: pageHeight - 68, size: nameSize, font: bold, color: rgb(0.08, 0.12, 0.14), maxWidth: textWidth });
+        const detailsOffset = nameLines > 1 ? 95 : 87;
+        drawContainedText(page, 'ADMISSION NUMBER', { x: textX, y: pageHeight - detailsOffset, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+        drawContainedText(page, student.admissionNo || 'Not assigned', { x: textX, y: pageHeight - detailsOffset - 13, size: 9, font: regular, color: rgb(0.1, 0.15, 0.16), maxWidth: textWidth });
+        drawContainedText(page, 'CLASS', { x: textX, y: nameLines > 1 ? 28 : 34, size: 6, font: bold, color: rgb(0.42, 0.48, 0.49), maxWidth: textWidth });
+        drawContainedText(page, student.className || 'Class not assigned', { x: textX, y: nameLines > 1 ? 15 : 21, size: 9, font: bold, color: bandColor, maxWidth: textWidth });
       }
     }
     page.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, borderWidth: 1, borderColor: rgb(0.82, 0.86, 0.86) });
@@ -354,13 +404,18 @@ export async function generateIdCardPdf(snapshot: IdCardRenderSnapshot) {
         const qrSize = 42;
         const qrX = isBackPortrait ? (pageWidth - qrSize) / 2 : pageWidth - qrSize - 12;
         const qrY = 12;
+        const portalLabel = 'PARENT PORTAL';
+        const portalLabelWidth = bold.widthOfTextAtSize(portalLabel, 6);
         back.drawRectangle({ x: qrX - 4, y: qrY - 4, width: qrSize + 8, height: qrSize + 8, color: rgb(1, 1, 1), borderWidth: 0.6, borderColor: rgb(0.79, 0.83, 0.83) });
         back.drawImage(qrImage, { x: qrX, y: qrY, width: qrSize, height: qrSize });
-        if (isBackPortrait) {
-          back.drawText('PARENT PORTAL', { x: textX, y: 68, size: 6, font: bold, color: backAccent, maxWidth: textWidth });
-        } else {
-          back.drawText('PARENT PORTAL', { x: textX, y: 32, size: 6, font: bold, color: backAccent });
-        }
+        back.drawText(portalLabel, {
+          x: isBackPortrait ? textX + (textWidth - portalLabelWidth) / 2 : qrX + (qrSize - portalLabelWidth) / 2,
+          y: isBackPortrait ? 68 : qrY + qrSize + 4,
+          size: 6,
+          font: bold,
+          color: backAccent,
+          maxWidth: portalLabelWidth,
+        });
       }
       back.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, borderWidth: 1, borderColor: rgb(0.82, 0.86, 0.86) });
     }
