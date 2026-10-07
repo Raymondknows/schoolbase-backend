@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { ResultWorkflowState } from './ResultWorkflowState.js';
+import { isStudentCurrentlyEnrolled } from '../../services/student-lifecycle.js';
 
 export interface ValidationError {
   field: string;
@@ -106,7 +107,8 @@ export class ResultsValidator {
 
     // VALIDATION 3: Student coverage
     if (assessment.classId && assessment.class) {
-      const expectedCount = assessment.class.pupils.length;
+      const expectedPupils = assessment.class.pupils.filter(isStudentCurrentlyEnrolled);
+      const expectedCount = expectedPupils.length;
       const actualUniqueStudentCount = new Set(assessment.results.map((r) => r.pupilId)).size;
 
       if (actualUniqueStudentCount < expectedCount) {
@@ -131,7 +133,7 @@ export class ResultsValidator {
       if (assessment.class.subjectClasses.length > 0) {
         const expectedSubjects = new Set(assessment.class.subjectClasses.map((sc) => sc.subject.id));
 
-        for (const pupil of assessment.class.pupils) {
+        for (const pupil of expectedPupils) {
           const pupilResults = assessment.results.filter((r) => r.pupilId === pupil.id);
           const pupilSubjects = new Set(pupilResults.map((r) => r.subjectId));
 

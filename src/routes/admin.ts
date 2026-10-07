@@ -25,6 +25,7 @@ import { resolveSchoolScope } from '../services/security-context.js';
 import { getSessionSecret } from '../services/security-config.js';
 import { buildSchoolSetupStatus } from '../services/onboarding.js';
 import { buildBulkStudentImportRows, parseCsvText, parseImportDate } from '../services/student-import.js';
+import { buildStudentRosterWhere, normalizeStudentEnrollmentStatus } from '../services/student-lifecycle.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -778,6 +779,7 @@ router.patch('/admissions/:id/status', async (req: Request, res: Response) => {
             admissionNo,
             classId: classRecord?.id ?? null,
             status: 'ACTIVE',
+            isActive: true,
             admissionDate: application.admissionDate || new Date(),
             gender: application.gender,
             dateOfBirth: application.dateOfBirth,
@@ -4002,9 +4004,15 @@ router.get('/students/data', async (req: Request, res: Response) => {
     const schoolId = await resolveSchoolId(req);
     if (!schoolId) return res.status(400).json({ error: 'School ID required' });
 
+    const requestedStatus = normalizeStudentEnrollmentStatus(req.query.status || 'ACTIVE');
+    if (!requestedStatus) {
+      return res.status(400).json({ error: 'Choose ACTIVE or INACTIVE student records.' });
+    }
+    const pupilWhere = buildStudentRosterWhere(schoolId, requestedStatus);
+
     const [pupils, classes, school] = await Promise.all([
       prisma.pupil.findMany({
-        where: { schoolId, isActive: true },
+        where: pupilWhere,
         include: {
           class: true,
           guardians: { include: { guardian: true } },
@@ -4104,6 +4112,7 @@ router.post('/students/import', studentImportUpload.single('file'), async (req: 
       let count = 0;
       for (const [index, row] of result.validRows.entries()) {
         const admissionNo = `${admissionPrefix}-${String(firstSequence + index).padStart(4, '0')}`;
+        const rowStatus = normalizeStudentEnrollmentStatus(row.status || 'ACTIVE') || 'ACTIVE';
         const pupil = await transaction.pupil.create({
           data: {
             schoolId,
@@ -4112,7 +4121,8 @@ router.post('/students/import', studentImportUpload.single('file'), async (req: 
             middleName: row.middleName || null,
             admissionNo,
             classId: row.classId || null,
-            status: row.status || 'ACTIVE',
+            status: rowStatus,
+            isActive: rowStatus === 'ACTIVE',
             admissionDate: new Date(),
             gender: row.gender || null,
             dateOfBirth: parseImportDate(row.birthDate),
@@ -4201,6 +4211,11 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
 
     const firstName = normalizeField(rawFirstName);
     const lastName = normalizeField(rawLastName);
+    const normalizedStatus = normalizeStudentEnrollmentStatus(status || 'ACTIVE');
+    if (!normalizedStatus) {
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'Student status must be ACTIVE or INACTIVE.' });
+    }
     const guardianFirst = normalizeField(rawGuardianFirst);
     const guardianLast = normalizeField(rawGuardianLast);
     const normalizedStudentEmail = normalizeField(studentEmail);
@@ -4296,7 +4311,8 @@ router.post('/students', upload.single('photo'), async (req: Request, res: Respo
         middleName: normalizeField(middleName),
         admissionNo: normalizedAdmissionNo,
         classId: classId || null,
-        status: status || 'ACTIVE',
+        status: normalizedStatus,
+        isActive: normalizedStatus === 'ACTIVE',
         admissionDate: admissionDate ? new Date(admissionDate) : new Date(),
         gender: normalizeField(gender),
         dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
@@ -4681,6 +4697,12 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
       guardianOccupation,
     } = req.body;
 
+    const normalizedStatus = status === undefined ? undefined : normalizeStudentEnrollmentStatus(status);
+    if (status !== undefined && !normalizedStatus) {
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'Student status must be ACTIVE or INACTIVE.' });
+    }
+
     // Prepare photo URL if file was uploaded
     let photoUrl = existingPupil.photoUrl;
     if (req.file) {
@@ -4740,10 +4762,11 @@ router.patch('/students/:id', upload.single('photo'), async (req: Request, res: 
           middleName: optionalText(middleName),
           lastName: lastName || existingPupil.lastName,
           classId: optionalText(classId),
-          status: optionalText(status),
-          admissionDate: admissionDate ? new Date(admissionDate) : null,
+          status: normalizedStatus ?? optionalText(status),
+          isActive: normalizedStatus === undefined ? undefined : normalizedStatus === 'ACTIVE',
+          admissionDate: admissionDate === undefined ? undefined : admissionDate ? new Date(admissionDate) : null,
           gender: optionalText(gender),
-          dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+          dateOfBirth: dateOfBirth === undefined ? undefined : dateOfBirth ? new Date(dateOfBirth) : null,
           studentEmail: optionalText(studentEmail),
           studentPhone: optionalText(studentPhone),
           address: optionalText(address),

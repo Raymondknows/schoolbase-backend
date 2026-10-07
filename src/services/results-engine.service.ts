@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { isStudentCurrentlyEnrolled } from './student-lifecycle.js';
 
 interface GradeResult {
   score: number;
@@ -273,8 +274,12 @@ export default class ResultsEngineService {
 
     // Check 2: For class-based assessments, all students have results
     if (assessment.classId && assessment.class) {
-      const expectedCount = assessment.class.pupils.length;
-      const actualCount = assessment._count.results;
+      const expectedPupils = assessment.class.pupils.filter(isStudentCurrentlyEnrolled);
+      const expectedPupilIds = new Set(expectedPupils.map((pupil) => pupil.id));
+      const actualCount = new Set(assessment.results
+        .map((result) => result.pupilId)
+        .filter((pupilId) => expectedPupilIds.has(pupilId))).size;
+      const expectedCount = expectedPupils.length;
 
       if (expectedCount !== actualCount) {
         errors.push({
@@ -292,7 +297,7 @@ export default class ResultsEngineService {
       if (assessment.class.subjectClasses.length > 0) {
         const expectedSubjects = assessment.class.subjectClasses.map((sc) => sc.subject.id);
 
-        for (const pupil of assessment.class.pupils) {
+        for (const pupil of expectedPupils) {
           const pupilResults = assessment.results.filter(
             (r) => r.pupilId === pupil.id
           );
