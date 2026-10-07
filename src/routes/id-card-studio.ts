@@ -446,6 +446,8 @@ router.post('/orders', requireSubscription, async (req: Request, res: Response) 
       if (!quote || quote.status !== 'QUOTED' || quote.expiresAt <= new Date()) throw new Error('This quote has expired. Create a new quote.');
       const quoteOptions = JSON.parse(quote.optionsJson) as { awardId?: string | null };
       const awardId = typeof quoteOptions.awardId === 'string' ? quoteOptions.awardId : null;
+      const requestedAwardId = typeof req.body?.awardId === 'string' && req.body.awardId.trim() ? req.body.awardId.trim() : null;
+      if (requestedAwardId !== awardId) throw new Error('The selected free-card award does not match this quote. Review the quote again before continuing.');
       if (!awardId && quote.totalMinor === 0) throw new Error('A zero-value cash order must use an approved card usage award.');
       const order = await tx.idCardOrder.create({
         data: {
@@ -474,17 +476,17 @@ router.post('/orders', requireSubscription, async (req: Request, res: Response) 
       }
       await tx.idCardQuote.update({ where: { id: quote.id }, data: { status: 'ORDERED' } });
       await addOrderEvent(tx, order.id, 'ORDER_CREATED', user.userId, { quantity: quote.quantity, amountMinor: quote.totalMinor, currency: quote.currency });
-      return order;
+      return { order, awardFunded: Boolean(awardId) };
     });
-    let order = result;
-    if (result.paymentStatus === 'PAID') {
+    let order = result.order;
+    if (result.awardFunded) {
       try {
-        order = await verifyAndGenerate(result.id, user.schoolId, user.userId);
+        order = await verifyAndGenerate(result.order.id, user.schoolId, user.userId);
       } catch {
-        order = await prisma.idCardOrder.findFirstOrThrow({ where: { id: result.id, schoolId: user.schoolId } });
+        order = await prisma.idCardOrder.findFirstOrThrow({ where: { id: result.order.id, schoolId: user.schoolId } });
       }
     }
-    res.status(201).json({ order: { id: order.id, status: order.status, paymentStatus: order.paymentStatus, amountMinor: order.amountMinor, currency: order.currency, awardFunded: result.paymentStatus === 'PAID' } });
+    res.status(201).json({ order: { id: order.id, status: order.status, paymentStatus: order.paymentStatus, amountMinor: order.amountMinor, currency: order.currency, awardFunded: result.awardFunded } });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to create order.';
     res.status(400).json({ error: message });
