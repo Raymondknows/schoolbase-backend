@@ -25,7 +25,7 @@ import { resolveSchoolScope } from '../services/security-context.js';
 import { getSessionSecret } from '../services/security-config.js';
 import { buildSchoolSetupStatus } from '../services/onboarding.js';
 import { buildBulkStudentImportRows, parseCsvText, parseImportDate } from '../services/student-import.js';
-import { buildStudentRosterWhere, normalizeStudentEnrollmentStatus } from '../services/student-lifecycle.js';
+import { buildStudentRosterWhere, filterActiveStudents, normalizeStudentEnrollmentStatus } from '../services/student-lifecycle.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -2653,13 +2653,18 @@ router.post('/fees/invoices/issue-bills', requireSubscription, async (req: Reque
     }
 
     const eligiblePupilsBySchedule = new Map<string, any[]>();
+    const activePupilWhere = {
+      schoolId,
+      isActive: true,
+      OR: [{ status: null }, { status: { not: 'INACTIVE' } }],
+    } as const;
     let whatsappRecipientCount = 0;
 
     for (const schedule of feeSchedules) {
       const eligiblePupils = await prisma.pupil.findMany({
         where: schedule.classId
-          ? { schoolId, classId: schedule.classId, isActive: true }
-          : { schoolId, isActive: true },
+          ? { ...activePupilWhere, classId: schedule.classId }
+          : activePupilWhere,
         include: { guardians: { include: { guardian: true } }, class: true },
       });
       eligiblePupilsBySchedule.set(schedule.id, eligiblePupils);
@@ -6181,6 +6186,8 @@ router.get('/results/:id', async (req: Request, res: Response) => {
                 firstName: true,
                 lastName: true,
                 admissionNo: true,
+                isActive: true,
+                status: true,
                 class: {
                   select: {
                     id: true,
@@ -6202,8 +6209,17 @@ router.get('/results/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Assessment not found' });
     }
 
+    const activeAssessmentResults = assessment.results.filter((result) =>
+      filterActiveStudents([
+        {
+          isActive: result.pupil?.isActive ?? true,
+          status: result.pupil?.status ?? null,
+        },
+      ]).length > 0
+    );
+
     // Transform results to include full name
-    const transformedResults = assessment.results.map((r) => ({
+    const transformedResults = activeAssessmentResults.map((r) => ({
       ...r,
       pupil: {
         ...r.pupil,
@@ -6364,7 +6380,7 @@ router.get('/results/:id', async (req: Request, res: Response) => {
 
     // Ensure publishedAt is available at the assessment level.
     const fallbackPublishedAt =
-      assessment.results.find((r: any) => r.publishedAt)?.publishedAt || null;
+      activeAssessmentResults.find((r: any) => r.publishedAt)?.publishedAt || null;
 
     res.json({
       ...assessment,

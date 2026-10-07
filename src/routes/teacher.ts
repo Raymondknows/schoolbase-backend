@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { verifyAuth, requireTeacher, AuthenticatedRequest } from '../middleware/roleAuth.js';
+import { filterActiveStudents, isStudentCurrentlyEnrolled } from '../services/student-lifecycle.js';
 import ResultsEngineService from '../services/results-engine.service.js';
 
 const router = Router();
@@ -136,7 +137,7 @@ router.get('/dashboard', async (req: AuthenticatedRequest, res) => {
       include: {
         class: {
           include: {
-            pupils: { select: { id: true, firstName: true, lastName: true } },
+            pupils: { select: { id: true, firstName: true, lastName: true, isActive: true, status: true } },
           },
         },
       },
@@ -165,7 +166,7 @@ router.get('/dashboard', async (req: AuthenticatedRequest, res) => {
     // Calculate total students
     const allStudentIds = new Set<string>();
     teacherClasses.forEach((tc) => {
-      tc.class.pupils.forEach((p) => {
+      filterActiveStudents(tc.class.pupils).forEach((p) => {
         allStudentIds.add(p.id);
       });
     });
@@ -183,7 +184,7 @@ router.get('/dashboard', async (req: AuthenticatedRequest, res) => {
         name: tc.class.name,
         phase: tc.class.phase,
         arm: tc.class.arm,
-        studentCount: tc.class.pupils.length,
+        studentCount: filterActiveStudents(tc.class.pupils).length,
       })),
       subjects: teacherSubjects.map((ts) => ({
         id: ts.subject.id,
@@ -217,19 +218,23 @@ router.get('/classes', async (req: AuthenticatedRequest, res) => {
     });
 
     res.json({
-      classes: classes.map((tc) => ({
-        id: tc.class.id,
-        name: tc.class.name,
-        phase: tc.class.phase,
-        arm: tc.class.arm,
-        studentCount: tc.class.pupils.length,
-        pupils: tc.class.pupils.map((p) => ({
-          id: p.id,
-          name: `${p.firstName} ${p.lastName}`,
-          admissionNo: p.admissionNo,
-          email: p.studentEmail,
-        })),
-      })),
+      classes: classes.map((tc) => {
+        const activePupils = filterActiveStudents(tc.class.pupils);
+
+        return {
+          id: tc.class.id,
+          name: tc.class.name,
+          phase: tc.class.phase,
+          arm: tc.class.arm,
+          studentCount: activePupils.length,
+          pupils: activePupils.map((p) => ({
+            id: p.id,
+            name: `${p.firstName} ${p.lastName}`,
+            admissionNo: p.admissionNo,
+            email: p.studentEmail,
+          })),
+        };
+      }),
     });
   } catch (error: any) {
     console.error('Classes error:', error);
@@ -259,7 +264,12 @@ router.get('/classes/:classId/students', async (req: AuthenticatedRequest, res) 
     }
 
     const pupils = await prisma.pupil.findMany({
-      where: { classId },
+      where: {
+        schoolId,
+        classId,
+        isActive: true,
+        OR: [{ status: null }, { status: { not: 'INACTIVE' } }],
+      },
       include: {
         class: {
           select: {
@@ -287,7 +297,7 @@ router.get('/classes/:classId/students', async (req: AuthenticatedRequest, res) 
     });
 
     res.json({
-      students: pupils.map((p) => ({
+      students: filterActiveStudents(pupils).map((p) => ({
         id: p.id,
         firstName: p.firstName,
         lastName: p.lastName,
@@ -451,6 +461,8 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
             pupils: {
               select: {
                 id: true,
+                isActive: true,
+                status: true,
               },
             },
           },
@@ -488,7 +500,7 @@ router.get('/assessments', async (req: AuthenticatedRequest, res) => {
       const phase = teacherClass.class.phase;
       const students = studentsByPhase.get(phase) ?? new Set<string>();
 
-      teacherClass.class.pupils.forEach((pupil) => {
+      filterActiveStudents(teacherClass.class.pupils).forEach((pupil) => {
         students.add(pupil.id);
       });
 
@@ -609,6 +621,8 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
                 firstName: true,
                 lastName: true,
                 admissionNo: true,
+                isActive: true,
+                status: true,
               },
             },
           },
@@ -646,6 +660,8 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
                 firstName: true,
                 lastName: true,
                 admissionNo: true,
+                isActive: true,
+                status: true,
               },
             },
             subjectRef: {
@@ -668,15 +684,22 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
       return res.status(403).json({ error: 'Not authorized to view this assessment' });
     }
 
+    const activeAssessmentResults = assessment.results.filter((result) =>
+      isStudentCurrentlyEnrolled({
+        isActive: result.pupil?.isActive ?? true,
+        status: result.pupil?.status ?? null,
+      })
+    );
+
     // Filter results by subject if provided
-    let filteredResults = assessment.results;
+    let filteredResults = activeAssessmentResults;
     if (subjectIdParam) {
       const allowedSubjectIds = new Set(teacherSubjects.map((teacherSubject) => teacherSubject.subject.id));
       if (!allowedSubjectIds.has(subjectIdParam)) {
         return res.status(403).json({ error: 'Not authorized to view this subject' });
       }
 
-      filteredResults = assessment.results.filter((r) => r.subjectId === subjectIdParam);
+      filteredResults = activeAssessmentResults.filter((r) => r.subjectId === subjectIdParam);
     } else if (subjectParam) {
       // Backward compatibility for existing links that still send a subject name.
       const allowedSubjectNames = new Set(teacherSubjects.map((teacherSubject) => teacherSubject.subject.name));
@@ -684,7 +707,7 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
         return res.status(403).json({ error: 'Not authorized to view this subject' });
       }
 
-      filteredResults = assessment.results.filter((r) => 
+      filteredResults = activeAssessmentResults.filter((r) => 
         r.subjectRef?.name === subjectParam || r.subject === subjectParam
       );
     }
@@ -740,9 +763,9 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
       forcedSubjectName = teacherSubjectAssignment.subject.name;
 
       if (subjectIdParam) {
-        filteredResults = assessment.results.filter((r) => r.subjectId === subjectIdParam);
+        filteredResults = activeAssessmentResults.filter((r) => r.subjectId === subjectIdParam);
       } else {
-        filteredResults = assessment.results.filter(
+        filteredResults = activeAssessmentResults.filter(
           (r) => r.subjectRef?.name === subjectParam || r.subject === subjectParam
         );
       }
@@ -777,7 +800,7 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
           className: teacherClass.class.name,
         };
 
-        teacherClass.class.pupils.forEach((pupil) => {
+        filterActiveStudents(teacherClass.class.pupils).forEach((pupil) => {
           if (!rosterMap.has(pupil.id)) {
             rosterMap.set(pupil.id, {
               id: pupil.id,
@@ -889,7 +912,7 @@ router.get('/assessments/:assessmentId', async (req: AuthenticatedRequest, res) 
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b));
 
-    const isLocked = assessment.results.some((result) => result.lockedAt !== null);
+    const isLocked = activeAssessmentResults.some((result) => result.lockedAt !== null);
 
     res.json({
       assessment: {
@@ -1086,6 +1109,29 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
       },
     });
 
+    const eligiblePupilIds = new Set(
+      (
+        await prisma.pupil.findMany({
+          where: {
+            schoolId,
+            id: { in: scores.map((score) => score.pupilId).filter(Boolean) },
+            isActive: true,
+            OR: [{ status: null }, { status: { not: 'INACTIVE' } }],
+          },
+          select: { id: true },
+        })
+      ).map((pupil) => pupil.id)
+    );
+
+    const filteredScores = scores.filter((score) => {
+      const pupilId = score.pupilId;
+      return typeof pupilId === 'string' && eligiblePupilIds.has(pupilId);
+    });
+
+    if (filteredScores.length === 0) {
+      return res.json({ success: true, results: [] });
+    }
+
     const existingAssessmentResults = await prisma.result.findMany({
       where: { assessmentId },
       select: { lockedAt: true },
@@ -1150,7 +1196,7 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
 
       // Bulk upsert results
       const results = await Promise.all(
-        scores.map(
+        filteredScores.map(
           (score: {
             pupilId: string;
             caScore?: number | null;
@@ -1208,7 +1254,7 @@ router.post('/results', async (req: AuthenticatedRequest, res) => {
 
     // Bulk upsert results
     const results = await Promise.all(
-      scores.map(
+      filteredScores.map(
         (score: {
           pupilId: string;
           caScore?: number | null;
@@ -1311,9 +1357,28 @@ router.post('/attendance', async (req: AuthenticatedRequest, res) => {
       },
     });
 
+    const activePupilIds = new Set(
+      (
+        await prisma.pupil.findMany({
+          where: {
+            schoolId,
+            classId,
+            isActive: true,
+            OR: [{ status: null }, { status: { not: 'INACTIVE' } }],
+          },
+          select: { id: true },
+        })
+      ).map((pupil) => pupil.id)
+    );
+
+    const validAttendance = attendanceData.filter((att: { studentId?: string; pupilId?: string; status: string }) => {
+      const pupilId = att.pupilId || att.studentId;
+      return typeof pupilId === 'string' && activePupilIds.has(pupilId);
+    });
+
     // Create new attendance records
     const records = await Promise.all(
-      attendanceData.map((att: { studentId?: string; pupilId?: string; status: string }) => {
+      validAttendance.map((att: { studentId?: string; pupilId?: string; status: string }) => {
         const pupilId = att.pupilId || att.studentId;
         if (!pupilId) {
           throw new Error('pupilId or studentId required for each attendance record');
@@ -1376,12 +1441,16 @@ router.get('/attendance/summary', async (req: AuthenticatedRequest, res) => {
       where: {
         schoolId,
         classId: classId as string,
+        isActive: true,
+        OR: [{ status: null }, { status: { not: 'INACTIVE' } }],
       },
       select: {
         id: true,
         firstName: true,
         lastName: true,
         admissionNo: true,
+        isActive: true,
+        status: true,
       },
       orderBy: { firstName: 'asc' },
     });
@@ -1403,10 +1472,12 @@ router.get('/attendance/summary', async (req: AuthenticatedRequest, res) => {
       },
     });
 
+    const activeStudents = filterActiveStudents(students);
+
     // Group attendance by student and date
     const attendanceByStudent: Record<string, Record<string, { status: string }>> = {};
     
-    students.forEach((student) => {
+    activeStudents.forEach((student) => {
       attendanceByStudent[student.id] = {};
     });
 
@@ -1421,7 +1492,7 @@ router.get('/attendance/summary', async (req: AuthenticatedRequest, res) => {
     });
 
     // Format response
-    const formattedStudents = students.map((student) => ({
+    const formattedStudents = activeStudents.map((student) => ({
       id: student.id,
       firstName: student.firstName,
       lastName: student.lastName,

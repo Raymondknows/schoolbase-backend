@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStudentRosterWhere, isStudentCurrentlyEnrolled, normalizeStudentEnrollmentStatus } from '../student-lifecycle.js';
+import {
+  buildStudentRosterWhere,
+  filterActiveStudents,
+  isStudentCurrentlyEnrolled,
+  normalizeStudentEnrollmentStatus,
+} from '../student-lifecycle.js';
 
 describe('student enrollment lifecycle', () => {
   it('normalizes only supported enrollment statuses', () => {
@@ -39,5 +44,19 @@ describe('student enrollment lifecycle', () => {
       isActive: true,
       OR: [{ status: null }, { status: { not: 'INACTIVE' } }],
     });
+  });
+
+  it('filters a roster to only currently enrolled pupils for active workflows', () => {
+    const pupils = [
+      { id: 'active', isActive: true, status: 'ACTIVE' },
+      { id: 'legacy-inactive', isActive: true, status: 'INACTIVE' },
+      { id: 'flag-inactive', isActive: false, status: 'ACTIVE' },
+      { id: 'statusless-active', isActive: true, status: null },
+    ];
+
+    assert.deepEqual(
+      filterActiveStudents(pupils).map((pupil) => pupil.id),
+      ['active', 'statusless-active']
+    );
   });
 });
