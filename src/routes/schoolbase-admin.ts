@@ -2150,6 +2150,106 @@ router.post('/support/tasks', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/support/requests', async (req: Request, res: Response) => {
+  const session = await requirePlatformAdminSession(req, res);
+  if (!session) return;
+
+  try {
+    const { schoolId, subject, message, priority = 'MEDIUM' } = req.body as {
+      schoolId?: string;
+      subject?: string;
+      message?: string;
+      priority?: string;
+    };
+
+    if (!schoolId) return res.status(400).json({ message: 'School is required.' });
+    if (!subject?.trim()) return res.status(400).json({ message: 'Ticket subject is required.' });
+    if (!message?.trim()) return res.status(400).json({ message: 'Ticket details are required.' });
+
+    const normalizedPriority = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(priority || '') ? (priority as 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL') : 'MEDIUM';
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { id: true, name: true, email: true, country: true },
+    });
+
+    if (!school) return res.status(404).json({ message: 'School not found.' });
+
+    const request = await prisma.$transaction(async (tx) => {
+      const created = await tx.supportRequest.create({
+        data: {
+          schoolId: school.id,
+          createdByUserId: session,
+          requesterName: 'SchoolBase Support',
+          requesterEmail: null,
+          requesterRole: 'PLATFORM_ADMIN',
+          subject: subject.trim(),
+          message: message.trim(),
+          priority: normalizedPriority,
+          status: 'OPEN',
+          lastMessageAt: new Date(),
+        },
+      });
+
+      await tx.supportRequestMessage.create({
+        data: {
+          supportRequestId: created.id,
+          senderUserId: session,
+          senderRole: 'PLATFORM_ADMIN',
+          senderName: 'SchoolBase Support',
+          senderEmail: null,
+          body: message.trim(),
+        },
+      });
+
+      return tx.supportRequest.findUniqueOrThrow({
+        where: { id: created.id },
+        include: {
+          messages: { orderBy: { createdAt: 'asc' } },
+          school: { select: { id: true, name: true, country: true, email: true } },
+        },
+      });
+    });
+
+    try {
+      const { sendSupportRequestNotification } = await import('../services/email.js');
+      sendSupportRequestNotification(
+        request.id,
+        request.subject,
+        request.message,
+        school.name,
+        school.email,
+      )
+        .then(() => console.log('Platform-created support request notification queued'))
+        .catch((err) => console.warn('Platform-created support request notification failed (non-blocking):', err));
+    } catch (error) {
+      console.warn('Could not import email service for platform-created support request:', error);
+    }
+
+    res.status(201).json({
+      request: {
+        id: request.id,
+        subject: request.subject,
+        message: request.message,
+        response: request.response,
+        status: request.status,
+        priority: request.priority,
+        createdAt: request.createdAt.toISOString(),
+        updatedAt: request.updatedAt.toISOString(),
+        school: request.school ? {
+          id: request.school.id,
+          name: request.school.name,
+          country: request.school.country,
+        } : null,
+      },
+      message: 'School support ticket created successfully.'
+    });
+  } catch (error) {
+    console.error('Error creating platform support request:', error);
+    res.status(500).json({ message: (error as Error).message || 'Failed to create school support ticket.' });
+  }
+});
+
 router.patch('/support/tasks/:taskId', async (req: Request, res: Response) => {
   const session = await requirePlatformAdminSession(req, res);
   if (!session) return;

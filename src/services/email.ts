@@ -1900,7 +1900,7 @@ export async function sendSetupReminderEmail(
                 <h2 style="font-size: 16px; margin-top: 24px;">Setup status</h2>
                 ${taskSectionHtml}
 
-                <p style="margin-top: 24px;">Most schools go live in under 30 minutes. And once you're set up, your parents will immediately start paying fees, requesting updates, and getting results instantly from the portal.</p>
+                <p style="margin-top: 24px;">Most schools go live in under 30 minutes. Once your setup is complete, your team can start using the portal for announcements, results, attendance, and daily communication with parents.</p>
 
                 <div class="button-container">
                   <a href="https://schoolbase.live/admin/setup" class="button">Continue Setup</a>
