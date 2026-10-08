@@ -6,6 +6,7 @@ import bcrypt from 'bcryptjs';
 import { resolveSupportedCurrency } from '../services/currency.js';
 import { getSessionSecret } from '../services/security-config.js';
 import { verifyAuth, type AuthenticatedRequest } from '../middleware/roleAuth.js';
+import { resolveCompetitionFeature } from '../services/competition-feature-gate.js';
 
 const router = Router();
 const prisma = new PrismaClient() as PrismaClient & {
@@ -1338,5 +1339,34 @@ function getGrade(score: number): string {
   if (score >= 50) return 'D';
   return 'F';
 }
+
+router.get('/competition/achievements', async (req: Request, res: Response) => {
+  try {
+    if (!(await resolveCompetitionFeature(prisma, 'competition.gamification.enabled'))) return res.status(404).json({ error: 'FEATURE_DISABLED' });
+    const sessionCookie = String(req.headers.cookie || '').split(';').find((cookie) => cookie.trim().startsWith('schoolbase_session='));
+    if (!sessionCookie) return res.status(401).json({ error: 'UNAUTHORIZED' });
+    const token = sessionCookie.split('=')[1];
+    const { payload } = await jwtVerify(token, secret());
+    const family = await resolveParentFamily(payload as any);
+    if (!family.pupilIds.length) return res.json({ children: [] });
+
+    const [pupils, achievements, xpTransactions] = await Promise.all([
+      prisma.pupil.findMany({ where: { id: { in: family.pupilIds }, schoolId: family.schoolId }, select: { id: true, firstName: true, middleName: true, lastName: true, class: { select: { name: true } } } }),
+      prisma.competitionPupilAchievement.findMany({ where: { pupilId: { in: family.pupilIds } }, select: { pupilId: true, awardedAt: true, achievement: { select: { code: true, title: true, description: true, iconUrl: true } } }, orderBy: { awardedAt: 'desc' } }),
+      prisma.competitionXpTransaction.groupBy({ by: ['pupilId'], where: { pupilId: { in: family.pupilIds } }, _sum: { amount: true } }),
+    ]);
+    const xpByPupil = new Map(xpTransactions.map((entry) => [entry.pupilId, entry._sum.amount ?? 0]));
+    const achievementsByPupil = new Map<string, typeof achievements>();
+    for (const achievement of achievements) {
+      const existing = achievementsByPupil.get(achievement.pupilId) || [];
+      existing.push(achievement);
+      achievementsByPupil.set(achievement.pupilId, existing);
+    }
+    res.json({ children: pupils.map((pupil) => ({ id: pupil.id, displayName: `${pupil.firstName} ${pupil.middleName ? `${pupil.middleName[0]}. ` : ''}${pupil.lastName}`, className: pupil.class?.name ?? null, xp: xpByPupil.get(pupil.id) ?? 0, achievements: (achievementsByPupil.get(pupil.id) || []).map((entry) => ({ ...entry.achievement, awardedAt: entry.awardedAt })) })) });
+  } catch (error) {
+    console.error('[parent] Competition achievements failed', error);
+    res.status(500).json({ error: 'COMPETITION_ACHIEVEMENTS_FAILED' });
+  }
+});
 
 export default router;

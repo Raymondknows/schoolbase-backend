@@ -189,6 +189,8 @@ async function loadRoutes() {
     console.log('✓ Loaded result PIN routes');
     const { default: bursarRoutes } = await import('./routes/bursar.js');
     console.log('✓ Loaded bursar routes');
+    const { default: competitionRoutes } = await import('./routes/competition.js');
+    console.log('✓ Loaded Competition routes');
 
     app.use('/api/admin', adminRoutes);
     app.use('/api/admin/assessment-components', adminComponentsRoutes);
@@ -207,6 +209,8 @@ async function loadRoutes() {
     app.use('/api/admin', dashboardRoutes);
     app.use('/api/teacher', teacherRoutes);
     app.use('/api/bursar', bursarRoutes);
+    app.use('/api/competition', competitionRoutes);
+    app.use('/schoolbase-admin/api/competition', competitionRoutes);
     app.use('/api/id-cards', idCardStudioRoutes);
     app.use('/api', timetableRoutes);
     app.use('/api/support-chat', supportChatRoutes);

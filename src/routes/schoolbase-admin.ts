@@ -6,7 +6,8 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { sendSetupReminderEmail } from '../services/email.js';
-import { getPlatformSettings, serializePlatformSettingValue, normalizeEmailList, parsePlatformSettingValue, platformSettingDefaults } from '../services/platform-settings.js';
+import { getPlatformSettings, serializePlatformSettingValue, normalizeEmailList, parsePlatformSettingValue, platformSettingDefaults, competitionFeatureKeys } from '../services/platform-settings.js';
+import { normalizeCompetitionFeatures } from '../services/competition-feature-gate.js';
 import { sendPendingSignupReminderEmail, sendWelcomeEmail, sendInternalSignupNotification } from '../services/email.js';
 import { sendAdvertiserStatusEmail } from '../services/email.js';
 import { normalizePlacementIds } from './ads-utils.js';
@@ -1110,6 +1111,23 @@ router.patch('/settings', async (req: Request, res: Response) => {
           return res.status(400).json({ message: `Invalid ${plan} payment plan configuration.` });
         }
       }
+    }
+
+    if ('competitionFeatures' in input) {
+      const features = input.competitionFeatures;
+      if (!features || typeof features !== 'object' || Array.isArray(features)) {
+        return res.status(400).json({ message: 'competitionFeatures must be an object.' });
+      }
+      const featureSettings = features as Record<string, unknown>;
+      if (Object.keys(featureSettings).some((key) => !competitionFeatureKeys.includes(key as typeof competitionFeatureKeys[number])) ||
+          competitionFeatureKeys.some((key) => typeof featureSettings[key] !== 'boolean')) {
+        return res.status(400).json({ message: 'competitionFeatures must contain every supported feature key with a boolean value.' });
+      }
+      if (featureSettings['competition.enabled'] !== true &&
+          competitionFeatureKeys.some((key) => key !== 'competition.enabled' && featureSettings[key] === true)) {
+        return res.status(400).json({ message: 'Enable the Competition module before enabling individual Competition features.' });
+      }
+      normalizedSettings.competitionFeatures = normalizeCompetitionFeatures(featureSettings);
     }
 
     const entries = Object.entries(normalizedSettings);

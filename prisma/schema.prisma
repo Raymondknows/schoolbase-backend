@@ -115,6 +115,22 @@ model School {
   idCardDrafts                  IdCardDraft[]
   idCardUsageAwards              IdCardUsageAward[]
   idCardIssuances                 IdCardIssuance[]
+  competitionPupilAccounts        CompetitionPupilAccount[]
+  competitionCategories           CompetitionCategory[]
+  competitionQuestionSets         CompetitionQuestionSet[]
+  competitionChallenges           CompetitionChallenge[]
+  competitionAttempts             CompetitionChallengeAttempt[]
+  competitionXpTransactions       CompetitionXpTransaction[]
+  competitionLeaderboardSnapshots CompetitionLeaderboardSnapshot[]
+  competitionTournaments          CompetitionTournament[]
+  competitionTournamentSchools   CompetitionTournamentSchool[]
+  competitionTournamentParticipants CompetitionTournamentParticipant[]
+  competitionPrizes               CompetitionPrize[]
+  competitionCertificates        CompetitionCertificate[]
+  competitionAnnouncements       CompetitionAnnouncement[]
+  competitionSuspiciousActivities CompetitionSuspiciousActivity[]
+  competitionAuditLogs            CompetitionAuditLog[]
+  competitionAnalyticsSnapshots   CompetitionAnalyticsSnapshot[]
 
   status                        SchoolStatus      @default(TRIAL)
   plan                          SchoolPlan        @default(FREE)
@@ -158,6 +174,8 @@ model AcademicYear {
   promotionRecords     PromotionRecord[]
   historicalTermTotals HistoricalTermTotal[]
   timetableConfigs     TimetableConfig[]
+  competitionChallenges CompetitionChallenge[]
+  competitionAttempts   CompetitionChallengeAttempt[]
   terms                Term[]
 
   @@unique([schoolId, name])
@@ -180,6 +198,8 @@ model Term {
   resultPins             ResultPin[]
   announcements          Announcement[]
   timetableConfigs       TimetableConfig[]
+  competitionChallenges CompetitionChallenge[]
+  competitionAttempts   CompetitionChallengeAttempt[]
   academicYear           AcademicYear            @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
 
   @@index([academicYearId], map: "Term_academicYearId_fkey")
@@ -373,6 +393,9 @@ model Class {
   timetableEntries       TimetableEntry[]
   scheduledActivityLinks ScheduledActivityClass[]
   historicalTermTotals   HistoricalTermTotal[]
+  competitionChallenges CompetitionChallenge[]
+  competitionAttempts   CompetitionChallengeAttempt[]
+  competitionTournamentParticipants CompetitionTournamentParticipant[]
 
   @@index([schoolId], map: "Class_schoolId_fkey")
 }
@@ -415,6 +438,16 @@ model Pupil {
   resultPins             ResultPin[]
   studentFeeAdjustments  StudentFeeAdjustment[]
   idCardIssuances        IdCardIssuance[]
+  competitionAccount    CompetitionPupilAccount? @relation("CompetitionPupilAccountPupil")
+  competitionAttempts   CompetitionChallengeAttempt[]
+  competitionXpTransactions CompetitionXpTransaction[]
+  competitionAchievements CompetitionPupilAchievement[]
+  competitionChallengesSent CompetitionStudentChallenge[] @relation("CompetitionChallengeSender")
+  competitionChallengesReceived CompetitionStudentChallenge[] @relation("CompetitionChallengeRecipient")
+  competitionTournamentParticipants CompetitionTournamentParticipant[]
+  competitionCertificates CompetitionCertificate[]
+  competitionPrizes CompetitionPrize[]
+  competitionSuspiciousActivities CompetitionSuspiciousActivity[]
 
   @@unique([schoolId, admissionNo])
   @@index([classId], map: "Pupil_classId_fkey")
@@ -479,8 +512,638 @@ model User {
   postedTransactions    FinancialTransaction[] @relation("FinancialTransactionPostedBy")
   reversedTransactions  FinancialTransaction[] @relation("FinancialTransactionReversedBy")
   auditLogChanges       FinancialAuditLog[]
+  competitionAccount    CompetitionPupilAccount?  @relation("CompetitionPupilAccountUser")
+  competitionAccountsLinked CompetitionPupilAccount[] @relation("CompetitionPupilAccountLinkedBy")
+  competitionAuditEvents CompetitionAuditLog[] @relation("CompetitionAuditActor")
 
   @@index([schoolId], map: "User_schoolId_fkey")
+}
+
+model CompetitionPupilAccount {
+  id              String                         @id @default(cuid())
+  schoolId        String
+  pupilId         String                         @unique
+  userId          String                         @unique
+  linkedByUserId  String?
+  status          CompetitionPupilAccountStatus  @default(ACTIVE)
+  linkedAt        DateTime                       @default(now())
+  revokedAt       DateTime?
+  school          School                         @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  pupil           Pupil                          @relation("CompetitionPupilAccountPupil", fields: [pupilId], references: [id], onDelete: Cascade)
+  user            User                           @relation("CompetitionPupilAccountUser", fields: [userId], references: [id], onDelete: Cascade)
+  linkedBy        User?                          @relation("CompetitionPupilAccountLinkedBy", fields: [linkedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([schoolId, status])
+  @@index([linkedByUserId])
+}
+
+model CompetitionCategory {
+  id          String   @id @default(cuid())
+  schoolId    String?
+  subjectId   String?
+  code        String
+  name        String
+  description String?  @db.Text
+  countryCode String?  @db.VarChar(2)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  school      School?  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  subject     Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  questionSets CompetitionQuestionSet[]
+  challenges  CompetitionChallenge[]
+  tournaments CompetitionTournament[]
+
+  @@unique([schoolId, code])
+  @@index([subjectId])
+  @@index([countryCode, isActive])
+}
+
+model CompetitionQuestionSet {
+  id              String                    @id @default(cuid())
+  schoolId        String?
+  categoryId      String
+  subjectId       String?
+  name            String
+  description     String?                   @db.Text
+  gradeLabel      String?
+  topic           String?
+  locale          String                    @default("en")
+  version         Int                       @default(1)
+  status          CompetitionContentStatus  @default(DRAFT)
+  createdByUserId String?
+  reviewedByUserId String?
+  reviewedAt      DateTime?
+  reviewNotes     String?                   @db.Text
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+  school          School?                   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  category        CompetitionCategory       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  subject         Subject?                  @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  questions       CompetitionQuestion[]
+  challenges      CompetitionChallenge[]
+
+  @@unique([schoolId, name, version])
+  @@index([categoryId, status, gradeLabel])
+  @@index([subjectId])
+  @@index([status, createdAt])
+}
+
+model CompetitionQuestion {
+  id               String                    @id @default(cuid())
+  questionSetId    String
+  type             CompetitionQuestionType
+  difficulty       CompetitionDifficulty     @default(MEDIUM)
+  prompt           String                    @db.LongText
+  explanation      String?                   @db.LongText
+  basePoints       Int                       @default(100)
+  timeLimitSeconds Int?
+  version          Int                       @default(1)
+  status           CompetitionContentStatus  @default(DRAFT)
+  createdByUserId  String?
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+  reviewNotes      String?                   @db.Text
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+  questionSet      CompetitionQuestionSet    @relation(fields: [questionSetId], references: [id], onDelete: Cascade)
+  options          CompetitionQuestionOption[]
+  media            CompetitionQuestionMedia[]
+  attemptQuestions CompetitionAttemptQuestion[]
+  submissions      CompetitionAnswerSubmission[]
+
+  @@index([questionSetId, status, difficulty])
+}
+
+model CompetitionQuestionOption {
+  id         String               @id @default(cuid())
+  questionId String
+  content    String               @db.LongText
+  sortOrder  Int
+  isCorrect  Boolean              @default(false)
+  createdAt  DateTime             @default(now())
+  question   CompetitionQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, sortOrder])
+  @@index([questionId])
+}
+
+model CompetitionQuestionMedia {
+  id         String               @id @default(cuid())
+  questionId String
+  assetUrl   String               @db.VarChar(2048)
+  storageKey String?              @db.VarChar(512)
+  mimeType   String               @db.VarChar(120)
+  altText    String?              @db.VarChar(500)
+  sortOrder  Int                  @default(0)
+  createdAt  DateTime             @default(now())
+  question   CompetitionQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId, sortOrder])
+}
+
+model CompetitionScoringPolicy {
+  id              String   @id @default(cuid())
+  name            String
+  version         Int
+  policyJson      String   @db.LongText
+  isActive        Boolean  @default(false)
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  challenges      CompetitionChallenge[]
+  attempts        CompetitionChallengeAttempt[]
+
+  @@unique([name, version])
+  @@index([isActive, createdAt])
+}
+
+model CompetitionChallenge {
+  id                String                     @id @default(cuid())
+  schoolId          String?
+  categoryId        String
+  questionSetId     String
+  scoringPolicyId   String
+  classId           String?
+  academicYearId    String?
+  termId            String?
+  title             String
+  description       String?                    @db.Text
+  gradeLabel        String?
+  questionCount     Int
+  durationSeconds   Int
+  difficultyMixJson String?                    @db.LongText
+  eligibilityJson   String?                    @db.LongText
+  xpPolicyJson      String?                    @db.LongText
+  attemptLimit      Int                        @default(1)
+  opensAt           DateTime?
+  closesAt          DateTime?
+  status            CompetitionChallengeStatus @default(DRAFT)
+  createdByUserId   String?
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+  school            School?                    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  category          CompetitionCategory        @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  questionSet       CompetitionQuestionSet     @relation(fields: [questionSetId], references: [id], onDelete: Restrict)
+  scoringPolicy     CompetitionScoringPolicy   @relation(fields: [scoringPolicyId], references: [id], onDelete: Restrict)
+  class             Class?                     @relation(fields: [classId], references: [id], onDelete: SetNull)
+  academicYear      AcademicYear?              @relation(fields: [academicYearId], references: [id], onDelete: SetNull)
+  term              Term?                      @relation(fields: [termId], references: [id], onDelete: SetNull)
+  attempts          CompetitionChallengeAttempt[]
+  studentInvitations CompetitionStudentChallenge[]
+
+  @@index([schoolId, status, opensAt, closesAt])
+  @@index([categoryId, status])
+  @@index([classId, status])
+  @@index([academicYearId, termId])
+}
+
+model CompetitionChallengeAttempt {
+  id                    String                    @id @default(cuid())
+  schoolId              String
+  pupilId               String
+  classId               String?
+  challengeId           String
+  attemptNumber         Int
+  academicYearId        String?
+  termId                String?
+  scoringPolicyId       String
+  status                CompetitionAttemptStatus  @default(CREATED)
+  idempotencyKey        String                    @unique
+  startedAt             DateTime?
+  deadlineAt            DateTime?
+  submittedAt           DateTime?
+  score                 Int                       @default(0)
+  correctCount          Int                       @default(0)
+  questionCount         Int                       @default(0)
+  elapsedMs             Int?
+  accuracyPercent       Decimal?                  @db.Decimal(7, 4)
+  scoringPolicyVersion  Int
+  scoringSnapshotJson   String                    @db.LongText
+  invalidationReason    String?                   @db.Text
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  school                School                    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  pupil                 Pupil                     @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+  class                 Class?                    @relation(fields: [classId], references: [id], onDelete: SetNull)
+  challenge             CompetitionChallenge      @relation(fields: [challengeId], references: [id], onDelete: Restrict)
+  academicYear          AcademicYear?             @relation(fields: [academicYearId], references: [id], onDelete: SetNull)
+  term                  Term?                     @relation(fields: [termId], references: [id], onDelete: SetNull)
+  scoringPolicy         CompetitionScoringPolicy  @relation(fields: [scoringPolicyId], references: [id], onDelete: Restrict)
+  questions             CompetitionAttemptQuestion[]
+  answers               CompetitionAnswerSubmission[]
+  xpTransactions        CompetitionXpTransaction[]
+  suspiciousActivities  CompetitionSuspiciousActivity[]
+  certificates          CompetitionCertificate[]
+
+  @@index([schoolId, status, createdAt])
+  @@unique([pupilId, challengeId, attemptNumber])
+  @@index([pupilId, createdAt])
+  @@index([challengeId, status])
+  @@index([classId, createdAt])
+  @@index([academicYearId, termId])
+}
+
+model CompetitionAttemptQuestion {
+  id              String                      @id @default(cuid())
+  attemptId       String
+  questionId      String
+  position        Int
+  questionVersion Int
+  optionOrderJson String                      @db.LongText
+  createdAt       DateTime                    @default(now())
+  attempt         CompetitionChallengeAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question        CompetitionQuestion         @relation(fields: [questionId], references: [id], onDelete: Restrict)
+
+  @@unique([attemptId, position])
+  @@unique([attemptId, questionId])
+  @@index([questionId])
+}
+
+model CompetitionAnswerSubmission {
+  id            String                      @id @default(cuid())
+  attemptId     String
+  questionId    String
+  responseJson  String                      @db.LongText
+  isCorrect     Boolean
+  awardedPoints Int                         @default(0)
+  elapsedMs     Int?
+  answeredAt    DateTime                    @default(now())
+  attempt       CompetitionChallengeAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question      CompetitionQuestion         @relation(fields: [questionId], references: [id], onDelete: Restrict)
+
+  @@unique([attemptId, questionId])
+  @@index([attemptId, answeredAt])
+}
+
+model CompetitionStudentChallenge {
+  id                String                              @id @default(cuid())
+  challengeId       String
+  senderPupilId     String
+  recipientPupilId  String
+  status            CompetitionStudentChallengeStatus  @default(PENDING)
+  expiresAt         DateTime
+  acceptedAt        DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime                            @default(now())
+  challenge         CompetitionChallenge               @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  sender            Pupil                               @relation("CompetitionChallengeSender", fields: [senderPupilId], references: [id], onDelete: Cascade)
+  recipient         Pupil                               @relation("CompetitionChallengeRecipient", fields: [recipientPupilId], references: [id], onDelete: Cascade)
+
+  @@index([recipientPupilId, status, expiresAt])
+  @@index([senderPupilId, createdAt])
+  @@index([challengeId, status])
+}
+
+model CompetitionXpTransaction {
+  id             String                        @id @default(cuid())
+  schoolId       String
+  pupilId        String
+  attemptId      String?
+  sourceType     String                        @db.VarChar(80)
+  sourceId       String                        @db.VarChar(191)
+  amount         Int
+  reason         String                        @db.VarChar(500)
+  idempotencyKey String                        @unique
+  createdAt      DateTime                      @default(now())
+  school         School                        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  pupil          Pupil                         @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+  attempt        CompetitionChallengeAttempt?  @relation(fields: [attemptId], references: [id], onDelete: SetNull)
+
+  @@index([schoolId, createdAt])
+  @@index([pupilId, createdAt])
+  @@index([sourceType, sourceId])
+}
+
+model CompetitionAchievement {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  title       String
+  description String   @db.Text
+  criteriaJson String  @db.LongText
+  iconUrl     String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  awards      CompetitionPupilAchievement[]
+}
+
+model CompetitionPupilAchievement {
+  id            String                  @id @default(cuid())
+  pupilId       String
+  achievementId String
+  awardedAt     DateTime                @default(now())
+  sourceType    String?                 @db.VarChar(80)
+  sourceId      String?                 @db.VarChar(191)
+  pupil         Pupil                   @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+  achievement   CompetitionAchievement @relation(fields: [achievementId], references: [id], onDelete: Restrict)
+
+  @@unique([pupilId, achievementId])
+  @@index([achievementId, awardedAt])
+}
+
+model CompetitionLeaderboardSnapshot {
+  id            String                       @id @default(cuid())
+  schoolId      String?
+  scope         CompetitionLeaderboardScope
+  scopeKey      String                       @db.VarChar(191)
+  periodStart   DateTime?
+  periodEnd     DateTime?
+  policyVersion Int
+  entriesJson   String                       @db.LongText
+  generatedAt   DateTime                     @default(now())
+  school        School?                      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([scope, scopeKey, generatedAt])
+  @@index([schoolId, scope, generatedAt])
+}
+
+model CompetitionTournament {
+  id                   String                      @id @default(cuid())
+  schoolId             String?
+  categoryId           String
+  title                String
+  slug                 String                      @unique
+  description          String?                     @db.LongText
+  rules                String?                     @db.LongText
+  status               CompetitionTournamentStatus @default(DRAFT)
+  scope                CompetitionTournamentScope  @default(SCHOOL)
+  countryCode          String?                     @db.VarChar(2)
+  regionCode           String?                     @db.VarChar(120)
+  districtCode         String?                     @db.VarChar(120)
+  gradeRangeJson       String?                     @db.LongText
+  eligibilityJson      String?                     @db.LongText
+  scoringPolicyJson    String                      @db.LongText
+  participantLimit     Int?
+  registrationOpensAt  DateTime?
+  registrationClosesAt DateTime?
+  startsAt             DateTime?
+  endsAt               DateTime?
+  publicVisibility     Boolean                     @default(false)
+  bannerUrl            String?
+  createdByUserId      String?
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+  school               School?                     @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  category             CompetitionCategory         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  schools              CompetitionTournamentSchool[]
+  participants         CompetitionTournamentParticipant[]
+  rounds               CompetitionTournamentRound[]
+  sponsors             CompetitionTournamentSponsor[]
+  prizes               CompetitionPrize[]
+  certificates         CompetitionCertificate[]
+  announcements        CompetitionAnnouncement[]
+
+  @@index([status, startsAt, endsAt])
+  @@index([scope, countryCode, regionCode, districtCode])
+  @@index([schoolId, status])
+  @@index([categoryId, status])
+}
+
+model CompetitionTournamentSchool {
+  id               String                        @id @default(cuid())
+  tournamentId     String
+  schoolId         String
+  status           CompetitionRegistrationStatus @default(PENDING)
+  registeredAt     DateTime                      @default(now())
+  approvedAt       DateTime?
+  approvedByUserId String?
+  decisionReason   String?                       @db.Text
+  tournament       CompetitionTournament         @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  school           School                        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  participants     CompetitionTournamentParticipant[]
+
+  @@unique([tournamentId, schoolId])
+  @@index([schoolId, status])
+}
+
+model CompetitionTournamentParticipant {
+  id                  String                        @id @default(cuid())
+  tournamentId        String
+  tournamentSchoolId  String?
+  schoolId            String
+  pupilId             String
+  classId             String?
+  status              CompetitionRegistrationStatus @default(PENDING)
+  displayNameSnapshot String                        @db.VarChar(160)
+  visibilityApproved  Boolean                       @default(false)
+  registeredAt        DateTime                      @default(now())
+  approvedAt          DateTime?
+  tournament          CompetitionTournament         @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  tournamentSchool    CompetitionTournamentSchool?  @relation(fields: [tournamentSchoolId], references: [id], onDelete: SetNull)
+  school              School                        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  pupil               Pupil                         @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+  class               Class?                        @relation(fields: [classId], references: [id], onDelete: SetNull)
+  matchesAsHome       CompetitionTournamentMatch[]  @relation("CompetitionMatchHome")
+  matchesAsAway       CompetitionTournamentMatch[]  @relation("CompetitionMatchAway")
+  matchesWon          CompetitionTournamentMatch[]  @relation("CompetitionMatchWinner")
+  prizes              CompetitionPrize[]
+  certificates        CompetitionCertificate[]
+
+  @@unique([tournamentId, pupilId])
+  @@index([schoolId, tournamentId, status])
+  @@index([classId, tournamentId])
+}
+
+model CompetitionTournamentRound {
+  id           String                      @id @default(cuid())
+  tournamentId String
+  name         String
+  roundNumber  Int
+  status       CompetitionRoundStatus      @default(PENDING)
+  startsAt     DateTime?
+  endsAt       DateTime?
+  rulesJson    String?                     @db.LongText
+  createdAt    DateTime                    @default(now())
+  tournament   CompetitionTournament       @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  matches      CompetitionTournamentMatch[]
+
+  @@unique([tournamentId, roundNumber])
+  @@index([tournamentId, status])
+}
+
+model CompetitionTournamentMatch {
+  id                    String                       @id @default(cuid())
+  roundId               String
+  homeParticipantId     String?
+  awayParticipantId     String?
+  winnerParticipantId   String?
+  status                CompetitionMatchStatus       @default(SCHEDULED)
+  scheduledAt           DateTime?
+  completedAt           DateTime?
+  homeScore             Int?
+  awayScore             Int?
+  resultJson            String?                      @db.LongText
+  disputeStatus         String?                      @db.VarChar(40)
+  round                 CompetitionTournamentRound   @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  homeParticipant       CompetitionTournamentParticipant? @relation("CompetitionMatchHome", fields: [homeParticipantId], references: [id], onDelete: SetNull)
+  awayParticipant       CompetitionTournamentParticipant? @relation("CompetitionMatchAway", fields: [awayParticipantId], references: [id], onDelete: SetNull)
+  winnerParticipant     CompetitionTournamentParticipant? @relation("CompetitionMatchWinner", fields: [winnerParticipantId], references: [id], onDelete: SetNull)
+
+  @@index([roundId, status])
+  @@index([homeParticipantId])
+  @@index([awayParticipantId])
+  @@index([winnerParticipantId])
+}
+
+model CompetitionSponsor {
+  id                 String                    @id @default(cuid())
+  advertiserId       String                    @unique
+  sponsorshipLevel   CompetitionSponsorLevel  @default(SECONDARY)
+  startsAt           DateTime?
+  endsAt             DateTime?
+  prizeContribution  String?                   @db.Text
+  status             String                    @default("PENDING") @db.VarChar(40)
+  approvedAt         DateTime?
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+  advertiser         Advertiser                @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
+  tournaments        CompetitionTournamentSponsor[]
+  prizes             CompetitionPrize[]
+
+  @@index([status, startsAt, endsAt])
+}
+
+model CompetitionTournamentSponsor {
+  id                String                     @id @default(cuid())
+  tournamentId      String
+  sponsorId         String
+  level             CompetitionSponsorLevel
+  deliverablesJson  String?                    @db.LongText
+  approvedAt        DateTime?
+  createdAt         DateTime                   @default(now())
+  tournament        CompetitionTournament      @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  sponsor           CompetitionSponsor         @relation(fields: [sponsorId], references: [id], onDelete: Cascade)
+
+  @@unique([tournamentId, sponsorId])
+  @@index([sponsorId, level])
+}
+
+model CompetitionPrize {
+  id                 String                    @id @default(cuid())
+  schoolId           String?
+  tournamentId       String
+  sponsorId          String?
+  recipientPupilId   String?
+  participantId      String?
+  name               String
+  description        String?                   @db.Text
+  valueMinor         Int?
+  currency           String                    @default("NGN") @db.VarChar(3)
+  status             CompetitionPrizeStatus   @default(AVAILABLE)
+  awardedAt          DateTime?
+  fulfilledAt        DateTime?
+  fulfillmentNotes   String?                   @db.Text
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+  school             School?                   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  tournament         CompetitionTournament    @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  sponsor            CompetitionSponsor?      @relation(fields: [sponsorId], references: [id], onDelete: SetNull)
+  recipient          Pupil?                    @relation(fields: [recipientPupilId], references: [id], onDelete: SetNull)
+  participant        CompetitionTournamentParticipant? @relation(fields: [participantId], references: [id], onDelete: SetNull)
+
+  @@index([schoolId, status])
+  @@index([tournamentId, status])
+  @@index([recipientPupilId])
+}
+
+model CompetitionCertificate {
+  id                  String                       @id @default(cuid())
+  schoolId            String?
+  tournamentId        String?
+  attemptId           String?
+  participantId       String?
+  pupilId             String
+  certificateCodeHash String                       @unique @db.VarChar(128)
+  displayNameSnapshot String                       @db.VarChar(160)
+  schoolNameSnapshot  String                       @db.VarChar(191)
+  achievementTitle    String                       @db.VarChar(191)
+  issuedAt            DateTime                     @default(now())
+  status              CompetitionCertificateStatus @default(ISSUED)
+  revokedAt           DateTime?
+  revokedReason       String?                      @db.Text
+  school              School?                      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  tournament          CompetitionTournament?       @relation(fields: [tournamentId], references: [id], onDelete: SetNull)
+  attempt             CompetitionChallengeAttempt? @relation(fields: [attemptId], references: [id], onDelete: SetNull)
+  participant         CompetitionTournamentParticipant? @relation(fields: [participantId], references: [id], onDelete: SetNull)
+  pupil               Pupil                        @relation(fields: [pupilId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, issuedAt])
+  @@index([pupilId, issuedAt])
+  @@index([tournamentId, status])
+}
+
+model CompetitionAnnouncement {
+  id              String                  @id @default(cuid())
+  schoolId        String?
+  tournamentId    String?
+  title           String
+  body            String                  @db.LongText
+  isPublic        Boolean                 @default(false)
+  publishedAt     DateTime?
+  createdByUserId String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  school          School?                 @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  tournament      CompetitionTournament? @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, publishedAt])
+  @@index([tournamentId, publishedAt])
+  @@index([isPublic, publishedAt])
+}
+
+model CompetitionSuspiciousActivity {
+  id               String                       @id @default(cuid())
+  schoolId         String
+  pupilId          String?
+  attemptId        String?
+  eventType        String                       @db.VarChar(80)
+  status           CompetitionSuspiciousStatus  @default(OPEN)
+  evidenceJson     String?                      @db.LongText
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+  resolution       String?                      @db.Text
+  createdAt        DateTime                     @default(now())
+  school           School                       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  pupil            Pupil?                       @relation(fields: [pupilId], references: [id], onDelete: SetNull)
+  attempt          CompetitionChallengeAttempt? @relation(fields: [attemptId], references: [id], onDelete: SetNull)
+
+  @@index([schoolId, status, createdAt])
+  @@index([pupilId, createdAt])
+  @@index([attemptId])
+}
+
+model CompetitionAuditLog {
+  id          String   @id @default(cuid())
+  schoolId    String?
+  actorUserId String?
+  action      String   @db.VarChar(100)
+  entityType  String   @db.VarChar(100)
+  entityId    String   @db.VarChar(191)
+  reason      String?  @db.Text
+  beforeJson  String?  @db.LongText
+  afterJson   String?  @db.LongText
+  createdAt   DateTime @default(now())
+  school      School?  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  actor       User?    @relation("CompetitionAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([schoolId, createdAt])
+  @@index([entityType, entityId, createdAt])
+  @@index([actorUserId, createdAt])
+}
+
+model CompetitionAnalyticsSnapshot {
+  id          String   @id @default(cuid())
+  schoolId    String?
+  date        DateTime @db.Date
+  scope       String   @db.VarChar(40)
+  scopeKey    String   @db.VarChar(191)
+  metricsJson String   @db.LongText
+  createdAt   DateTime @default(now())
+  school      School?  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([schoolId, date, scope, scopeKey])
+  @@index([date, scope])
+  @@index([schoolId, date])
 }
 
 model SignupOtp {
@@ -871,6 +1534,7 @@ model Advertiser {
   createdAt           DateTime                     @default(now())
   updatedAt           DateTime                     @updatedAt
   campaigns           AdCampaign[]
+  competitionSponsor  CompetitionSponsor?
 
   @@index([verificationStatus])
 }
@@ -994,6 +1658,8 @@ model Subject {
   subjectResults       SubjectResult[]
   teacherSubjects      TeacherSubject[]
   timetableEntries     TimetableEntry[]
+  competitionCategories CompetitionCategory[]
+  competitionQuestionSets CompetitionQuestionSet[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -2062,6 +2728,138 @@ enum UserRole {
   TEACHER
   PARENT
   STUDENT
+}
+
+enum CompetitionPupilAccountStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum CompetitionContentStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  ARCHIVED
+}
+
+enum CompetitionQuestionType {
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+  IMAGE
+  ORDERING
+  MATCHING
+  SHORT_ANSWER
+}
+
+enum CompetitionDifficulty {
+  EASY
+  MEDIUM
+  HARD
+  EXPERT
+}
+
+enum CompetitionChallengeStatus {
+  DRAFT
+  SCHEDULED
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+enum CompetitionAttemptStatus {
+  CREATED
+  STARTED
+  SUBMITTED
+  EXPIRED
+  ABANDONED
+  INVALIDATED
+}
+
+enum CompetitionStudentChallengeStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  COMPLETED
+  CANCELLED
+}
+
+enum CompetitionLeaderboardScope {
+  STUDENT
+  CLASS
+  SCHOOL
+  TOURNAMENT
+  REGION
+  COUNTRY
+}
+
+enum CompetitionTournamentStatus {
+  DRAFT
+  UPCOMING
+  REGISTRATION_OPEN
+  REGISTRATION_CLOSED
+  LIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum CompetitionTournamentScope {
+  SCHOOL
+  CLASS
+  DISTRICT
+  REGION
+  COUNTRY
+  INTERNATIONAL
+}
+
+enum CompetitionRegistrationStatus {
+  PENDING
+  APPROVED
+  WITHDRAWN
+  DISQUALIFIED
+}
+
+enum CompetitionRoundStatus {
+  PENDING
+  LIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum CompetitionMatchStatus {
+  SCHEDULED
+  LIVE
+  COMPLETED
+  FORFEITED
+  DISPUTED
+}
+
+enum CompetitionSponsorLevel {
+  PRIMARY
+  SECONDARY
+  PRIZE
+}
+
+enum CompetitionPrizeStatus {
+  AVAILABLE
+  AWARDED
+  FULFILLING
+  FULFILLED
+  CANCELLED
+}
+
+enum CompetitionCertificateStatus {
+  ISSUED
+  REVOKED
+}
+
+enum CompetitionSuspiciousStatus {
+  OPEN
+  REVIEWED
+  DISMISSED
+  ACTIONED
 }
 
 enum InvoiceStatus {

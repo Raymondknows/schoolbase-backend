@@ -1,5 +1,29 @@
 import { PrismaClient } from '@prisma/client';
 
+export const competitionFeatureKeys = [
+  'competition.enabled',
+  'competition.dailyChallenge.enabled',
+  'competition.questionBank.enabled',
+  'competition.leaderboard.enabled',
+  'competition.gamification.enabled',
+  'competition.studentVsStudent.enabled',
+  'competition.classCompetition.enabled',
+  'competition.schoolTournament.enabled',
+  'competition.publicTournament.enabled',
+  'competition.sponsors.enabled',
+  'competition.prizes.enabled',
+  'competition.certificates.enabled',
+  'competition.regional.enabled',
+  'competition.national.enabled',
+  'competition.international.enabled',
+] as const;
+
+export type CompetitionFeatureKey = typeof competitionFeatureKeys[number];
+
+export const competitionFeatureDefaults = Object.fromEntries(
+  competitionFeatureKeys.map((key) => [key, false]),
+) as Record<CompetitionFeatureKey, boolean>;
+
 export const platformSettingDefaults = {
   maintenanceMode: false,
   allowSignup: true,
@@ -8,6 +32,7 @@ export const platformSettingDefaults = {
   supportEmail: 'support@schoolbase.live',
   signupNotificationRecipients: [],
   supportNotificationRecipients: [],
+  competitionFeatures: competitionFeatureDefaults,
   paymentPlans: {
     STARTER: { label: 'Starter', priceLabel: '₦60,000 / term', amountMinor: 6000000, studentLimit: 150 },
     GROWTH: { label: 'Growth', priceLabel: '₦85,000 / term', amountMinor: 8500000, studentLimit: 600 },
