@@ -58,10 +58,6 @@ export function buildSchoolSetupStatus({
     hasPrincipalInfo: Boolean(school?.principalName || school?.principalComment),
     hasPrincipalSignature: Boolean(school?.principalSignatureUrl),
     hasSchoolStamp: Boolean(school?.stampUrl),
-    hasPaymentSetup: Boolean(
-      (school?.manualPaymentAccountName && school?.manualPaymentAccountNumber && school?.manualPaymentBankName) ||
-      (school?.paystackPublicEncrypted && school?.paystackSecretEncrypted),
-    ),
     hasAnnouncement: counts.announcements > 0,
     hasAssessment: counts.assessments > 0,
   };
@@ -79,7 +75,6 @@ export function buildSchoolSetupStatus({
     hasPrincipalInfo: 'Principal info',
     hasPrincipalSignature: 'Principal signature',
     hasSchoolStamp: 'School stamp',
-    hasPaymentSetup: 'Payment setup',
     hasAnnouncement: 'Send your first announcement',
     hasAssessment: 'Publish your first assessment',
   };
@@ -89,7 +84,6 @@ export function buildSchoolSetupStatus({
     hasStaff: setupItems.hasStaff,
     hasStudents: setupItems.hasStudents,
     hasFees: setupItems.hasFees,
-    hasPaymentSetup: setupItems.hasPaymentSetup,
     hasAnnouncement: setupItems.hasAnnouncement,
     hasAssessment: setupItems.hasAssessment,
     hasSchoolLogo: setupItems.hasSchoolLogo,

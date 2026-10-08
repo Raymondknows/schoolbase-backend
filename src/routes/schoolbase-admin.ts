@@ -143,7 +143,6 @@ async function getSchoolSetupChecklistData(schoolId: string) {
         hasPrincipalInfo: 'Principal info',
         hasPrincipalSignature: 'Principal signature',
         hasSchoolStamp: 'School stamp',
-        hasPaymentSetup: 'Payment setup',
         hasAnnouncement: 'Send your first announcement',
         hasAssessment: 'Publish your first assessment',
       };
@@ -166,7 +165,6 @@ async function getSchoolSetupChecklistData(schoolId: string) {
         hasPrincipalInfo: 'Principal info',
         hasPrincipalSignature: 'Principal signature',
         hasSchoolStamp: 'School stamp',
-        hasPaymentSetup: 'Payment setup',
         hasAnnouncement: 'Send your first announcement',
         hasAssessment: 'Publish your first assessment',
       };
