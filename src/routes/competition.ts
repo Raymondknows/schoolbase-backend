@@ -595,22 +595,27 @@ router.post('/student/attempts/:attemptId/submit', requireSession, async (req: C
   if (!attempt) return res.status(404).json({ error: 'ATTEMPT_NOT_FOUND' });
   const now = new Date();
   const updated = await prisma.$transaction(async (transaction) => {
+    await transaction.$queryRaw`SELECT id FROM Pupil WHERE id = ${identity.pupilId} FOR UPDATE`;
     await transaction.$queryRaw`SELECT id FROM CompetitionChallengeAttempt WHERE id = ${attempt.id} FOR UPDATE`;
     const current = await transaction.competitionChallengeAttempt.findFirst({ where: { id: attempt.id, pupilId: identity.pupilId, schoolId: identity.schoolId }, include: { answers: { select: { isCorrect: true } } } });
     if (!current) throw new Error('ATTEMPT_NOT_FOUND');
-    if (current.status === 'SUBMITTED' || current.status === 'EXPIRED') return current;
+    if (current.status === 'SUBMITTED' || current.status === 'EXPIRED') return { attempt: current, firstCompletion: false };
     if (current.status !== 'STARTED') throw new Error('ATTEMPT_NOT_ACTIVE');
     const finalStatus = current.deadlineAt && current.deadlineAt < now ? 'EXPIRED' : 'SUBMITTED';
     const count = current.answers.length;
     const accurate = current.answers.filter((answer) => answer.isCorrect).length;
-    return transaction.competitionChallengeAttempt.update({ where: { id: current.id }, data: { status: finalStatus, submittedAt: now, elapsedMs: Math.max(0, now.getTime() - (current.startedAt?.getTime() ?? now.getTime())), accuracyPercent: count ? (accurate / count) * 100 : 0 } });
+    const priorCompletedAttempts = finalStatus === 'SUBMITTED'
+      ? await transaction.competitionChallengeAttempt.count({ where: { pupilId: identity.pupilId, status: 'SUBMITTED', id: { not: current.id } } })
+      : 1;
+    const completedAttempt = await transaction.competitionChallengeAttempt.update({ where: { id: current.id }, data: { status: finalStatus, submittedAt: now, elapsedMs: Math.max(0, now.getTime() - (current.startedAt?.getTime() ?? now.getTime())), accuracyPercent: count ? (accurate / count) * 100 : 0 } });
+    return { attempt: completedAttempt, firstCompletion: finalStatus === 'SUBMITTED' && priorCompletedAttempts === 0 };
   }).catch((error: unknown) => {
     if (error instanceof Error && error.message === 'ATTEMPT_NOT_FOUND') return null;
     throw error;
   });
   if (!updated) return res.status(404).json({ error: 'ATTEMPT_NOT_FOUND' });
-  if (updated.status !== 'SUBMITTED' && updated.status !== 'EXPIRED') return res.status(409).json({ error: 'ATTEMPT_NOT_ACTIVE' });
-  res.json({ result: { status: updated.status, score: updated.score, correctCount: updated.correctCount, questionCount: updated.questionCount, accuracyPercent: updated.accuracyPercent, elapsedMs: updated.elapsedMs } });
+  if (updated.attempt.status !== 'SUBMITTED' && updated.attempt.status !== 'EXPIRED') return res.status(409).json({ error: 'ATTEMPT_NOT_ACTIVE' });
+  res.json({ result: { status: updated.attempt.status, score: updated.attempt.score, correctCount: updated.attempt.correctCount, questionCount: updated.attempt.questionCount, accuracyPercent: updated.attempt.accuracyPercent, elapsedMs: updated.attempt.elapsedMs, firstCompletion: updated.firstCompletion } });
 });
 
 router.get('/student/me', requireSession, async (req: CompetitionRequest, res) => {
