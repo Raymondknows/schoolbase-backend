@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import {
   isCompetitionFeatureEnabled,
   normalizeCompetitionFeatures,
+  requireCompetitionFeature,
   resolveCompetitionFeature,
 } from '../src/services/competition-feature-gate.js';
 import { competitionFeatureDefaults } from '../src/services/platform-settings.js';
@@ -37,5 +38,37 @@ assert.equal(await resolveCompetitionFeature(prismaWithSetting(), 'competition.e
 assert.equal(await resolveCompetitionFeature(prismaWithSetting('{"competition.enabled":true,"competition.dailyChallenge.enabled":true}'), 'competition.dailyChallenge.enabled'), true);
 assert.equal(await resolveCompetitionFeature(prismaWithSetting('{bad json'), 'competition.enabled'), false);
 assert.equal(await resolveCompetitionFeature(prismaWithSetting(undefined, true), 'competition.enabled'), false);
+
+let deniedStatus = 0;
+let deniedBody: unknown;
+let deniedNextCalled = false;
+await requireCompetitionFeature(prismaWithSetting(), 'competition.enabled')(
+  {} as never,
+  {
+    status(code: number) {
+      deniedStatus = code;
+      return this;
+    },
+    json(body: unknown) {
+      deniedBody = body;
+      return this;
+    },
+  } as never,
+  () => { deniedNextCalled = true; },
+);
+assert.equal(deniedStatus, 404);
+assert.deepEqual(deniedBody, { message: 'This Competition feature is not available.' });
+assert.equal(deniedNextCalled, false);
+
+let enabledNextCalled = false;
+await requireCompetitionFeature(
+  prismaWithSetting('{"competition.enabled":true,"competition.dailyChallenge.enabled":true}'),
+  'competition.dailyChallenge.enabled',
+)(
+  {} as never,
+  { status() { return this; }, json() { return this; } } as never,
+  () => { enabledNextCalled = true; },
+);
+assert.equal(enabledNextCalled, true);
 
 console.log('Competition feature gate tests passed');

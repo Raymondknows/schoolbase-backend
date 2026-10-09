@@ -1350,19 +1350,32 @@ router.get('/competition/achievements', async (req: Request, res: Response) => {
     const family = await resolveParentFamily(payload as any);
     if (!family.pupilIds.length) return res.json({ children: [] });
 
-    const [pupils, achievements, xpTransactions] = await Promise.all([
+    const [pupils, achievements, xpTransactions, attempts, practiceSummaries] = await Promise.all([
       prisma.pupil.findMany({ where: { id: { in: family.pupilIds }, schoolId: family.schoolId }, select: { id: true, firstName: true, middleName: true, lastName: true, class: { select: { name: true } } } }),
       prisma.competitionPupilAchievement.findMany({ where: { pupilId: { in: family.pupilIds } }, select: { pupilId: true, awardedAt: true, achievement: { select: { code: true, title: true, description: true, iconUrl: true } } }, orderBy: { awardedAt: 'desc' } }),
       prisma.competitionXpTransaction.groupBy({ by: ['pupilId'], where: { pupilId: { in: family.pupilIds } }, _sum: { amount: true } }),
+      prisma.competitionChallengeAttempt.findMany({ where: { pupilId: { in: family.pupilIds }, status: { in: ['SUBMITTED', 'EXPIRED'] } }, select: { pupilId: true, status: true, score: true, correctCount: true, questionCount: true, accuracyPercent: true, elapsedMs: true, submittedAt: true, challenge: { select: { title: true } } }, orderBy: { submittedAt: 'desc' }, take: 50 }),
+      prisma.competitionChallengeAttempt.groupBy({ by: ['pupilId'], where: { pupilId: { in: family.pupilIds }, status: 'SUBMITTED' }, _count: { _all: true }, _max: { accuracyPercent: true, submittedAt: true } }),
     ]);
     const xpByPupil = new Map(xpTransactions.map((entry) => [entry.pupilId, entry._sum.amount ?? 0]));
+    const practiceSummaryByPupil = new Map(practiceSummaries.map((entry) => [entry.pupilId, {
+      completedChallenges: entry._count._all,
+      personalBestAccuracy: entry._max.accuracyPercent?.toNumber() ?? null,
+      latestCompletionAt: entry._max.submittedAt,
+    }]));
     const achievementsByPupil = new Map<string, typeof achievements>();
     for (const achievement of achievements) {
       const existing = achievementsByPupil.get(achievement.pupilId) || [];
       existing.push(achievement);
       achievementsByPupil.set(achievement.pupilId, existing);
     }
-    res.json({ children: pupils.map((pupil) => ({ id: pupil.id, displayName: `${pupil.firstName} ${pupil.middleName ? `${pupil.middleName[0]}. ` : ''}${pupil.lastName}`, className: pupil.class?.name ?? null, xp: xpByPupil.get(pupil.id) ?? 0, achievements: (achievementsByPupil.get(pupil.id) || []).map((entry) => ({ ...entry.achievement, awardedAt: entry.awardedAt })) })) });
+    const attemptsByPupil = new Map<string, typeof attempts>();
+    for (const attempt of attempts) {
+      const existing = attemptsByPupil.get(attempt.pupilId) || [];
+      if (existing.length < 5) existing.push(attempt);
+      attemptsByPupil.set(attempt.pupilId, existing);
+    }
+    res.json({ children: pupils.map((pupil) => ({ id: pupil.id, displayName: `${pupil.firstName} ${pupil.middleName ? `${pupil.middleName[0]}. ` : ''}${pupil.lastName}`, className: pupil.class?.name ?? null, xp: xpByPupil.get(pupil.id) ?? 0, practiceSummary: practiceSummaryByPupil.get(pupil.id) ?? { completedChallenges: 0, personalBestAccuracy: null, latestCompletionAt: null }, achievements: (achievementsByPupil.get(pupil.id) || []).map((entry) => ({ ...entry.achievement, awardedAt: entry.awardedAt })), recentAttempts: (attemptsByPupil.get(pupil.id) || []).map((attempt) => ({ title: attempt.challenge.title, status: attempt.status, score: attempt.score, correctCount: attempt.correctCount, questionCount: attempt.questionCount, accuracyPercent: attempt.accuracyPercent?.toNumber() ?? null, elapsedMs: attempt.elapsedMs, submittedAt: attempt.submittedAt })) })) });
   } catch (error) {
     console.error('[parent] Competition achievements failed', error);
     res.status(500).json({ error: 'COMPETITION_ACHIEVEMENTS_FAILED' });

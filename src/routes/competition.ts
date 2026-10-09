@@ -6,6 +6,7 @@ import { getSessionSecret } from '../services/security-config.js';
 import { resolveCompetitionFeature } from '../services/competition-feature-gate.js';
 import { resolveCompetitionGuardianPupilChoices, resolveCompetitionGuardianSession, resolveCompetitionPupilIdentity, selectCompetitionGuardianPupil, type CompetitionPupilIdentity } from '../services/competition-pupil-identity.js';
 import { calculateCompetitionAnswerPoints, parseCompetitionScoringPolicy } from '../services/competition-scoring.js';
+import { matchesCompetitionAudience } from '../services/competition-audience.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -159,15 +160,19 @@ router.post('/admin/scoring-policies', requireSession, requirePlatformAdmin, asy
 
 router.post('/admin/challenges', requireSession, requirePlatformAdmin, async (req: CompetitionRequest, res) => {
   if (!(await resolveCompetitionFeature(prisma, 'competition.dailyChallenge.enabled'))) return res.status(404).json({ error: 'FEATURE_DISABLED' });
-  const { categoryId, questionSetId, scoringPolicyId, title, description, gradeLabel, questionCount, durationSeconds, attemptLimit, difficultyMix } = req.body ?? {};
-  if (![categoryId, questionSetId, scoringPolicyId].every((value) => typeof value === 'string') || typeof title !== 'string' || !title.trim() || !Number.isInteger(questionCount) || questionCount < 1 || questionCount > 100 || !Number.isInteger(durationSeconds) || durationSeconds < 30 || durationSeconds > 7200 || !Number.isInteger(attemptLimit) || attemptLimit < 1 || attemptLimit > 10) return res.status(400).json({ error: 'INVALID_CHALLENGE' });
+  const { categoryId, questionSetId, scoringPolicyId, title, description, ageRange, gradeLabel, questionCount, durationSeconds, attemptLimit, difficultyMix } = req.body ?? {};
+  const ageMatch = typeof ageRange === 'string' ? ageRange.trim().match(/^(\d{1,2})\s*[-–]\s*(\d{1,2})$/) : null;
+  const minimumAge = ageMatch ? Number(ageMatch[1]) : 0;
+  const maximumAge = ageMatch ? Number(ageMatch[2]) : 0;
+  const classLabel = typeof gradeLabel === 'string' ? gradeLabel.trim() : '';
+  if (![categoryId, questionSetId, scoringPolicyId].every((value) => typeof value === 'string') || typeof title !== 'string' || !title.trim() || !ageMatch || minimumAge < 2 || maximumAge > 25 || minimumAge > maximumAge || !classLabel || classLabel.length > 60 || !Number.isInteger(questionCount) || questionCount < 1 || questionCount > 100 || !Number.isInteger(durationSeconds) || durationSeconds < 30 || durationSeconds > 7200 || !Number.isInteger(attemptLimit) || attemptLimit < 1 || attemptLimit > 10) return res.status(400).json({ error: 'INVALID_CHALLENGE' });
   const [category, questionSet, scoringPolicy] = await Promise.all([
     prisma.competitionCategory.findUnique({ where: { id: categoryId }, select: { id: true } }),
     prisma.competitionQuestionSet.findUnique({ where: { id: questionSetId }, select: { id: true, categoryId: true, status: true, _count: { select: { questions: true } } } }),
     prisma.competitionScoringPolicy.findUnique({ where: { id: scoringPolicyId }, select: { id: true } }),
   ]);
   if (!category || !questionSet || !scoringPolicy || questionSet.categoryId !== category.id || questionSet.status === 'ARCHIVED' || questionSet._count.questions < questionCount) return res.status(400).json({ error: 'CHALLENGE_CONFIGURATION_INCOMPLETE' });
-  const challenge = await prisma.competitionChallenge.create({ data: { categoryId, questionSetId, scoringPolicyId, title: title.trim(), description: typeof description === 'string' ? description.slice(0, 5000) : undefined, gradeLabel: typeof gradeLabel === 'string' ? gradeLabel.slice(0, 80) : undefined, questionCount, durationSeconds, attemptLimit, difficultyMixJson: difficultyMix && typeof difficultyMix === 'object' && !Array.isArray(difficultyMix) ? JSON.stringify(difficultyMix) : undefined, status: 'DRAFT', createdByUserId: req.competitionUser?.id } });
+  const challenge = await prisma.competitionChallenge.create({ data: { categoryId, questionSetId, scoringPolicyId, title: title.trim(), description: typeof description === 'string' ? description.slice(0, 5000) : undefined, gradeLabel: `Ages ${minimumAge}-${maximumAge} · ${classLabel}`, questionCount, durationSeconds, attemptLimit, difficultyMixJson: difficultyMix && typeof difficultyMix === 'object' && !Array.isArray(difficultyMix) ? JSON.stringify(difficultyMix) : undefined, status: 'DRAFT', createdByUserId: req.competitionUser?.id } });
   await prisma.competitionAuditLog.create({ data: { actorUserId: req.competitionUser?.id, action: 'CHALLENGE_CREATED', entityType: 'CompetitionChallenge', entityId: challenge.id } });
   res.status(201).json({ challenge });
 });
@@ -234,7 +239,11 @@ router.get('/admin/questions', requireSession, requirePlatformAdmin, async (req,
     where: questionSetId ? { questionSetId } : undefined,
     orderBy: { createdAt: 'desc' },
     take: 100,
-    include: { options: { orderBy: { sortOrder: 'asc' } }, media: true },
+    include: {
+      questionSet: { select: { id: true, name: true } },
+      options: { orderBy: { sortOrder: 'asc' } },
+      media: true,
+    },
   });
   res.json({ questions });
 });
@@ -307,7 +316,8 @@ router.patch('/admin/challenges/:id/status', requireSession, requirePlatformAdmi
   const status = req.body?.status;
   if (!['DRAFT', 'SCHEDULED', 'ACTIVE', 'PAUSED', 'COMPLETED', 'ARCHIVED'].includes(status)) return res.status(400).json({ error: 'INVALID_CHALLENGE_STATUS' });
   if (status === 'ACTIVE') {
-    const challenge = await prisma.competitionChallenge.findUnique({ where: { id: req.params.id }, include: { questionSet: { include: { questions: { where: { status: 'APPROVED' }, select: { id: true } } } } } });
+    const challenge = await prisma.competitionChallenge.findUnique({ where: { id: req.params.id }, select: { gradeLabel: true, questionCount: true, questionSet: { include: { questions: { where: { status: 'APPROVED' }, select: { id: true } } } } } });
+    if (!challenge?.gradeLabel || !/^Ages \d{1,2}-\d{1,2} · .+/.test(challenge.gradeLabel)) return res.status(409).json({ error: 'CHALLENGE_AUDIENCE_REQUIRED' });
     if (!challenge || challenge.questionSet.questions.length < challenge.questionCount) return res.status(409).json({ error: 'APPROVED_QUESTION_COUNT_INSUFFICIENT' });
   }
   try {
@@ -446,17 +456,42 @@ router.get('/student/challenges', requireSession, async (req: CompetitionRequest
   const identity = await resolveLearnerIdentity(req, res);
   if (!identity) return;
   const now = new Date();
-  const challenges = await prisma.competitionChallenge.findMany({
+  const candidateChallenges = await prisma.competitionChallenge.findMany({
     where: {
       status: 'ACTIVE',
       AND: [{ OR: [{ schoolId: null }, { schoolId: identity.schoolId }] }, { OR: [{ classId: null }, { classId: identity.classId }] }, { OR: [{ opensAt: null }, { opensAt: { lte: now } }] }, { OR: [{ closesAt: null }, { closesAt: { gte: now } }] }],
     },
-    select: { id: true, title: true, description: true, gradeLabel: true, questionCount: true, durationSeconds: true, closesAt: true },
+    select: { id: true, title: true, description: true, gradeLabel: true, questionCount: true, durationSeconds: true, opensAt: true, closesAt: true, attemptLimit: true },
     orderBy: { createdAt: 'desc' },
     take: 25,
   });
-  const attempts = await prisma.competitionChallengeAttempt.findMany({ where: { pupilId: identity.pupilId, challengeId: { in: challenges.map((item) => item.id) } }, select: { id: true, challengeId: true, status: true, score: true, submittedAt: true } });
-  res.json({ identity: { pupilId: identity.pupilId, classId: identity.classId }, challenges, attempts });
+  const [pupil, classRecord] = await Promise.all([
+    prisma.pupil.findUnique({ where: { id: identity.pupilId }, select: { firstName: true, lastName: true, dateOfBirth: true } }),
+    identity.classId ? prisma.class.findUnique({ where: { id: identity.classId }, select: { name: true } }) : null,
+  ]);
+  const eligibleChallenges = candidateChallenges.filter((challenge) => matchesCompetitionAudience({
+    audienceLabel: challenge.gradeLabel,
+    className: classRecord?.name,
+    dateOfBirth: pupil?.dateOfBirth,
+    onDate: challenge.opensAt ?? now,
+  }));
+  const attempts = await prisma.competitionChallengeAttempt.findMany({
+    where: { pupilId: identity.pupilId, challengeId: { in: eligibleChallenges.map((item) => item.id) } },
+    select: { id: true, challengeId: true, status: true, score: true, submittedAt: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  const practiceSummary = await prisma.competitionChallengeAttempt.aggregate({
+    where: { pupilId: identity.pupilId, status: 'SUBMITTED' },
+    _count: { _all: true },
+    _max: { submittedAt: true },
+  });
+  res.json({
+    identity: { pupilId: identity.pupilId, classId: identity.classId, firstName: pupil?.firstName ?? null, lastName: pupil?.lastName ?? null, className: classRecord?.name ?? null },
+    challenges: eligibleChallenges.map((challenge) => ({ ...challenge, attemptsUsed: attempts.filter((attempt) => attempt.challengeId === challenge.id && !['INVALIDATED', 'ABANDONED'].includes(attempt.status)).length })),
+    ineligibleChallengeCount: candidateChallenges.length - eligibleChallenges.length,
+    practiceSummary: { completedChallenges: practiceSummary._count._all, latestCompletionAt: practiceSummary._max.submittedAt },
+    attempts,
+  });
 });
 
 router.post('/student/challenges/:challengeId/attempts', requireSession, async (req: CompetitionRequest, res) => {
@@ -490,6 +525,13 @@ router.post('/student/challenges/:challengeId/attempts', requireSession, async (
     include: challengeQuestionInclude,
   });
   if (!challenge || challenge.questionSet.questions.length < challenge.questionCount) return res.status(404).json({ error: 'CHALLENGE_UNAVAILABLE' });
+  const [pupilAudience, learnerClass] = await Promise.all([
+    prisma.pupil.findUnique({ where: { id: identity.pupilId }, select: { dateOfBirth: true } }),
+    identity.classId ? prisma.class.findUnique({ where: { id: identity.classId }, select: { name: true } }) : null,
+  ]);
+  if (!matchesCompetitionAudience({ audienceLabel: challenge.gradeLabel, className: learnerClass?.name, dateOfBirth: pupilAudience?.dateOfBirth, onDate: challenge.opensAt ?? now })) {
+    return res.status(403).json({ error: 'CHALLENGE_AUDIENCE_MISMATCH' });
+  }
   const attemptQuestionInclude = {
     questions: {
       orderBy: { position: 'asc' as const },
