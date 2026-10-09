@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import type { PrismaClient } from '@prisma/client';
 import {
   isEligibleCompetitionPupilLink,
+  resolveCompetitionGuardianPupilChoices,
+  resolveCompetitionGuardianSession,
   resolveCompetitionPupilIdentity,
+  selectCompetitionGuardianPupil,
 } from '../src/services/competition-pupil-identity.js';
 
 const validLink = {
@@ -16,6 +19,7 @@ const validLink = {
 };
 
 assert.equal(isEligibleCompetitionPupilLink(validLink), true);
+assert.equal(isEligibleCompetitionPupilLink({ ...validLink, userRole: 'PARENT' }), true);
 assert.equal(isEligibleCompetitionPupilLink({ ...validLink, userRole: 'SCHOOL_ADMIN' }), false);
 assert.equal(isEligibleCompetitionPupilLink({ ...validLink, userSchoolId: 'school-2' }), false);
 assert.equal(isEligibleCompetitionPupilLink({ ...validLink, pupilSchoolId: 'school-2' }), false);
@@ -24,6 +28,71 @@ assert.equal(isEligibleCompetitionPupilLink({ ...validLink, linkStatus: 'REVOKED
 assert.equal(isEligibleCompetitionPupilLink({ ...validLink, pupilIsActive: false }), false);
 assert.equal(isEligibleCompetitionPupilLink({ ...validLink, pupilStatus: 'INACTIVE' }), false);
 assert.equal(isEligibleCompetitionPupilLink({ ...validLink, userSchoolId: null }), false);
+
+const guardianAccounts = [
+  {
+    schoolId: 'school-1',
+    status: 'ACTIVE',
+    guardian: { id: 'guardian-1', schoolId: 'school-1' },
+    pupil: { id: 'pupil-1', schoolId: 'school-1', classId: 'class-1', firstName: 'Ada', lastName: 'One', isActive: true, status: 'ACTIVE', class: { name: 'Year 1' }, guardians: [{ guardianId: 'guardian-1' }] },
+  },
+  {
+    schoolId: 'school-1',
+    status: 'ACTIVE',
+    guardian: { id: 'guardian-2', schoolId: 'school-1' },
+    pupil: { id: 'pupil-2', schoolId: 'school-1', classId: null, firstName: 'Ben', lastName: 'Two', isActive: true, status: null, class: null, guardians: [{ guardianId: 'guardian-2' }] },
+  },
+  {
+    schoolId: 'school-2',
+    status: 'ACTIVE',
+    guardian: { id: 'guardian-1', schoolId: 'school-1' },
+    pupil: { id: 'pupil-3', schoolId: 'school-2', classId: null, firstName: 'Cross', lastName: 'School', isActive: true, status: null, class: null, guardians: [{ guardianId: 'guardian-1' }] },
+  },
+  {
+    schoolId: 'school-1',
+    status: 'ACTIVE',
+    guardian: { id: 'guardian-1', schoolId: 'school-1' },
+    pupil: { id: 'pupil-4', schoolId: 'school-1', classId: null, firstName: 'Inactive', lastName: 'Pupil', isActive: false, status: 'INACTIVE', class: null, guardians: [{ guardianId: 'guardian-1' }] },
+  },
+  {
+    schoolId: 'school-1',
+    status: 'ACTIVE',
+    guardian: { id: 'guardian-1', schoolId: 'school-1' },
+    pupil: { id: 'pupil-5', schoolId: 'school-1', classId: null, firstName: 'Unlinked', lastName: 'Pupil', isActive: true, status: 'ACTIVE', class: null, guardians: [] },
+  },
+];
+const guardianPrisma = {
+  competitionPupilAccount: {
+    findMany: async () => guardianAccounts,
+  },
+} as unknown as PrismaClient;
+const validGuardianChoices = await resolveCompetitionGuardianPupilChoices(guardianPrisma, ['guardian-1', 'guardian-2', 'guardian-1']);
+assert.deepEqual(validGuardianChoices, [
+  { pupilId: 'pupil-1', schoolId: 'school-1', classId: 'class-1', firstName: 'Ada', lastName: 'One', className: 'Year 1' },
+  { pupilId: 'pupil-2', schoolId: 'school-1', classId: null, firstName: 'Ben', lastName: 'Two', className: null },
+]);
+assert.equal(selectCompetitionGuardianPupil(validGuardianChoices), null);
+assert.equal(selectCompetitionGuardianPupil(validGuardianChoices, 'pupil-2')?.pupilId, 'pupil-2');
+assert.equal(selectCompetitionGuardianPupil(validGuardianChoices, 'pupil-outside-family'), null);
+assert.equal(selectCompetitionGuardianPupil([validGuardianChoices[0]!])?.pupilId, 'pupil-1');
+assert.deepEqual(await resolveCompetitionGuardianPupilChoices(guardianPrisma, []), []);
+
+const sessionPrisma = {
+  guardian: {
+    findMany: async () => [{ id: 'guardian-1' }, { id: 'guardian-2' }],
+  },
+} as unknown as PrismaClient;
+assert.deepEqual(await resolveCompetitionGuardianSession(sessionPrisma, {
+  guardianId: 'guardian-1',
+  guardianIds: ['guardian-2', 'guardian-2', 12],
+  schoolId: 'school-1',
+}), { id: 'guardian-1', guardianIds: ['guardian-1', 'guardian-2'], schoolId: 'school-1' });
+const foreignOnlySessionPrisma = {
+  guardian: { findMany: async () => [{ id: 'guardian-2' }] },
+} as unknown as PrismaClient;
+assert.equal(await resolveCompetitionGuardianSession(foreignOnlySessionPrisma, {
+  guardianId: 'guardian-1', guardianIds: ['guardian-2'], schoolId: 'school-1',
+}), null);
 
 const queries: Array<{ kind: string; args: unknown }> = [];
 const prisma = {
@@ -77,8 +146,15 @@ const enrolledPupil = {
   status: null,
 };
 const studentUser = { id: 'user-1', role: 'STUDENT', schoolId: 'school-1' };
+const parentUser = { id: 'parent-1', role: 'PARENT', schoolId: 'school-1' };
 const activeLink = { schoolId: 'school-1', status: 'ACTIVE', pupil: enrolledPupil };
 
+assert.deepEqual(await resolveCompetitionPupilIdentity(prismaWithIdentity(parentUser, activeLink), 'parent-1'), {
+  userId: 'parent-1',
+  pupilId: 'pupil-1',
+  schoolId: 'school-1',
+  classId: null,
+});
 assert.equal(await resolveCompetitionPupilIdentity(prismaWithIdentity(null, activeLink), 'missing-user'), null);
 assert.equal(await resolveCompetitionPupilIdentity(prismaWithIdentity({ ...studentUser, role: 'TEACHER' }, activeLink), 'user-1'), null);
 assert.equal(await resolveCompetitionPupilIdentity(prismaWithIdentity({ ...studentUser, schoolId: null }, activeLink), 'user-1'), null);

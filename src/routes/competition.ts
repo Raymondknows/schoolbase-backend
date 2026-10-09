@@ -4,7 +4,7 @@ import { jwtVerify } from 'jose';
 import { PrismaClient } from '@prisma/client';
 import { getSessionSecret } from '../services/security-config.js';
 import { resolveCompetitionFeature } from '../services/competition-feature-gate.js';
-import { resolveCompetitionPupilIdentity } from '../services/competition-pupil-identity.js';
+import { resolveCompetitionGuardianPupilChoices, resolveCompetitionGuardianSession, resolveCompetitionPupilIdentity, selectCompetitionGuardianPupil, type CompetitionPupilIdentity } from '../services/competition-pupil-identity.js';
 import { calculateCompetitionAnswerPoints, parseCompetitionScoringPolicy } from '../services/competition-scoring.js';
 
 const router = Router();
@@ -12,6 +12,7 @@ const prisma = new PrismaClient();
 
 interface CompetitionRequest extends Request {
   competitionUser?: { id: string; role: string; schoolId: string | null };
+  competitionGuardian?: { id: string; guardianIds: string[]; schoolId: string };
 }
 
 async function requireSession(req: CompetitionRequest, res: Response, next: NextFunction) {
@@ -19,6 +20,17 @@ async function requireSession(req: CompetitionRequest, res: Response, next: Next
     const token = req.cookies?.schoolbase_session || req.cookies?.schoolbase_staff || req.cookies?.staff_session;
     if (!token) return res.status(401).json({ error: 'AUTH_REQUIRED' });
     const { payload } = await jwtVerify(token, getSessionSecret());
+    if (typeof payload.guardianId === 'string') {
+      if (typeof payload.schoolId !== 'string') return res.status(401).json({ error: 'AUTH_INVALID' });
+      const guardianSession = await resolveCompetitionGuardianSession(prisma, {
+        guardianId: payload.guardianId,
+        guardianIds: payload.guardianIds,
+        schoolId: payload.schoolId,
+      });
+      if (!guardianSession) return res.status(401).json({ error: 'AUTH_INVALID' });
+      req.competitionGuardian = guardianSession;
+      return next();
+    }
     if (typeof payload.userId !== 'string' || typeof payload.role !== 'string') return res.status(401).json({ error: 'AUTH_INVALID' });
     const user = await prisma.user.findUnique({ where: { id: payload.userId }, select: { id: true, role: true, schoolId: true } });
     if (!user || user.role !== payload.role) return res.status(401).json({ error: 'AUTH_INVALID' });
@@ -27,6 +39,50 @@ async function requireSession(req: CompetitionRequest, res: Response, next: Next
   } catch {
     return res.status(401).json({ error: 'AUTH_INVALID' });
   }
+}
+
+async function resolveLearnerIdentity(req: CompetitionRequest, res: Response): Promise<CompetitionPupilIdentity | null> {
+  if (req.competitionUser) {
+    const identity = await resolveCompetitionPupilIdentity(prisma, req.competitionUser.id);
+    if (!identity) res.status(403).json({ error: 'STUDENT_IDENTITY_NOT_LINKED' });
+    return identity;
+  }
+
+  const guardianSession = req.competitionGuardian;
+  if (!guardianSession) {
+    res.status(403).json({ error: 'STUDENT_IDENTITY_NOT_LINKED' });
+    return null;
+  }
+
+  const choices = await resolveCompetitionGuardianPupilChoices(prisma, guardianSession.guardianIds);
+  if (choices.length === 0 || choices.some((choice) => choice.schoolId !== guardianSession.schoolId)) {
+    res.status(403).json({ error: 'STUDENT_IDENTITY_NOT_LINKED' });
+    return null;
+  }
+
+  const requestedPupilId = typeof req.query.pupilId === 'string'
+    ? req.query.pupilId
+    : typeof req.body?.pupilId === 'string'
+      ? req.body.pupilId
+      : undefined;
+  const choice = selectCompetitionGuardianPupil(choices, requestedPupilId);
+  if (requestedPupilId) {
+    if (!choice) {
+      res.status(403).json({ error: 'GUARDIAN_PUPIL_NOT_LINKED' });
+      return null;
+    }
+  }
+
+  if (!choice && choices.length > 1) {
+    res.status(409).json({
+      error: 'CHILD_SELECTION_REQUIRED',
+      children: choices.map(({ pupilId, firstName, lastName, className }) => ({ pupilId, firstName, lastName, className })),
+    });
+    return null;
+  }
+
+  if (!choice) return null;
+  return { userId: '', pupilId: choice.pupilId, schoolId: choice.schoolId, classId: choice.classId };
 }
 
 async function requirePlatformAdmin(req: CompetitionRequest, res: Response, next: NextFunction) {
@@ -301,9 +357,36 @@ router.get('/school/student-links', requireSession, async (req: CompetitionReque
   if (req.competitionUser?.role !== 'SCHOOL_ADMIN' || !req.competitionUser.schoolId) return res.status(403).json({ error: 'SCHOOL_ADMIN_REQUIRED' });
   if (!(await resolveCompetitionFeature(prisma, 'competition.enabled'))) return res.status(404).json({ error: 'FEATURE_DISABLED' });
   const schoolId = req.competitionUser.schoolId;
-  const [pupils, studentUsers, links] = await Promise.all([
-    prisma.pupil.findMany({ where: { schoolId, isActive: true, OR: [{ status: null }, { status: { not: 'INACTIVE' } }] }, select: { id: true, firstName: true, middleName: true, lastName: true, admissionNo: true, class: { select: { name: true } }, competitionAccount: { select: { id: true, userId: true, status: true } } }, orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }], take: 500 }),
-    prisma.user.findMany({ where: { schoolId, role: 'STUDENT', competitionAccount: null }, select: { id: true, name: true }, orderBy: { name: 'asc' }, take: 500 }),
+  const [pupils, links] = await Promise.all([
+    prisma.pupil.findMany({
+      where: { schoolId, isActive: true, OR: [{ status: null }, { status: { not: 'INACTIVE' } }] },
+      select: {
+        id: true,
+        firstName: true,
+        middleName: true,
+        lastName: true,
+        admissionNo: true,
+        class: { select: { name: true } },
+        guardians: {
+          select: {
+            relation: true,
+            guardian: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                phone: true,
+                whatsapp: true,
+                email: true,
+              },
+            },
+          },
+        },
+        competitionAccount: { select: { id: true, userId: true, status: true } },
+      },
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
+      take: 500,
+    }),
     prisma.competitionPupilAccount.findMany({
       where: { schoolId },
       select: {
@@ -314,53 +397,54 @@ router.get('/school/student-links', requireSession, async (req: CompetitionReque
         linkedAt: true,
         pupil: { select: { firstName: true, lastName: true, admissionNo: true, class: { select: { name: true } } } },
         user: { select: { name: true } },
+        guardian: { select: { firstName: true, lastName: true, phone: true, whatsapp: true, email: true } },
       },
       orderBy: { linkedAt: 'desc' },
       take: 500,
     }),
   ]);
-  res.json({ pupils, studentUsers, links });
+  res.json({ pupils, links });
 });
 
 router.post('/school/student-links', requireSession, async (req: CompetitionRequest, res) => {
   if (req.competitionUser?.role !== 'SCHOOL_ADMIN' || !req.competitionUser.schoolId) return res.status(403).json({ error: 'SCHOOL_ADMIN_REQUIRED' });
   if (!(await resolveCompetitionFeature(prisma, 'competition.enabled'))) return res.status(404).json({ error: 'FEATURE_DISABLED' });
-  const { pupilId, userId } = req.body ?? {};
-  if (typeof pupilId !== 'string' || typeof userId !== 'string') return res.status(400).json({ error: 'PUPIL_AND_USER_REQUIRED' });
+  const { pupilId, guardianId } = req.body ?? {};
+  if (typeof pupilId !== 'string' || typeof guardianId !== 'string') return res.status(400).json({ error: 'PUPIL_AND_GUARDIAN_REQUIRED' });
   const schoolId = req.competitionUser.schoolId;
   try {
     const link = await prisma.$transaction(async (transaction) => {
-      const [pupil, user] = await Promise.all([
+      const [pupil, guardianLink] = await Promise.all([
         transaction.pupil.findFirst({ where: { id: pupilId, schoolId, isActive: true, OR: [{ status: null }, { status: { not: 'INACTIVE' } }] }, select: { id: true } }),
-        transaction.user.findFirst({ where: { id: userId, schoolId, role: 'STUDENT' }, select: { id: true } }),
+        transaction.guardianPupil.findFirst({ where: { pupilId, guardianId, guardian: { schoolId } }, select: { guardianId: true } }),
       ]);
-      if (!pupil || !user) throw new Error('PUPIL_OR_STUDENT_USER_NOT_ELIGIBLE');
-      return transaction.competitionPupilAccount.create({ data: { schoolId, pupilId, userId, linkedByUserId: req.competitionUser!.id } });
+      if (!pupil || !guardianLink) throw new Error('PUPIL_OR_GUARDIAN_NOT_ELIGIBLE');
+      return transaction.competitionPupilAccount.create({ data: { schoolId, pupilId, guardianId, linkedByUserId: req.competitionUser!.id } });
     });
-    await prisma.competitionAuditLog.create({ data: { schoolId, actorUserId: req.competitionUser.id, action: 'STUDENT_PUPIL_ACCOUNT_LINKED', entityType: 'CompetitionPupilAccount', entityId: link.id, reason: 'School administrator linked an existing student account to an existing active pupil.' } });
-    res.status(201).json({ link: { id: link.id, pupilId: link.pupilId, userId: link.userId, status: link.status } });
+    await prisma.competitionAuditLog.create({ data: { schoolId, actorUserId: req.competitionUser.id, action: 'STUDENT_PUPIL_ACCOUNT_LINKED', entityType: 'CompetitionPupilAccount', entityId: link.id, reason: 'School administrator linked an existing SchoolBase guardian relationship to an active pupil.' } });
+    res.status(201).json({ link: { id: link.id, pupilId: link.pupilId, guardianId: link.guardianId, status: link.status } });
   } catch (error) {
-    if (isPrismaUniqueError(error)) return res.status(409).json({ error: 'PUPIL_OR_USER_ALREADY_LINKED' });
-    if (error instanceof Error && error.message === 'PUPIL_OR_STUDENT_USER_NOT_ELIGIBLE') return res.status(400).json({ error: error.message });
+    if (isPrismaUniqueError(error)) return res.status(409).json({ error: 'PUPIL_ALREADY_LINKED' });
+    if (error instanceof Error && error.message === 'PUPIL_OR_GUARDIAN_NOT_ELIGIBLE') return res.status(400).json({ error: error.message });
     console.error('[competition] pupil account linking failed', error);
-    res.status(500).json({ error: 'STUDENT_ACCOUNT_LINK_FAILED' });
+    res.status(500).json({ error: 'PARENT_ACCOUNT_LINK_FAILED' });
   }
 });
 
 router.delete('/school/student-links/:linkId', requireSession, async (req: CompetitionRequest, res) => {
   if (req.competitionUser?.role !== 'SCHOOL_ADMIN' || !req.competitionUser.schoolId) return res.status(403).json({ error: 'SCHOOL_ADMIN_REQUIRED' });
   if (!(await resolveCompetitionFeature(prisma, 'competition.enabled'))) return res.status(404).json({ error: 'FEATURE_DISABLED' });
-  const link = await prisma.competitionPupilAccount.findFirst({ where: { id: req.params.linkId, schoolId: req.competitionUser.schoolId, status: 'ACTIVE' }, select: { id: true, pupilId: true, userId: true } });
+  const link = await prisma.competitionPupilAccount.findFirst({ where: { id: req.params.linkId, schoolId: req.competitionUser.schoolId, status: 'ACTIVE' }, select: { id: true, pupilId: true, guardianId: true, userId: true } });
   if (!link) return res.status(404).json({ error: 'ACTIVE_LINK_NOT_FOUND' });
   await prisma.competitionPupilAccount.update({ where: { id: link.id }, data: { status: 'REVOKED', revokedAt: new Date() } });
-  await prisma.competitionAuditLog.create({ data: { schoolId: req.competitionUser.schoolId, actorUserId: req.competitionUser.id, action: 'STUDENT_PUPIL_ACCOUNT_LINK_REVOKED', entityType: 'CompetitionPupilAccount', entityId: link.id, reason: 'School administrator revoked the student-to-pupil account link.' } });
+  await prisma.competitionAuditLog.create({ data: { schoolId: req.competitionUser.schoolId, actorUserId: req.competitionUser.id, action: 'STUDENT_PUPIL_ACCOUNT_LINK_REVOKED', entityType: 'CompetitionPupilAccount', entityId: link.id, reason: 'School administrator revoked the guardian-to-pupil Competition link.' } });
   res.json({ success: true });
 });
 
 router.get('/student/challenges', requireSession, async (req: CompetitionRequest, res) => {
   if (!(await resolveCompetitionFeature(prisma, 'competition.dailyChallenge.enabled'))) return res.status(404).json({ error: 'FEATURE_DISABLED' });
-  const identity = await resolveCompetitionPupilIdentity(prisma, req.competitionUser!.id);
-  if (!identity) return res.status(403).json({ error: 'STUDENT_IDENTITY_NOT_LINKED' });
+  const identity = await resolveLearnerIdentity(req, res);
+  if (!identity) return;
   const now = new Date();
   const challenges = await prisma.competitionChallenge.findMany({
     where: {
@@ -372,13 +456,13 @@ router.get('/student/challenges', requireSession, async (req: CompetitionRequest
     take: 25,
   });
   const attempts = await prisma.competitionChallengeAttempt.findMany({ where: { pupilId: identity.pupilId, challengeId: { in: challenges.map((item) => item.id) } }, select: { id: true, challengeId: true, status: true, score: true, submittedAt: true } });
-  res.json({ identity: { classId: identity.classId }, challenges, attempts });
+  res.json({ identity: { pupilId: identity.pupilId, classId: identity.classId }, challenges, attempts });
 });
 
 router.post('/student/challenges/:challengeId/attempts', requireSession, async (req: CompetitionRequest, res) => {
   if (!(await resolveCompetitionFeature(prisma, 'competition.dailyChallenge.enabled'))) return res.status(404).json({ error: 'FEATURE_DISABLED' });
-  const identity = await resolveCompetitionPupilIdentity(prisma, req.competitionUser!.id);
-  if (!identity) return res.status(403).json({ error: 'STUDENT_IDENTITY_NOT_LINKED' });
+  const identity = await resolveLearnerIdentity(req, res);
+  if (!identity) return;
   const idempotencyKey = typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : '';
   if (!idempotencyKey || idempotencyKey.length > 191) return res.status(400).json({ error: 'IDEMPOTENCY_KEY_REQUIRED' });
   const now = new Date();
@@ -467,8 +551,8 @@ router.post('/student/challenges/:challengeId/attempts', requireSession, async (
 
 router.post('/student/attempts/:attemptId/answers/:questionId', requireSession, async (req: CompetitionRequest, res) => {
   if (!(await resolveCompetitionFeature(prisma, 'competition.dailyChallenge.enabled'))) return res.status(404).json({ error: 'FEATURE_DISABLED' });
-  const identity = await resolveCompetitionPupilIdentity(prisma, req.competitionUser!.id);
-  if (!identity) return res.status(403).json({ error: 'STUDENT_IDENTITY_NOT_LINKED' });
+  const identity = await resolveLearnerIdentity(req, res);
+  if (!identity) return;
   const selectedOptionId = req.body?.optionId;
   if (typeof selectedOptionId !== 'string') return res.status(400).json({ error: 'OPTION_ID_REQUIRED' });
   const attempt = await prisma.competitionChallengeAttempt.findFirst({ where: { id: req.params.attemptId, pupilId: identity.pupilId, schoolId: identity.schoolId }, select: { id: true, status: true, startedAt: true, deadlineAt: true, scoringSnapshotJson: true, questions: { where: { questionId: req.params.questionId }, select: { id: true, questionId: true, question: { select: { difficulty: true, timeLimitSeconds: true } } } } } });
@@ -505,8 +589,8 @@ router.post('/student/attempts/:attemptId/answers/:questionId', requireSession, 
 
 router.post('/student/attempts/:attemptId/submit', requireSession, async (req: CompetitionRequest, res) => {
   if (!(await resolveCompetitionFeature(prisma, 'competition.dailyChallenge.enabled'))) return res.status(404).json({ error: 'FEATURE_DISABLED' });
-  const identity = await resolveCompetitionPupilIdentity(prisma, req.competitionUser!.id);
-  if (!identity) return res.status(403).json({ error: 'STUDENT_IDENTITY_NOT_LINKED' });
+  const identity = await resolveLearnerIdentity(req, res);
+  if (!identity) return;
   const attempt = await prisma.competitionChallengeAttempt.findFirst({ where: { id: req.params.attemptId, pupilId: identity.pupilId, schoolId: identity.schoolId }, select: { id: true } });
   if (!attempt) return res.status(404).json({ error: 'ATTEMPT_NOT_FOUND' });
   const now = new Date();
@@ -530,9 +614,8 @@ router.post('/student/attempts/:attemptId/submit', requireSession, async (req: C
 });
 
 router.get('/student/me', requireSession, async (req: CompetitionRequest, res) => {
-  if (req.competitionUser?.role !== 'STUDENT') return res.status(403).json({ error: 'STUDENT_REQUIRED' });
-  const identity = await resolveCompetitionPupilIdentity(prisma, req.competitionUser.id);
-  if (!identity) return res.status(403).json({ error: 'STUDENT_IDENTITY_NOT_LINKED' });
+  const identity = await resolveLearnerIdentity(req, res);
+  if (!identity) return;
   const [pupil, xp] = await Promise.all([
     prisma.pupil.findUnique({ where: { id: identity.pupilId }, select: { firstName: true, class: { select: { name: true } } } }),
     prisma.competitionXpTransaction.aggregate({ where: { pupilId: identity.pupilId }, _sum: { amount: true } }),

@@ -471,6 +471,7 @@ model Guardian {
   whatsappDeliveries WhatsAppDelivery[]
   supportRequests    SupportRequest[]        @relation("SupportRequestGuardian")
   supportMessages    SupportRequestMessage[] @relation("SupportMessageGuardian")
+  competitionAccounts CompetitionPupilAccount[]
 
   @@index([schoolId], map: "Guardian_schoolId_fkey")
 }
@@ -523,17 +524,20 @@ model CompetitionPupilAccount {
   id              String                         @id @default(cuid())
   schoolId        String
   pupilId         String                         @unique
-  userId          String                         @unique
+  userId          String?                        @unique
+  guardianId      String?
   linkedByUserId  String?
   status          CompetitionPupilAccountStatus  @default(ACTIVE)
   linkedAt        DateTime                       @default(now())
   revokedAt       DateTime?
   school          School                         @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   pupil           Pupil                          @relation("CompetitionPupilAccountPupil", fields: [pupilId], references: [id], onDelete: Cascade)
-  user            User                           @relation("CompetitionPupilAccountUser", fields: [userId], references: [id], onDelete: Cascade)
+  user            User?                          @relation("CompetitionPupilAccountUser", fields: [userId], references: [id], onDelete: Cascade)
+  guardian         Guardian?                      @relation(fields: [guardianId], references: [id], onDelete: Cascade)
   linkedBy        User?                          @relation("CompetitionPupilAccountLinkedBy", fields: [linkedByUserId], references: [id], onDelete: SetNull)
 
   @@index([schoolId, status])
+  @@index([guardianId])
   @@index([linkedByUserId])
 }
 

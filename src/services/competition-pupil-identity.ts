@@ -8,6 +8,47 @@ export type CompetitionPupilIdentity = {
   classId: string | null;
 };
 
+export type CompetitionGuardianPupilChoice = {
+  pupilId: string;
+  schoolId: string;
+  classId: string | null;
+  firstName: string;
+  lastName: string;
+  className: string | null;
+};
+
+export type CompetitionGuardianSession = {
+  id: string;
+  guardianIds: string[];
+  schoolId: string;
+};
+
+export async function resolveCompetitionGuardianSession(
+  prisma: PrismaClient,
+  claims: { guardianId: string; guardianIds?: unknown; schoolId: string },
+): Promise<CompetitionGuardianSession | null> {
+  if (!claims.guardianId || !claims.schoolId) return null;
+  const claimedIds = Array.from(new Set([
+    claims.guardianId,
+    ...(Array.isArray(claims.guardianIds) ? claims.guardianIds.filter((id): id is string => typeof id === 'string') : []),
+  ]));
+  const guardians = await prisma.guardian.findMany({
+    where: { id: { in: claimedIds }, schoolId: claims.schoolId },
+    select: { id: true },
+  });
+  const guardianIds = guardians.map((guardian) => guardian.id);
+  if (!guardianIds.includes(claims.guardianId)) return null;
+  return { id: claims.guardianId, guardianIds, schoolId: claims.schoolId };
+}
+
+export function selectCompetitionGuardianPupil(
+  choices: CompetitionGuardianPupilChoice[],
+  pupilId?: string,
+): CompetitionGuardianPupilChoice | null {
+  if (pupilId) return choices.find((choice) => choice.pupilId === pupilId) ?? null;
+  return choices.length === 1 ? choices[0] ?? null : null;
+}
+
 export function isEligibleCompetitionPupilLink(input: {
   userRole?: string | null;
   userSchoolId?: string | null;
@@ -17,7 +58,8 @@ export function isEligibleCompetitionPupilLink(input: {
   pupilIsActive?: boolean | null;
   pupilStatus?: string | null;
 }): boolean {
-  return input.userRole === 'STUDENT' &&
+  const validRoles = new Set(['STUDENT', 'PARENT']);
+  return validRoles.has(input.userRole ?? '') &&
     Boolean(input.userSchoolId) &&
     input.userSchoolId === input.pupilSchoolId &&
     input.userSchoolId === input.linkSchoolId &&
@@ -34,7 +76,7 @@ export async function resolveCompetitionPupilIdentity(
     select: { id: true, role: true, schoolId: true },
   });
 
-  if (!user || user.role !== 'STUDENT' || !user.schoolId) return null;
+  if (!user || !['STUDENT', 'PARENT'].includes(user.role) || !user.schoolId) return null;
 
   const account = await prisma.competitionPupilAccount.findUnique({
     where: { userId: user.id },
@@ -63,4 +105,55 @@ export async function resolveCompetitionPupilIdentity(
     schoolId: user.schoolId,
     classId: account.pupil.classId,
   };
+}
+
+export async function resolveCompetitionGuardianPupilChoices(
+  prisma: PrismaClient,
+  guardianIds: string[],
+): Promise<CompetitionGuardianPupilChoice[]> {
+  const uniqueGuardianIds = Array.from(new Set(guardianIds.filter(Boolean)));
+  if (uniqueGuardianIds.length === 0) return [];
+
+  const accounts = await prisma.competitionPupilAccount.findMany({
+    where: { guardianId: { in: uniqueGuardianIds }, status: 'ACTIVE' },
+    select: {
+      schoolId: true,
+      status: true,
+      guardian: { select: { id: true, schoolId: true } },
+      pupil: {
+        select: {
+          id: true,
+          schoolId: true,
+          classId: true,
+          firstName: true,
+          lastName: true,
+          isActive: true,
+          status: true,
+          class: { select: { name: true } },
+          guardians: {
+            where: { guardianId: { in: uniqueGuardianIds } },
+            select: { guardianId: true },
+          },
+        },
+      },
+    },
+    orderBy: { linkedAt: 'asc' },
+  });
+
+  return accounts
+    .filter((account) => account.status === 'ACTIVE' &&
+      account.guardian !== null &&
+      uniqueGuardianIds.includes(account.guardian.id) &&
+      account.pupil.guardians.some((link) => link.guardianId === account.guardian?.id) &&
+      account.guardian.schoolId === account.schoolId &&
+      account.pupil.schoolId === account.schoolId &&
+      isStudentCurrentlyEnrolled({ isActive: account.pupil.isActive, status: account.pupil.status }))
+    .map((account) => ({
+      pupilId: account.pupil.id,
+      schoolId: account.schoolId,
+      classId: account.pupil.classId,
+      firstName: account.pupil.firstName,
+      lastName: account.pupil.lastName,
+      className: account.pupil.class?.name ?? null,
+    }));
 }
